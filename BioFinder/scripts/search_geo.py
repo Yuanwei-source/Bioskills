@@ -38,7 +38,7 @@ if Entrez is not None:
 
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-DEFAULT_TOOL = "geo-data-finder"
+DEFAULT_TOOL = "biofinder"
 
 
 def configure_stdio() -> None:

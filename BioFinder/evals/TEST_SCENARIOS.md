@@ -1,6 +1,6 @@
 # GEO Data Finder Test Scenarios
 
-This document records simulated user flows against the current `geo-data-finder` skill and the main optimization points they reveal.
+This document records simulated user flows against the current `BioFinder` skill and the main optimization points they reveal.
 
 ## Scenario 1: Clear bulk RNA-seq search
 
