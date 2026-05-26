@@ -6,16 +6,25 @@ Inspect one SRA accession and aggregate study-level evidence for BioFinder.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import shutil
+import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 from evidence_schema import build_sra_inspection_evidence
 from inspect_gse import normalize_goal
-from search_geo import configure_stdio
+from search_geo import DEFAULT_TOOL, configure_stdio
 from search_sra import SraRecord, fetch_records
+
+RUNINFO_URL = "https://trace.ncbi.nlm.nih.gov/Traces/sra-db-be/runinfo"
 
 
 def unique_nonempty(values: list[str]) -> list[str]:
@@ -28,6 +37,169 @@ def unique_nonempty(values: list[str]) -> list[str]:
         seen.add(text)
         cleaned.append(text)
     return cleaned
+
+
+def fetch_runinfo_rows(accession: str, timeout: int, email: str | None) -> list[dict[str, str]]:
+    params = {
+        "acc": accession,
+    }
+    if email:
+        params["email"] = email
+    url = f"{RUNINFO_URL}?{urllib.parse.urlencode(params)}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"{DEFAULT_TOOL}/0.1 (+https://openai.com)",
+            "Accept": "text/csv",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError:
+        return []
+    except urllib.error.URLError:
+        return []
+    reader = csv.DictReader(StringIO(text))
+    rows: list[dict[str, str]] = []
+    for row in reader:
+        normalized = {str(key).strip(): (value or "").strip() for key, value in row.items() if key}
+        if normalized:
+            rows.append(normalized)
+    return rows
+
+
+def fetch_pysradb_rows(accession: str, timeout: int) -> list[dict[str, str]]:
+    command = shutil.which("pysradb")
+    if not command:
+        return []
+    try:
+        completed = subprocess.run(
+            [command, "metadata", accession, "--detailed"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return []
+    text = completed.stdout.replace("\r\n", "\n").strip()
+    try:
+        dialect = csv.Sniffer().sniff(text[:4000], delimiters="\t,")
+    except csv.Error:
+        dialect = csv.excel_tab
+    reader = csv.DictReader(StringIO(text), dialect=dialect)
+    rows: list[dict[str, str]] = []
+    for row in reader:
+        normalized = {str(key).strip(): (value or "").strip() for key, value in row.items() if key}
+        if normalized:
+            rows.append(normalized)
+    return rows
+
+
+def parse_sample_attributes(text: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for chunk in text.split("||"):
+        piece = chunk.strip().strip(";")
+        if not piece:
+            continue
+        if ":" in piece:
+            key, value = piece.split(":", 1)
+        elif "=" in piece:
+            key, value = piece.split("=", 1)
+        else:
+            continue
+        clean_key = key.strip().lower().replace(" ", "_")
+        clean_value = value.strip()
+        if clean_key and clean_value:
+            parsed[clean_key] = clean_value
+    return parsed
+
+
+def infer_design_signals(runinfo_rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    candidate_keys = [
+        "source_name",
+        "sample_name",
+        "sample_title",
+        "experiment_title",
+        "strain",
+        "tissue",
+        "cell_type",
+        "treatment",
+        "group",
+        "condition",
+        "phenotype",
+        "genotype",
+        "timepoint",
+        "time_point",
+        "sex",
+        "age",
+    ]
+    counts_by_key: dict[str, dict[str, int]] = {}
+    for row in runinfo_rows:
+        lowered = {str(key).strip().lower(): (value or "").strip() for key, value in row.items() if key}
+        if "source" in lowered and "source_name" not in lowered:
+            lowered["source_name"] = lowered["source"]
+        if "samplename" in lowered and "sample_name" not in lowered:
+            lowered["sample_name"] = lowered["samplename"]
+        if "sampletitle" in lowered and "sample_title" not in lowered:
+            lowered["sample_title"] = lowered["sampletitle"]
+        if "experiment" in lowered and "experiment_title" not in lowered:
+            lowered["experiment_title"] = lowered["experiment"]
+        merged: dict[str, str] = {}
+        for key in candidate_keys:
+            value = lowered.get(key, "").strip()
+            if value:
+                merged[key] = value
+        sample_attrs = parse_sample_attributes(lowered.get("sample_attribute", ""))
+        for key in candidate_keys:
+            value = sample_attrs.get(key, "").strip()
+            if value and key not in merged:
+                merged[key] = value
+        for key, value in merged.items():
+            bucket = counts_by_key.setdefault(key, {})
+            bucket[value] = bucket.get(value, 0) + 1
+    results: list[dict[str, Any]] = []
+    for key, counts in counts_by_key.items():
+        nonempty = {name: count for name, count in counts.items() if name}
+        if len(nonempty) < 2:
+            continue
+        results.append(
+            {
+                "column": key,
+                "counts": dict(sorted(nonempty.items(), key=lambda item: (-item[1], item[0]))[:8]),
+            }
+        )
+    priority = {
+        "group": 0,
+        "condition": 1,
+        "treatment": 2,
+        "phenotype": 3,
+        "genotype": 4,
+        "timepoint": 5,
+        "time_point": 6,
+        "source_name": 7,
+        "sample_name": 8,
+        "sample_title": 9,
+        "tissue": 10,
+        "cell_type": 11,
+        "sex": 12,
+        "age": 13,
+        "strain": 14,
+    }
+    results.sort(key=lambda item: (priority.get(item["column"], 999), item["column"]))
+    return results[:8]
+
+
+def infer_design_clarity(group_signals: list[dict[str, Any]]) -> str:
+    if not group_signals:
+        return "low"
+    important = {"group", "condition", "treatment", "phenotype", "genotype", "timepoint", "time_point"}
+    if any(item["column"] in important for item in group_signals):
+        return "high"
+    return "partial"
 
 
 def choose_anchor(records: list[SraRecord], requested_accession: str) -> str:
@@ -154,6 +326,8 @@ class SraInspectionResult:
     organisms: list[str]
     tissues: list[str]
     assay_family: str
+    design_clarity: str
+    group_signals: list[dict[str, Any]]
     library_layouts: list[str]
     platforms: list[str]
     sample_count: int | None
@@ -179,6 +353,8 @@ class SraInspectionResult:
             "organisms": self.organisms,
             "tissues": self.tissues,
             "assay_family": self.assay_family,
+            "design_clarity": self.design_clarity,
+            "group_signals": self.group_signals,
             "library_layouts": self.library_layouts,
             "platforms": self.platforms,
             "sample_count": self.sample_count,
@@ -222,8 +398,32 @@ def inspect_accession(accession: str, analysis_goal: str, timeout: int, pause_se
     platforms = unique_nonempty([record.platform for record in records if record.platform])
     biosamples = unique_nonempty([record.biosample for record in records if record.biosample])
     run_accessions = unique_nonempty([run for record in records for run in record.run_accessions])
+    runinfo_rows = fetch_runinfo_rows(anchor or accession, timeout=timeout, email=email)
+    pysradb_rows = fetch_pysradb_rows(anchor or accession, timeout=timeout)
+    metadata_rows = runinfo_rows if runinfo_rows else []
+    if pysradb_rows:
+        metadata_rows = metadata_rows + pysradb_rows
+    group_signals = infer_design_signals(metadata_rows)
+    design_clarity = infer_design_clarity(group_signals)
     sample_count = len(biosamples) if biosamples else None
+    if sample_count is None and metadata_rows:
+        sample_accessions = unique_nonempty(
+            [
+                row.get("BioSample", "")
+                or row.get("BioSample_s", "")
+                or row.get("biosample", "")
+                or row.get("sample_accession", "")
+                or row.get("sample_alias", "")
+                for row in metadata_rows
+            ]
+        )
+        if sample_accessions:
+            sample_count = len(sample_accessions)
     run_count = len(run_accessions) if run_accessions else None
+    if run_count is None and metadata_rows:
+        run_names = unique_nonempty([row.get("Run", "") or row.get("run_accession", "") for row in metadata_rows])
+        if run_names:
+            run_count = len(run_names)
     bioproject = next((record.bioproject for record in records if record.bioproject), "")
     linked_sra = unique_nonempty(
         [
@@ -249,6 +449,9 @@ def inspect_accession(accession: str, analysis_goal: str, timeout: int, pause_se
         "raw_sequencing_available": bool(run_accessions),
         "library_layouts": layouts,
         "platforms": platforms,
+        "runinfo_rows": len(runinfo_rows),
+        "pysradb_rows": len(pysradb_rows),
+        "runinfo_design_clarity": design_clarity,
         "needs_manual_check": not bool(title and organisms),
     }
     summary = next((record.summary for record in records if record.summary), "")
@@ -258,6 +461,13 @@ def inspect_accession(accession: str, analysis_goal: str, timeout: int, pause_se
         "record_count": len(records),
         "study_titles": unique_nonempty([record.title for record in records if record.title]),
         "submitter_accessions": unique_nonempty([record.submitter_accession for record in records if record.submitter_accession]),
+        "runinfo_columns": sorted(runinfo_rows[0].keys()) if runinfo_rows else [],
+        "pysradb_columns": sorted(pysradb_rows[0].keys()) if pysradb_rows else [],
+        "metadata_sources": [
+            source
+            for source, rows in [("runinfo", runinfo_rows), ("pysradb", pysradb_rows)]
+            if rows
+        ],
     }
     return SraInspectionResult(
         accession=anchor or accession,
@@ -266,6 +476,8 @@ def inspect_accession(accession: str, analysis_goal: str, timeout: int, pause_se
         organisms=organisms,
         tissues=tissues,
         assay_family=assay_family or "",
+        design_clarity=design_clarity,
+        group_signals=group_signals,
         library_layouts=layouts,
         platforms=platforms,
         sample_count=sample_count,
@@ -306,6 +518,7 @@ def render_text(results: list[SraInspectionResult]) -> str:
             f"   organisms={', '.join(result.organisms) or 'n/a'}",
             f"   tissues={', '.join(result.tissues) or 'n/a'}",
             f"   assay_family={result.assay_family or 'n/a'}",
+            f"   design_clarity={result.design_clarity}",
             f"   sample_count={result.sample_count if result.sample_count is not None else 'n/a'}",
             f"   run_count={result.run_count if result.run_count is not None else 'n/a'}",
             f"   bioproject={result.bioproject or 'n/a'}",
@@ -314,6 +527,11 @@ def render_text(results: list[SraInspectionResult]) -> str:
             f"   not_recommended_for={', '.join(result.not_recommended_for) or 'n/a'}",
             f"   risks={', '.join(result.risks) or 'n/a'}",
         ]
+        if result.group_signals:
+            preview = "; ".join(
+                f"{item['column']}={list(item['counts'].items())[:4]}" for item in result.group_signals[:3]
+            )
+            lines.append(f"   group_signals={preview}")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 

@@ -194,7 +194,7 @@ def build_sra_inspection_evidence(result: Any, include_summary: bool = True) -> 
         "assay_family": result.assay_family,
         "sample_count": result.sample_count,
         "run_count": result.run_count,
-        "group_signals": [],
+        "group_signals": list(result.group_signals),
         "data_availability": dict(result.data_availability),
         "linked_accessions": {
             "geo": _clean_list(list(result.linked_geo)),
@@ -205,6 +205,7 @@ def build_sra_inspection_evidence(result: Any, include_summary: bool = True) -> 
         "risks": _clean_list(list(result.risks)),
         "source_links": source_links,
         "local_notes": {
+            "design_clarity": result.design_clarity,
             "library_layouts": list(result.library_layouts),
             "platforms": list(result.platforms),
             "provisional_local_assessment": result.overall_usability,

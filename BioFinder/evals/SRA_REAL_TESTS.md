@@ -53,6 +53,10 @@ Observed outcome:
 - platform: `Illumina NovaSeq X Plus`
 - sample count: `6`
 - run count: `6`
+- design clarity: `partial`
+- design clues recovered from RunInfo:
+  - `sample_name`: `HAF-1`, `HAF-2`, `HAF-3`, `LAF-1`, `LAF-2`, `LAF-3`
+  - `experiment_title`: `SRX32944932` to `SRX32944937`
 - bioproject: `PRJNA1453495`
 - provisional local assessment: `high`
 
@@ -67,4 +71,6 @@ Current limitations observed:
 
 - title was sparse and only reflected one sample name: `LAF-3`
 - tissue was not reliably recoverable from SRA metadata alone
+- RunInfo provided useful grouping clues, but not a fully explicit treatment column
+- `pysradb` enhancement was not used in this test because no local `pysradb` rows were available
 - final recommendation still needs LLM interpretation, especially when SRA lacks phenotype detail

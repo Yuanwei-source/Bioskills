@@ -30,6 +30,17 @@ usable answer, keep the workflow simple.
 These scripts should stay evidence-oriented. They should not grow into download
 or analysis pipelines.
 
+## Metadata Preference Order
+
+For experimental-design clues, prefer:
+
+1. NCBI RunInfo or Run Selector style tabular metadata
+2. `pysradb` metadata output as an optional enhancement layer
+3. SRA `esummary` or `ExpXml` only for fields that are not available elsewhere
+
+This keeps BioFinder closer to existing metadata tooling and avoids building a
+large custom parser around XML fragments alone.
+
 ## What SRA Should Return
 
 SRA output should emphasize:
@@ -50,6 +61,8 @@ The current v2 SRA layer is intentionally conservative:
 - it does not download FASTQ
 - it does not run SRA Toolkit
 - it does not claim perfect tissue or phenotype rescue from sparse titles
+- it may only recover partial design clues such as sample-name groupings when
+  richer sample attributes are absent
 - it may still need the LLM to interpret whether a raw-data-only study is truly relevant
 
 ## Judgment Boundary
