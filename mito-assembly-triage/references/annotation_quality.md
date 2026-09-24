@@ -35,14 +35,22 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
    代码按 `/codon_start` 定位读码框，并支持 `join()` 分段位置。
 2. 逐条记录：起始密码子、终止密码子（完整 / 不完整 `T`/`TA`）、内部终止数、同源蛋白覆盖度、边界证据。
 3. **内部终止必须解释**，排查顺序：密码表选错 → 边界/阅读框错误 → 碱基错误（测序或组装）→ 真实生物学例外。
-   声明 `/transl_except` 时降为 REVIEW，仍需独立证据。不允许只改结论文字。
-4. **非典型起始密码子**（如 `CGA`）不再被无条件判错：
-   - 无法定起始 → `INVALID_CDS`（ERROR），并提示 `NONCANONICAL_START_REVIEW`；
-   - 用 `--tolerate-start "基因:密码子"`（可重复，逐条给出）声明类群已知例外 → 记 `NONCANONICAL_START_REVIEW`（REVIEW），
-     保留证据等级与不确定性。
+   - `/transl_except` **不是存在即豁免**：代码解析其 `pos`/`aa`，只有真正对应到那个内部终止密码子时才记
+     `TRANSL_EXCEPT_MATCHED` 并扣除该项；声明位置对不上、或该 CDS 本就没有内部终止时记
+     `TRANSL_EXCEPT_UNEXPLAINED`，未解释的内部终止仍是 ERROR。
+   - `/transl_table` 逐条与 `--table` 比对，不一致记 `TABLE_CONFLICT`（代码按 `--table` 翻译）。
+   - 不允许只改结论文字。
+4. **非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不再被无条件判错：
+   - 没有合法起始 → `INVALID_CDS`（ERROR），并提示 `NONCANONICAL_START_REVIEW`；
+   - 用 `--tolerate-start "基因:密码子"`（可重复、逐条）声明类群已知例外 → `NONCANONICAL_START_REVIEW`（REVIEW）。
+     **例外必须引用已审计记录**：`--exception-registry <json>`，每条含 gene/codon/taxon/source/rationale。
+     未引用已审计记录时额外输出 `EXCEPTION_NOT_REGISTERED`，**不得**把它当成已验证结论。
    - **不得**为了让检查通过而伪造 5' 端缺失、随意改 `/codon_start` 或改碱基。
-5. **真实 partial CDS**：`/codon_start = 2/3` 表示 5' 端不完整，代码记 `PARTIAL_CDS_5P` 且**不检查起始密码子**；
-   这是与"非典型起始密码子"**不同**的问题，不要混为一谈。
+5. **partial 来自 GenBank location，不来自 `/codon_start`**：
+   - `<`/`>` 标记决定 5'/3' partial（代码按链方向解释，`feature_partial()`）；`<1..N` → `PARTIAL_CDS_5P`（不检查起始密码子）；
+     `N..>M` → `PARTIAL_CDS_3P`（**不要求**终止密码子）；
+   - `location` 标注为**完整**却设 `/codon_start=2` → `CODON_START_CONFLICT`（注释自相矛盾），需先确认 5' 端是否真的缺失；
+   - 这是与“非典型起始密码子”**不同**的问题，不要混为一谈。
 6. **不完整终止（`T`/`TA`）**：只有在末端确实是 `T` 或 `TA` 前缀时才算；与转录后多聚腺苷酸化相容，
    但没有转录证据时不得宣称已实验验证，且**`note` 属自述、须交叉核验**。
    末端是普通 sense codon（例如 `GAT`）时是 ERROR，**`note` 不能豁免**。
@@ -59,8 +67,10 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 3. 类型可由反密码子解析（动物线粒体标准写法）：`tag`→`trnL1(CUN)`、`taa`→`trnL2(UUR)`、
    `gct`→`trnS1(AGN)`、`tga`→`trnS2(UCN)`。反密码子与裸名所指氨基酸不一致时**不解析**，保留待确定。
 4. `/gene` 写 `trnL2(UUR)` 这类带括号形式是常见写法，代码会去掉括号后归一；但**反密码子应放在 `/anticodon`**。
-   基因身份检查只读 `/gene`（缺失时读 `/product`）的**首个值**；NCBI 自然语言 `product` 名
-   （如 "cytochrome c oxidase subunit 1"）会被判为非标准身份，需先补 `/gene`。
+   没有 `/gene` 时会读 `/product`，并识别常见自然语言写法：
+   `NADH dehydrogenase subunit 5`→`nd5`、`cytochrome c oxidase subunit 1/III`→`cox1/cox3`、
+   `cytochrome b`→`cytb`、`ATP synthase F0 subunit 6`→`atp6`、`16S/12S ribosomal RNA`→`rrnL/rrnS`、
+   `tRNA-Leu`→**裸名** `trnL`（仍待反密码子/结构证据）。无法识别的 `ribosomal RNA` → `rrna`（未确定）。
 5. 部分动物线粒体 tRNA 天然结构不完整，**不能仅凭三叶草结构不完整判为假基因**：
    - `trnS1(AGN)` 常见 DHU 臂不能形成稳定茎环（*Hyphantria cunea*、*Cnaphalocrocis medinalis* 等鳞翅目）；
    - 蜘蛛（*Tetragnatha*）中 `trnS1` 与 `trnS2` 均缺 DHU 臂，且多数 tRNA 丢失 TΨC 臂；
@@ -105,23 +115,34 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 | 基因数量 | CDS≠13 / tRNA≠22 / rRNA≠2 | ERROR（`--allow-atypical "<理由>"` → REVIEW） |
 | 基因身份 | 缺失 / 非标准名 / 重复（`nad*`↔`nd*`、`cob`↔`cytb`、`coi/ii/iii`↔`cox1/2/3`、`12S/16S`↔`rrnS/rrnL` 已归一） | ERROR（`--allow-atypical` → REVIEW） |
 | tRNA 类型 | 裸名 `trnL`/`trnS` 或反密码子与裸名不一致 | REVIEW（`UNDETERMINED_TRNA`） |
-| 起始密码子 | 不在密码表合法起始集 | ERROR（`--tolerate-start "基因:密码子"` → REVIEW） |
-| 5' partial | `/codon_start = 2/3` | INFO（不检查起始密码子） |
-| 内部终止 | 翻译含内部 `*` | ERROR（有 `/transl_except` → REVIEW） |
+| 起始密码子 | 不在密码表合法起始集 | ERROR（`--tolerate-start "基因:密码子"` + `--exception-registry` → REVIEW） |
+| 5' partial | location 带 `<` | INFO（不检查起始密码子） |
+| 3' partial | location 带 `>` | INFO（不要求终止密码子） |
+| codon_start 矛盾 | location 完整却设 `/codon_start=2/3` | REVIEW（`CODON_START_CONFLICT`） |
+| 遗传密码表 | `/transl_table` 与 `--table` 不一致 | REVIEW（`TABLE_CONFLICT`） |
+| 内部终止 | 翻译含内部 `*` 且未被 `transl_except` 对应 | ERROR（对应时记 `TRANSL_EXCEPT_MATCHED`） |
+| `/transl_except` | 声明位置未对应任何内部终止 | REVIEW（`TRANSL_EXCEPT_UNEXPLAINED`） |
 | 不完整终止 | 末端为 `T`/`TA` 前缀 | REVIEW（`note` 记为自述，需交叉核验） |
 | 非 `T`/`TA` 末端 | 末端是普通 sense codon | ERROR（`note` 不能豁免） |
 | tRNA 长度 | `<50`（有/无 `note`）/ 60–75 之外 | ERROR / WARN / WARN |
 | 反密码子 | 缺 `anticodon` qualifier | REVIEW |
 | rRNA 长度 | 超出类群区间 | REVIEW（WARN） |
+| rRNA 身份未确定 | 名称无法识别（如 `rrna`） | REVIEW（`UNDETERMINED_RRNA`，不套用区间） |
 | 重叠 | `≤8bp` / `>8bp` | INFO / REVIEW（`--overlap-severity error` → ERROR） |
+| 重叠豁免无法定位 | 同名基因重复时只用名字豁免 | REVIEW（`TOLERATE_OVERLAP_AMBIGUOUS`） |
 | 链分布 | 正链 ≠ 9 且反向互补后也 ≠ 9 | REVIEW（整体反向互补只记 INFO） |
-| 基因顺序（需 `--ref`） | 与参考 CDS 顺序不同（按归一身份比较；**不给 `--ref` 时不做顺序对照**） | REVIEW（顺序差异不自动失败） |
+| 基因集 | 与 `--ref` 相比有缺失/多余 | REVIEW（`GENE_SET_DIFF`，与顺序差异分开） |
+| 基因排列（需 `--ref`） | 共有基因的**环状邻接**与参考不同（已归一旋转与整链反向互补） | REVIEW（`ARRANGEMENT_DIFF`；不给 `--ref` 时不做顺序对照） |
 | CDS 长度（需 `--ref`） | 与参考差 > 20%（按分段长度） | REVIEW |
 
 退出码：`0` 无任何发现；`1` 有错误（含参数错误）；`2` 仅有待核查/警告。
 **退出码 2 不等于通过质量门**：每条 REVIEW 必须逐条入账（被降级项 + 支持证据 + 判定人）。
 
 ## 9. 允许的类群例外（按类群文献确认，不可外推）
+
+例外不是"加一个开关"：代码侧用 `--tolerate-start "基因:密码子"` 选择，
+**生物学理由放在已审计记录** `--exception-registry <json>` 中（每条含 `gene`/`codon`/`taxon`/`source`/`rationale`），
+未登记时会输出 `EXCEPTION_NOT_REGISTERED`。
 
 | 类群 | 已报告的特殊情况 | 对判据的意义 |
 |---|---|---|

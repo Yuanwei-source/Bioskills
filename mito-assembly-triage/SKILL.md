@@ -72,7 +72,12 @@ FASTA、同源性、翻译、RNA 结构和比较基因组证据可以支持候�
 需给出理由，且不放松起始密码子、重叠、长度与链分布。
 
 类群特异的**非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不得靠伪造 5' 端缺失或改碱基绕过；
-用 `--tolerate-start "基因:密码子"` 逐条声明为已知例外，保留证据等级与不确定性。
+用 `--tolerate-start "基因:密码子"` 逐条声明，并用 `--exception-registry <json>` 引用**已审计记录**
+（taxon/source/rationale）—— 未登记时输出 `EXCEPTION_NOT_REGISTERED`，不得当作已验证结论。
+
+**5'/3' partial 由 GenBank location 的 `<`/`>` 决定**，不由 `/codon_start` 决定：location 完整却设
+`/codon_start=2` 是注释自相矛盾（`CODON_START_CONFLICT`）；`/transl_except` 必须真正对应到该内部终止密码子
+才豁免（`TRANSL_EXCEPT_MATCHED`），否则未解释的内部终止仍是错误。
 
 **重叠**只记录与分级（`≤8bp` INFO，`>8bp` 默认 REVIEW，`--overlap-severity error` 可升级），
 `--tolerate-overlap` 的含义是"已人工审核并保留该注释"，不代表已证明功能真实性；
@@ -113,7 +118,10 @@ reads、read pairs、组装图或长读长证据。不能唯一解析时保留�
 
 `cox1_id.py` 不会自动识别 COX1。只有在本地确认坐标、用户明确同意上传后，才使用
 `python3 scripts/cox1_id.py <genome.fasta> --allow-public-upload --coords <start>,<end>`；
-查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。
+查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。它使用 `FORMAT_TYPE=XML2` 结构化解析，
+报告每个候选的 **query coverage**（多 HSP 并集）与 identity，并把 RID 轮询与结果下载分开。
+退出码把任务状态与判读状态分开：`0` 得判读 / `1` insufficient 或 no_match（分析结论）/ `2` 拒绝执行 /
+`3` 网络或结果格式故障。
 
 超过 5 分钟的任务使用现有 `scripts/run_bg.sh` 和 `scripts/check_bg.sh`，必须检查真实退出状态，
 不能把仍在运行、超时或失败的任务描述为完成。
