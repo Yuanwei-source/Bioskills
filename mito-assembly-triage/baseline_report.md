@@ -1,8 +1,8 @@
 # mito-assembly-triage V1 冻结审计
 
-日期：2026-09-24  
-基线提交：`749ce2d`  ；冻结标签：`v1-fixed`  
-V2 分支：`v2-phase1`
+日期：2026-09-24
+基线提交：`749ce2d`；冻结标签：`v1-fixed`
+后续演进：在同一 Skill 与同一 Git 历史中增量实现
 
 ## 当前 V1 已确认的修复
 
@@ -26,10 +26,10 @@ OK
 
 核心可用性检查发现：`blastn`、`makeblastdb`、`samtools`、`minimap2` 可用；当前 generic 配置未找到 `bwa`、`seqkit`、GetOrganelle、MitoFinder、MITOS2 依赖和 MITOS2 Python 配置。该结果只影响依赖这些工具的路径，不影响 FASTA/注释纯 Python 检查。
 
-## V1 与 V2 的差距
+## V1 基线与后续增量的差距
 
 1. `SKILL.md` 仍偏向静态流程和质量门，缺少 INTAKE → HYPOTHESIZE → CHOOSE_TEST → EXECUTE → UPDATE → DECIDE → VERIFY → LEARN 的最小诊断循环。
-2. 没有 V2 `case.json`、`events.jsonl` 的结构化契约和校验/写出工具。
+2. 没有结构化 `case.json`、`events.jsonl` 的契约和校验/写出工具。
 3. 经验模块只有旧版 Markdown 案例、关键词检索和频次建议；缺少异常字段检索、候选 lesson、验证状态和版本化发布/撤销。
 4. 没有统一报告模板来区分观察、证据来源、推断、冲突、未知、修改和验证状态。
 5. 旧案例没有自动破坏性迁移需求；V2 应采用可逆映射，并将真实运行数据放在工作目录而非公共仓库。
@@ -42,4 +42,4 @@ OK
 
 ## Phase 0 结论
 
-V1 既有功能路径通过现有回归测试，已知修复项未发现回归。V2 可以在当前分支增量加入结构化案例/事件记录和规范化诊断报告；不需要重写现有分析脚本。
+V1 既有功能路径通过现有回归测试，已知修复项未发现回归。后续功能可在同一 Skill 中增量加入结构化案例/事件记录和规范化诊断报告；不需要重写现有分析脚本。
