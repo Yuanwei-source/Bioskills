@@ -7,6 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -87,6 +88,16 @@ class ExperienceSecurityTests(unittest.TestCase):
         self.assertEqual(self.module.case_files(), [])
         self.module.stats()
         self.module.suggest_promotions()
+
+    def test_structured_case_lifecycle_is_integrated_with_experience(self):
+        assembly = Path(self.temp_dir.name) / "assembly.fasta"
+        assembly.write_text(">ctg1\nACGTN\n", encoding="utf-8")
+        case = Path(self.temp_dir.name) / "case"
+        self.module.case_init(SimpleNamespace(directory=str(case), case_id=None, issue="internal_stop", observation="nad5 stop", taxon=None, input=[["assembly_fasta", str(assembly)]]))
+        self.module.case_event(SimpleNamespace(directory=str(case), action="annot_check", result="stop remains", impact="H1:against", command="", tool_version="", motivation=""))
+        self.assertEqual(self.module.case_validate(SimpleNamespace(directory=str(case))), 0)
+        self.module.case_report(SimpleNamespace(directory=str(case)))
+        self.assertIn("annot_check", (case / "case.md").read_text(encoding="utf-8"))
 
 
 class ExternalUploadTests(unittest.TestCase):
@@ -199,6 +210,12 @@ class GeneHitSelectionTests(unittest.TestCase):
         merged = self.module.merge_hsps([h, dict(h, qstart=500, qend=1000, start=500, end=1000)])
         self.assertEqual(merged["aln_len"], 1000)
 
+    def test_rejects_non_collinear_hsps(self):
+        h = {"evalue": 1e-40, "identity": 98.0, "aln_len": 400,
+             "query_len": 1000, "qstart": 1, "qend": 400,
+             "start": 700, "end": 1100, "strand": "+", "type": "CDS"}
+        self.assertIsNone(self.module.merge_hsps([h, dict(h, qstart=500, qend=900, start=100, end=500)]))
+
 
 class CircularizationSelectionTests(unittest.TestCase):
     def setUp(self):
@@ -228,6 +245,35 @@ class CircularizationSelectionTests(unittest.TestCase):
         self.assertEqual(self.module.interval_union_length([(0, 900), (500, 1500)]), 1500)
         joined, overlap = self.module.join_scaffolds("AAACCC", "CCCGGG", minimum_overlap=3)
         self.assertEqual((joined, overlap), ("AAACCCGGG", 3))
+
+    def test_parses_only_valid_junction_regions(self):
+        self.assertEqual(self.module.parse_region("mitogenome_candidate:90-110"), ("mitogenome_candidate", 90, 110))
+        with self.assertRaises(ValueError):
+            self.module.parse_region("chr:10-1")
+
+    def test_junction_support_filters_flags_mapq_and_duplicate_names(self):
+        lines = [
+            "good\t0\tmitogenome_candidate\t80\t60\t50M\t*\t0\t0\t" + "A" * 50 + "\t*",
+            "good\t0\tmitogenome_candidate\t80\t60\t50M\t*\t0\t0\t" + "A" * 50 + "\t*",
+            "low\t0\tmitogenome_candidate\t80\t5\t50M\t*\t0\t0\t" + "A" * 50 + "\t*",
+            "secondary\t256\tmitogenome_candidate\t80\t60\t50M\t*\t0\t0\t" + "A" * 50 + "\t*",
+        ]
+        with patch.object(self.module.subprocess, "run", return_value=SimpleNamespace(stdout="\n".join(lines))):
+            names = self.module.junction_spanning_reads("x.bam", "mitogenome_candidate:90-110", min_mapq=20)
+        self.assertEqual(names, {"good"})
+
+
+class SequenceStatsTests(unittest.TestCase):
+    def test_windows_and_ambiguous_positions_stay_within_contigs(self):
+        with tempfile.TemporaryDirectory() as td:
+            fasta = Path(td) / "multi.fa"
+            fasta.write_text(">a\nAAAAN\n>b\nGGGGR\n", encoding="utf-8")
+            result = subprocess.run(["python3", str(ROOT / "scripts" / "seq_stats.py"), str(fasta), "--window", "4"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("a:4 为 N", result.stdout)
+        self.assertIn("b:4 为 R", result.stdout)
+        self.assertIn("a:     5-     5", result.stdout)
+        self.assertIn("b:     1-     4", result.stdout)
 
 
 class AnnotationNormalizationTests(unittest.TestCase):

@@ -44,26 +44,26 @@ def main():
         print('⚠ 模糊碱基 (%d 个):' % sum(amb.values()))
         for a, n in sorted(amb.items()):
             print('  %s x%d' % (a, n))
-        # 定位模糊碱基
-        for a in amb:
-            pos = 0
+        # 每条 contig 独立定位，禁止将多 contig 坐标串联。
+        for name, contig in seqs:
             found = 0
-            while True:
-                i = seq.find(a, pos)
-                if i < 0 or found >= 10: break
-                print('  %s 位于 %d (0-based)' % (a, i))
-                pos = i + 1; found += 1
+            for i, base in enumerate(contig):
+                if base not in 'ACGT' and found < 10:
+                    print('  %s:%d 为 %s (0-based)' % (name, i, base)); found += 1
         print('  (reads 验证后可用支持碱基替换 — 见 depth_analysis.py)')
     else:
         print('✓ 无模糊碱基')
 
     # 滑窗 GC 均匀性 (粗筛异常区)
     print('\n滑窗 GC (window=%d):' % window)
-    for i in range(0, len(seq) - window + 1, window):
-        seg = seq[i:i+window]
-        g = (seg.count('G') + seg.count('C')) / len(seg) * 100
-        flag = '  <-- 低GC(可能AT富集区/CR)' if g < 18 else ''
-        print('  %6d-%6d: GC=%.1f%%%s' % (i+1, i+window, g, flag))
+    for name, contig in seqs:
+        for i in range(0, len(contig), window):
+            seg = contig[i:i+window]
+            if not seg: continue
+            acgt_seg = sum(seg.count(base) for base in 'ACGT')
+            g = (seg.count('G') + seg.count('C')) / acgt_seg * 100 if acgt_seg else 0
+            flag = '  <-- 低GC(可能AT富集区/CR)' if g < 18 else ''
+            print('  %s:%6d-%6d: GC=%.1f%%%s' % (name, i+1, i+len(seg), g, flag))
 
 if __name__ == '__main__':
     main()

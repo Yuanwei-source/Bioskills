@@ -4,12 +4,13 @@
 
 检查项:
   1. 基因完整性: 13 CDS + 22 tRNA + 2 rRNA = 37 基因
+     (CDS 同义命名归一: nad* == nd*, cob == cytb, coi/coii/coiii == cox1/cox2/cox3)
   2. CDS 翻译: 无内部终止密码子 (遗传密码表 5, 默认; 可 --table 指定)
   3. CDS 起始终止密码子报告 (含不完整终止 T/TA 标注)
   4. tRNA: 数量 22, 长度 60-75bp (异常短 <50bp 报错), 反密码子, 链
   5. rRNA: 数量 2, 长度范围 (rrnL 1100-1500, rrnS 600-850)
-  6. 重叠检查: CDS-tRNA 重叠 >8bp 报错 (NCBI: 只能重叠几个bp)
-              其他类型重叠 >8bp 警告 (ND4-ND4L 等短重叠正常)
+  6. 重叠检查: CDS-tRNA 重叠 >8bp 默认报错 (NCBI: 只能重叠几个bp)
+              其他类型重叠 >8bp 警告 (ND4-ND4L, atp8-atp6 等短重叠正常)
   7. 链分布: 正链 CDS 数量 (昆虫标准 9+/4-)
   8. 基因顺序 (可选 --ref ref.gb 对比近缘参考)
   9. CDS 长度与参考对比 (可选 --ref, ±20% 警告)
@@ -18,9 +19,14 @@
   python3 annot_check.py <annotation.gb>
   python3 annot_check.py <annotation.gb> --ref <reference.gb> --table 5
   python3 annot_check.py <annotation.gb> --tolerate-overlap "ND5,trnH"   # 人工确认的真实重叠
+  python3 annot_check.py <annotation.gb> --overlap-severity warn          # CDS-tRNA 重叠降级为待核查
+  python3 annot_check.py <annotation.gb> --allow-atypical                 # 非典型类群: 基因集差异记为待核查
 
 --tolerate-overlap: 人工确认的 CDS-tRNA 重叠对 (多工具一致 + 证据充分), 从 ERROR 降为 ACCEPTED。
   可重复使用, 例如 --tolerate-overlap "ND5,trnH" --tolerate-overlap "ND4,trnH2"
+--overlap-severity: CDS-tRNA >8bp 的默认等级, error(默认) 或 warn。重叠从不构成自动裁剪序列的理由。
+--allow-atypical: 供非典型后生动物/非昆虫类群使用, 把「基因集数量与身份」差异从 ERROR 降为待核查 WARN;
+  使用后必须按类群文献/可信参考逐项确认, 不能当作免责开关。
 
 退出码: 0=全部通过 1=有错误 2=有警告但无错误
 """
@@ -29,6 +35,7 @@ import re
 from collections import Counter
 
 EXPECTED_CDS = {'atp6', 'atp8', 'cox1', 'cox2', 'cox3', 'cytb', 'nd1', 'nd2', 'nd3', 'nd4', 'nd4l', 'nd5', 'nd6'}
+# nad*/coi/coii/coiii/cob 等同义写法由 canonical_gene() 归一后再比对
 EXPECTED_TRNA = {'trna', 'trnc', 'trnd', 'trne', 'trnf', 'trng', 'trnh', 'trni', 'trnk', 'trnl1', 'trnl2', 'trnm', 'trnn', 'trnp', 'trnq', 'trnr', 'trns1', 'trns2', 'trnt', 'trnv', 'trnw', 'trny'}
 EXPECTED_RRNA = {'rrnl', 'rrns'}
 
@@ -48,6 +55,19 @@ def canonical_gene(feature):
         return 'trnl1'
     if key == 'trns':
         return 'trns1'
+    # CDS 同义命名归一: 参考/工具常见写法不同, 不应当成“非标准基因身份”
+    #   nad* (MITOS2/NCBI 新写法) == nd* (历史写法)
+    #   cob == cytb, coi/coii/coiii == cox1/cox2/cox3
+    if re.fullmatch(r'nad[1-6]l?', key):
+        return 'nd' + key[3:]
+    if key in ('cob', 'cytb2', 'cyt-b'):
+        return 'cytb'
+    if key in ('coi', 'cox1', 'cox1p'):
+        return 'cox1'
+    if key in ('coii', 'cox2'):
+        return 'cox2'
+    if key in ('coiii', 'cox3'):
+        return 'cox3'
     return key
 
 
@@ -92,6 +112,12 @@ def main():
         if a == '--tolerate-overlap':
             pair = tuple(x.strip() for x in args[i + 1].split(','))
             tolerate.append(pair)
+    overlap_severity = 'error'
+    if '--overlap-severity' in args:
+        overlap_severity = args[args.index('--overlap-severity') + 1]
+        if overlap_severity not in ('error', 'warn'):
+            print('ERROR: --overlap-severity 只能是 error 或 warn'); sys.exit(2)
+    allow_atypical = '--allow-atypical' in args
 
     gb = load_gb(fn)
     L = len(gb.seq)
@@ -102,6 +128,9 @@ def main():
     print('=' * 68)
 
     errors, warnings = [], []
+    # 典型后生动物预期基因集; --allow-atypical 时基因集差异只记为待核查
+    count_sink = warnings if allow_atypical else errors
+    count_label = '待核查(非典型类群)' if allow_atypical else 'ERROR'
     if require_circular and topology.lower() != 'circular':
         errors.append('要求环状拓扑，但文件 topology=%s' % (topology or '未声明'))
     from Bio.Data import CodonTable
@@ -112,15 +141,17 @@ def main():
     trnas = [f for f in gb.features if f.type == 'tRNA']
     rnas = [f for f in gb.features if f.type == 'rRNA']
     print('\n[1] 基因完整性: CDS=%d tRNA=%d rRNA=%d (标准 13/22/2)' % (len(cds), len(trnas), len(rnas)))
-    if len(cds) != 13: errors.append('CDS 数量 %d != 13' % len(cds))
-    if len(trnas) != 22: errors.append('tRNA 数量 %d != 22 (NCBI 要求 22)' % len(trnas))
-    if len(rnas) != 2: errors.append('rRNA 数量 %d != 2' % len(rnas))
+    if allow_atypical:
+        print('  ! --allow-atypical: 基因集差异记为待核查; 必须按类群文献/可信参考逐项确认')
+    if len(cds) != 13: count_sink.append('CDS 数量 %d != 13' % len(cds))
+    if len(trnas) != 22: count_sink.append('tRNA 数量 %d != 22 (NCBI 要求 22)' % len(trnas))
+    if len(rnas) != 2: count_sink.append('rRNA 数量 %d != 2' % len(rnas))
     print('\n[1b] 基因身份:')
     identity_errors = gene_identity_errors(cds, trnas, rnas)
     if identity_errors:
         for error in identity_errors:
-            errors.append(error)
-            print('  ERROR: %s' % error)
+            count_sink.append(error)
+            print('  %s: %s' % (count_label, error))
     else:
         print('  ✓ 13 CDS + 22 tRNA + 2 rRNA 的基因身份完整且无重复')
 
@@ -212,8 +243,11 @@ def main():
             if {t1, t2} == {'CDS', 'tRNA'}:
                 if (g1, g2) in tolerate or (g2, g1) in tolerate:
                     print('  ACCEPT: %-6s[%s] <-> %-6s[%s] 重叠 %3dbp (人工确认的真实特征)' % (g1, t1, g2, t2, ov))
+                elif overlap_severity == 'warn':
+                    warnings.append('%s(%s) 与 %s(%s) 重叠 %dbp (CDS-tRNA; --overlap-severity warn 降级为待核查, 重叠本身不构成裁剪理由)' % (g1, t1, g2, t2, ov))
+                    print('  WARN : %-6s[%s] <-> %-6s[%s] 重叠 %3dbp (CDS-tRNA, 待核查)' % (g1, t1, g2, t2, ov))
                 else:
-                    errors.append('%s(%s) 与 %s(%s) 重叠 %dbp (CDS-tRNA 只允许几个bp; 若为真实特征用 --tolerate-overlap "%s,%s" 确认)' % (g1, t1, g2, t2, ov, g1, g2))
+                    errors.append('%s(%s) 与 %s(%s) 重叠 %dbp (CDS-tRNA 只允许几个bp; 若为真实特征用 --tolerate-overlap "%s,%s" 确认, 或 --overlap-severity warn 降级)' % (g1, t1, g2, t2, ov, g1, g2))
                     print('  ERROR: %-6s[%s] <-> %-6s[%s] 重叠 %3dbp (CDS-tRNA)' % (g1, t1, g2, t2, ov))
             else:
                 warnings.append('%s(%s) 与 %s(%s) 重叠 %dbp (需人工确认是否真实特征)' % (g1, t1, g2, t2, ov))
