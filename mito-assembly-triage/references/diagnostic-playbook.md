@@ -42,7 +42,8 @@
 
 ## EXECUTE
 
-- 只调用现有脚本与经典工具；记录**命令、参数、版本、输入 hash、输出路径**（写入 `events.jsonl`）；
+- 只调用现有脚本与经典工具；记录**命令、参数、版本、输入 hash、输出路径与退出码**（写入 `events.jsonl`）；
+- `tools/experience.py case-validate` **只检验记录格式**（schema / 字段 / 枚举），**不证明科学结论**；
 - **禁止直接覆盖原始序列**；候选另存新目录；
 - 对外查询/上传样本序列必须先获得显式许可（如 `cox1_id.py --allow-public-upload`）。
 
@@ -63,7 +64,15 @@
 | 操作级 | `NO_CHANGE` / `ANNOTATION_CORRECTED` / `SEQUENCE_CORRECTED` / `STRUCTURE_CORRECTED` / `UNRESOLVED` | `modifications[]` 与事件记录 |
 | 案例级 | `RESOLVED` / `NO_CHANGE` / `UNRESOLVED`（**schema 强约束**） | `case.json` → `decision.status` |
 
-案例级还要给 `decision.confidence` ∈ `high` / `moderate` / `low` / `not_assessable`（评分标准见 `evidence-standard.md` §2）。
+案例级还要给 `decision.confidence` ∈ `high` / `moderate` / `low` / `not_assessable`（判据见 `evidence-standard.md` §2）。
+
+**`confidence` 属于具体结论，不属于整个样本**：不要因为缺 reads 或缺核基因组就给全局上限，
+只对**与该输入相关**的结论降档（见 `evidence-standard.md` §2.1）。同一案例里可以并存
+`high` 的注释身份结论与 `not_assessable` 的结构结论。
+
+**待核查项必须逐条入账**：`annot_check.py` 退出码 `2` 不等于通过质量门。以下状态必须在事件/案例中逐条记录
+（被降级项 + 支持证据 + 判定人）：`NONCANONICAL_START_REVIEW`、`PARTIAL_CDS_5P`、`UNDETERMINED_TRNA`、
+`OVERLAP_LONG`、`OVERLAP_ACCEPTED`、`ORIENTATION`、以及所有由 `--allow-atypical` 降级的基因集差异。
 
 **停止条件**：无法区分时必须停止，清晰指出"最少还需什么证据"，不要为了收尾而猜测。
 

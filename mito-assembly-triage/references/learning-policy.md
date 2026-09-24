@@ -28,8 +28,13 @@ case.json (本地案例)
 - 状态枚举（代码 + `schemas/lesson.schema.json`）：`candidate`、`verified`、`rejected`、`deprecated`、`withdrawn`、`superseded`；
   manifest 层另有 `revoked`（公共同步跳过）。
 - **只有 `verified` 可进入公共同步**；`rejected/deprecated/withdrawn/superseded/revoked` 一律不再被默认调用。
+- **`verified` ≠ 普遍适用**：一个案例得到充分验证，只说明**该案例在该类群、该数据类型、该组装软件下**的判定有足够证据。
+  推广到其他类群、其他数据类型或不同组装软件，需要**重新验证**。因此公共知识必须保留案例级证据等级与
+  明确的适用条件（`applicable_when` / `not_applicable_when`），不要把 `verified` 读成通用诊断规则。
+- **审核人字段是自述**：`review-lesson --reviewer` 由调用者填写，不构成独立验证证据；
+  需要独立验证时引用可核查的外部审核记录，并在 `sources` 中留下回溯链接。
 - **矛盾经验并存**，用 `conflicts` 字段显式记录，**不通过频次投票抹除**任一方向。
-- "通用规则（general_rule）"不是一个 lesson 状态，而是**人工**把稳定结论提升进 `SKILL.md` 硬规则/`scripts/` 的动作。
+- "通用规则（general_rule）"不是一个 lesson 状态，而是**人工**把稳定结论提升进 `SKILL.md` 硬规则或 `scripts/` 的动作。
 
 ## 3. lesson 应记录的内容（字段映射）
 

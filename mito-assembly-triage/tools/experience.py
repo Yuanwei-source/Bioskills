@@ -391,7 +391,7 @@ def case_init(args):
     statements = [str(text).strip() for text in (getattr(args, 'hypothesis', None) or []) if str(text).strip()]
     if not statements:
         raise ValueError('case-init 至少要给出 1 条候选解释: --hypothesis "..." '
-                         '(SKILL.md Step 0c 建议先列 3 条竞争解释)')
+                         '(SKILL.md 的 HYPOTHESIZE 步骤建议先列出多条竞争解释)')
     hypotheses = [{'id': 'H%d' % (index + 1), 'explanation': text,
                    'support': [], 'against': [], 'unknown': []}
                   for index, text in enumerate(statements)]

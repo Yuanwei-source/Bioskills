@@ -15,15 +15,27 @@
 
 ## 2. 置信等级（`decision.confidence`）
 
+`confidence` 必须**针对具体结论**，不能属于整个样本；禁止用一个 global `high` 覆盖案例中所有问题。
+同一案例里可以同时存在 `high` 的注释身份结论与 `not_assessable` 的结构结论。
+
 | 等级 | 判据 |
 |---|---|
-| `high` | 关键结论有样本 reads 或其他独立机制证据直接支持；竞争的替代解释已被明确排除并留证 |
+| `high` | 该结论有样本 reads 或**其他独立机制**证据直接支持；竞争的替代解释已被明确排除并留证 |
 | `moderate` | 有多条相互独立的旁证（同源 + 结构 + 邻域等）一致，但缺少直接 reads 或存在未测替代解释 |
 | `low` | 只有单类证据（或同机制的多软件重复），替代解释仍在 |
-| `not_assessable` | 缺关键输入（如无 FASTQ/BAM、无可用参考），该结论无法评估 |
+| `not_assessable` | 该结论所需的关键输入缺失（如无 FASTQ/BAM、无可用参考），无法评估 |
 
-`confidence` 必须**针对具体结论**；禁止用一个 global `high` 覆盖案例中所有问题。
-缺 FASTQ/BAM 时，**不妨碍**做有充分序列/同源证据的注释纠错，但 reads 支持字段必须写 `NOT_ASSESSED`。
+### 2.1 上限按结论分别生效，不设全局上限
+
+不要设置"无 reads 则全部结论 ≤ moderate"或"无核基因组则全部结论 ≤ moderate"这类**全局**上限。
+它们应分别作用于相关结论：
+
+| 缺失的输入 | 限制什么 | **不**限制什么 |
+|---|---|---|
+| 无 FASTQ/BAM | 碱基正确性、接缝/结构闭环类结论（≤ `moderate`，且 `reads_support = NOT_ASSESSED`） | 基因身份、边界、tRNA/rRNA 结构等可由序列/同源/RNA 结构充分支持的注释结论 |
+| 无核基因组 | NUMT 排除能力（声明受限，不得称已排除） | 与 NUMT 无关的注释结论 |
+
+并且始终保持两个区分（见 §3）："有 reads 与候选一致" **不等于** "reads 足以排除其他候选结构"。
 
 ## 3. `raw-read-supported` 的门槛与写法
 
@@ -32,14 +44,27 @@
 - 输入 hash（FASTQ/BAM）、参考候选（含其来源与版本）；
 - 工具 + 参数、唯一比对策略（是否多映射过滤）；
 - MAPQ 与碱基质量分布（不只报均值深度）；
-- 链向偏好；证据坐标。
+- 链向偏好、证据坐标、**重复标记状态**（是否已 `markdup`/去重）。
 
-并且区分两句话：
-- "**有 reads 与候选序列一致**"；
-- "**reads 足以排除其他候选结构**"。
+这些字段现在由脚本实际产出，而不是只写在文档里：
 
-只有前者时，不得宣称后者。还要标记 PCR / 光学重复与共享片段偏差。
+| 结论类型 | 产出点 | 关键字段 |
+|---|---|---|
+| 单碱基校正 | `scripts/depth_analysis.py` 的 `base_support()` | `depth`、`support`、`strand_counts`、`mapq`、`excluded{duplicate,low_mapq,low_baseq,secondary}`；深度/MAPQ/碱基质量/链向四项全部通过才 `callable` |
+| 接缝 / 环化 | `scripts/circularize.py` 的 `junction_evidence()` | `support`（独立 QNAME 数）、`strand_counts`、`mapq_min`/`mapq_median`、`duplicates_excluded` |
+
+`reads_support` 只取三个值：
+
+- `NOT_ASSESSED`：无 reads 或未做该检查（缺 reads **不妨碍**有充分序列/同源证据的注释纠错）；
+- `READS_CONSISTENT`：有 reads 与候选一致；
+- `READS_DISCRIMINATING`：reads 足以排除其他候选结构。
+
+两句话必须分开写："**有 reads 与候选序列一致**"（`READS_CONSISTENT`）与
+"**reads 足以排除其他候选结构**"（`READS_DISCRIMINATING`）。只有前者时，不得宣称后者。
+还要标记 PCR / 光学重复与共享片段偏差。
+
 **没有核基因组时，必须写明 NUMT 排除能力的限制。**
+**"无内部终止"不能证明序列来自线粒体**：numt 可以不携带 in-frame 终止密码子（移码、整块缺失同样常见）。
 
 ## 4. "独立性"的定义
 
@@ -50,14 +75,22 @@
 
 ## 5. 状态与失败语义
 
-- 证据冲突、重复无法唯一解析、缺关键输入 → 状态 `UNRESOLVED`，置信 `low` 或 `not_assessable`；
+- **只有当某条具体结论缺少它自己所需的证据时**，才把该结论标为 `UNRESOLVED` / `not_assessable`。
+  不要因为"没有 reads"或"没有核基因组"就把**整个案例**判成 `UNRESOLVED`：
+  无 reads 不妨碍注释身份/边界类结论在充分同源、翻译或 RNA 结构证据下定为 `RESOLVED`，
+  只是该结论的 `reads_support = NOT_ASSESSED`。
+- 证据冲突、重复无法唯一解析、缺**该结论必需**的关键输入 → `UNRESOLVED`，置信 `low` 或 `not_assessable`；
 - 修改与原件分离保存；候选文件**不得覆盖**原始文件；
 - 参考相似度、基因顺序、单软件结果只能作**定位线索**。
 
 ## 6. 来源与引用管理
 
+判据分三层，措辞必须对上：**(a) 一般生物学预期**（需来源 + 覆盖类群）、
+**(b) NCBI 提交审查要求**（需引用官方页面，不得把工具默认值写成"NCBI 要求…"）、
+**(c) 本工具的工程阈值**（需记录选择依据与被测范围，并标为启发式）。
+
 硬规则（有生物学含义的判据）应附：来源 URL/DOI、覆盖类群、更新时间、已知例外。
-**工具参数的默认值是工程启发式，不得伪装成领域公理**（例如 `>8 bp` 重叠阈值、tRNA 长度区间）。
+**工具参数的默认值是工程启发式，不得伪装成领域公理**（例如 `>8 bp` 重叠阈值、tRNA 长度区间、`9+/4−` 链分布）。
 
 核心权威资料（知识来源，不是硬阈值）：
 
@@ -65,11 +98,12 @@
 |---|---|
 | NCBI 细胞器基因组提交与注释要求 | https://www.ncbi.nlm.nih.gov/genbank/organelle_submit/ |
 | NCBI 遗传密码表（按类群选表） | https://www.ncbi.nlm.nih.gov/datasets/docs/v2/data-processing/taxonomy-processing/genetic-codes/ |
-| MITOS 与历史注释问题（边界/表选择的系统性误差） | https://pubmed.ncbi.nlm.nih.gov/22982435/ |
-| 基因边界不确定性与不完整终止 | https://pmc.ncbi.nlm.nih.gov/articles/PMC6847864/ |
-| 昆虫线粒体测序/注释注意事项 | https://resjournals.onlinelibrary.wiley.com/doi/10.1111/syen.12071 |
-| 非典型线粒体 tRNA 结构与注释 | https://pmc.ncbi.nlm.nih.gov/articles/PMC3326299/ |
+| MITOS / Bernt et al. 2013（历史注释的系统性误差） | https://pubmed.ncbi.nlm.nih.gov/22982435/ |
+| 基因边界不确定性与不完整终止 | Donath et al. 2019, *NAR* 47(20):10543–10552, DOI 10.1093/nar/gkz833（= PMC6847864） |
+| 昆虫线粒体测序/注释、基因排列与 tRNA 结构变异 | Cameron 2014, *Syst. Entomol.* 39:400–411, DOI 10.1111/syen.12071 |
+| 非典型线粒体 tRNA 结构与注释（Jühling et al. 2012） | https://pmc.ncbi.nlm.nih.gov/articles/PMC3326299/ |
+| metazoa 线粒体 tRNA 数量/结构变异 | https://pmc.ncbi.nlm.nih.gov/articles/PMC11571959/ |
 | GetOrganelle 方法与组装图相关限制 | https://pmc.ncbi.nlm.nih.gov/articles/PMC7488116/ |
-| MitoHiFi 方法（长读长语境，概念参考，非必需依赖） | https://pmc.ncbi.nlm.nih.gov/articles/PMC10354987/ |
+| MitoHiFi 方法（长读长语境，概念参考，非必需依赖） | DOI 10.1186/s12859-023-05385-y（= PMC10354987） |
 
 引用时写明**该来源覆盖的类群**；跨类群外推时必须标注为外推。
