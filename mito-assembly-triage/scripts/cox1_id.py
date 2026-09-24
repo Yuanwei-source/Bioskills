@@ -117,7 +117,7 @@ def parse_blast_xml(text):
     for hit in root.iter('Hit'):
         accession = _text(hit.find('Hit_accession')) or _text(hit.find('Hit_id'))
         description = ' '.join((_text(hit.find('Hit_def'))).split())
-        intervals, identity_total, align_total, best_bits, hsp_count = [], 0, 0, 0.0, 0
+        intervals, hsps, identity_total, align_total, best_bits, hsp_count = [], [], 0, 0, 0.0, 0
         for hsp in hit.findall('./Hit_hsps/Hsp'):
             query_from = _int_text(hsp.find('Hsp_query-from'))
             query_to = _int_text(hsp.find('Hsp_query-to'))
@@ -128,20 +128,42 @@ def parse_blast_xml(text):
                 continue
             hsp_count += 1
             intervals.append((query_from, query_to))
+            hsps.append({'query_from': query_from, 'query_to': query_to,
+                         'hit_from': _int_text(hsp.find('Hsp_hit-from')),
+                         'hit_to': _int_text(hsp.find('Hsp_hit-to')),
+                         'identity': identity, 'align_len': align_len,
+                         'identity_pct': (identity / align_len * 100) if align_len else 0.0,
+                         'bitscore': bits})
             identity_total += identity
             align_total += align_len
             best_bits = max(best_bits, bits)
+        # Non-redundant query coverage (overlapping HSPs are counted once);
+        # a composite identity is only aggregated when no HSP overlaps another,
+        # otherwise the same bases would be weighted twice.
         aligned_bases = union_length(intervals)
+        spanned_bases = sum(abs(query_to - query_from) + 1 for query_from, query_to in intervals)
+        redundant_bases = max(0, spanned_bases - aligned_bases)
+        ambiguous = redundant_bases > 0
+        per_hsp = [item['identity_pct'] for item in hsps]
         hits.append({
             'accession': accession,
             'description': description,
-            'identity': (identity_total / align_total * 100) if align_total else 0.0,
+            'identity': None if ambiguous else ((identity_total / align_total * 100)
+                                                if align_total else 0.0),
+            'identity_method': ('not_aggregated: HSP query ranges overlap (%d redundant bases) '
+                                '-> 不汇总为单一 identity' % redundant_bases) if ambiguous
+                               else 'aligned-length-weighted over non-overlapping HSPs',
+            'identity_range': (min(per_hsp), max(per_hsp)) if per_hsp else None,
             'aligned_bases': aligned_bases,
+            'spanned_bases': spanned_bases,
+            'redundant_bases': redundant_bases,
+            'ambiguous_alignment': ambiguous,
             'coverage': (aligned_bases / query_len) if query_len else 0.0,
             'bitscore': best_bits,
             'hsp_count': hsp_count,
+            'hsps': hsps,
         })
-    hits.sort(key=lambda item: (-item['bitscore'], -item['identity']))
+    hits.sort(key=lambda item: (-(item['bitscore'] or 0.0), -((item['identity'] or 0.0))))
     return {'query_len': query_len, 'hits': hits}
 
 
@@ -150,11 +172,15 @@ def distinct_candidates(hits):
     best = {}
     for hit in hits:
         key = hit.get('accession') or hit.get('description')
+        score = (hit.get('identity') or 0.0, hit.get('bitscore') or 0.0)
         current = best.get(key)
-        if current is None or (hit['identity'], hit['bitscore']) > (current['identity'],
-                                                                   current['bitscore']):
+        current_score = ((current.get('identity') or 0.0), (current.get('bitscore') or 0.0)) \
+            if current else None
+        if current is None or score > current_score:
             best[key] = hit
-    return sorted(best.values(), key=lambda item: (-item['bitscore'], -item['identity']))
+    return sorted(best.values(),
+                  key=lambda item: (-(item.get('bitscore') or 0.0),
+                                    -(item.get('identity') or 0.0)))
 
 
 # ------------------------------------------------------------------------ verdict
@@ -326,12 +352,22 @@ def main():
     print('查询长度: %d bp | 数据库: nt (NCBI BLAST URL API, 该接口不暴露库版本号)' % query_len)
     print('%-40s %8s %8s %6s' % ('命中描述', 'Ident%', 'cov%', 'HSP'))
     for hit in hits[:max_results]:
-        print('%-40s %7.1f%% %7.0f%% %6d'
-              % (hit['description'][:40], hit['identity'], hit['coverage'] * 100, hit['hsp_count']))
+        identity = hit['identity']
+        identity_text = ('%.1f%%' % identity) if identity is not None else '未汇总'
+        print('%-40s %8s %7.0f%% %6d'
+              % (hit['description'][:40], identity_text, hit['coverage'] * 100, hit['hsp_count']))
+    ambiguous_hits = [hit for hit in hits if hit.get('ambiguous_alignment')]
+    for hit in ambiguous_hits[:3]:
+        print('AMBIGUOUS_ALIGNMENT: %s 的 HSP query 区间重叠 %d bp, 不汇总为单一 identity; '
+              '逐 HSP identity 范围=%s; 原始 HSP 已保留'
+              % (hit['accession'], hit['redundant_bases'], hit.get('identity_range')),
+              file=sys.stderr)
     if not hits:
         print('no_match: 当前数据库与检索条件下未发现可比命中 '
               '(这只说明本次检索无候选, 不等于无近缘物种证据)', file=sys.stderr)
         sys.exit(1)
+    print('候选 accession 数: %d (最优 accession 不等于已完成物种鉴定; 跨 accession 候选全部保留)'
+          % len(hits))
 
     best = select_supported_hit(hits, min_identity=MIN_IDENTITY,
                                 min_coverage=MIN_QUERY_COVERAGE, query_len=query_len)

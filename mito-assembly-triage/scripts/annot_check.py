@@ -180,17 +180,13 @@ def feature_span(feature):
     return min(start for start, _ in segments) + 1, max(end for _, end in segments)
 
 
-def feature_partial(feature):
-    """(five_prime_partial, three_prime_partial) read from the location markers.
+def _partial_from_location_string(feature):
+    """Fallback: read partiality from the printed location string.
 
-    GenBank marks partiality with ``<``/``>`` in the location.  Biopython keeps
-    those markers when reading (they survive in ``str(location)``) but cannot
-    express them when writing, so fixtures must be built with raw locations.
-
-    ``<``/``>`` are positional (lower/higher coordinate); after applying the
-    strand they tell which biological end is missing:
-      plus  : 5' partial <= '<' on the first part,  3' partial <= '>' on the last
-      minus : 5' partial <= '>' on the first part,  3' partial <= '<' on the last
+    Only used when no location part carries a fuzzy position object (e.g. a
+    location built by hand).  Note the printed form uses ``:``
+    (``[<0:100](+)``) while the GenBank file uses ``..`` (``<1..100``);
+    accepting both is what makes this fallback trustworthy.
     """
     parts = LOCATION_PART_RE.findall(str(feature.location))
     if not parts:
@@ -199,6 +195,46 @@ def feature_partial(feature):
     if (feature.location.strand or 0) >= 0:
         return (first[0] == '<', last[2] == '>')
     return (first[2] == '>', last[0] == '<')
+
+
+def feature_partial(feature):
+    """(five_prime_partial, three_prime_partial) of a feature.
+
+    Primary source: Biopython's position objects.  The GenBank parser stores
+    ``<``/``>`` as ``BeforePosition``/``AfterPosition`` (not as text), so we read
+    the objects and never depend on the location string.
+
+    ``<``/``>`` are positional (lower/higher coordinate); the strand decides which
+    biological end they refer to, and a minus-strand gene's 5' end is the *high*
+    coordinate.  Location parts are in transcription order, so for a compound
+    (cross-origin ``join``) feature the first part carries the 5' end and the last
+    part the 3' end:
+      plus  : 5' <= BeforePosition on the first part's start,
+              3' <= AfterPosition  on the last part's end
+      minus : 5' <= AfterPosition  on the first part's end,
+              3' <= BeforePosition on the last part's start
+    """
+    try:
+        parts = list(feature.location.parts)
+    except (AttributeError, TypeError):
+        return (False, False)
+    if not parts:
+        return (False, False)
+    try:
+        from Bio.SeqFeature import AfterPosition, BeforePosition
+    except ImportError:
+        return _partial_from_location_string(feature)
+    strand = feature.location.strand or 0
+    first, last = parts[0], parts[-1]
+    if strand >= 0:
+        five = isinstance(first.start, BeforePosition)
+        three = isinstance(last.end, AfterPosition)
+    else:
+        five = isinstance(first.end, AfterPosition)
+        three = isinstance(last.start, BeforePosition)
+    if five or three:
+        return (five, three)
+    return _partial_from_location_string(feature)
 
 
 def parse_transl_except(feature):
@@ -355,7 +391,8 @@ def identity_findings(findings, cds, trnas, rnas, atypical_reason):
         findings.info('tRNA 身份完整且无重复 (22 个)')
 
 
-def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions, registry=None):
+def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions,
+                 registry=None, expected_taxon=None):
     valid_starts = set(tbl.start_codons)
     valid_stops = set(tbl.stop_codons)
     print('\n[2] CDS 翻译验证 (密码表 %d):' % tbl.id)
@@ -399,15 +436,17 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
             stop_codons = stop_codons[:-1]
         explained = set()
         for position_start, position_end, amino_acid in exceptions:
-            index = cds_codon_index(feature, position_start, codon_start)
+            span = position_end - position_start + 1
+            index = cds_codon_index(feature, position_start, codon_start) if span == 3 else None
             if index is not None and index in stop_codons:
                 explained.add(index)
                 findings.info('TRANSL_EXCEPT_MATCHED: %s 位置 %s..%s 的 %s 解释了密码子 %d 的内部终止'
                               % (display, position_start, position_end, amino_acid, index + 1))
             else:
+                reason = '' if span == 3 else ' (pos 范围 %s nt, 不是单个密码子)' % span
                 findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明的 /transl_except '
-                                '(pos:%s..%s, aa:%s) 未对应任何内部终止密码子'
-                                % (display, position_start, position_end, amino_acid))
+                                '(pos:%s..%s, aa:%s) 未对应任何内部终止密码子%s'
+                                % (display, position_start, position_end, amino_acid, reason))
         if exceptions and not stop_codons:
             findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明了 /transl_except, '
                             '但该 CDS 没有内部终止密码子, 声明无对应异常' % display)
@@ -437,6 +476,18 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
                         'taxon=%s source=%s rationale=%s'
                         % (display, start_codon, record.get('taxon'), record.get('source'),
                            record.get('rationale')))
+                    incomplete = [name for name in ('taxon', 'source', 'rationale')
+                                  if not str(record.get(name) or '').strip()]
+                    if incomplete:
+                        findings.review(
+                            'EXCEPTION_RECORD_INCOMPLETE: %s:%s 的已审计记录缺少 %s; '
+                            '该例外只能维持 REVIEW' % (canonical, start_codon, '/'.join(incomplete)))
+                    if expected_taxon and record.get('taxon') and \
+                            str(record['taxon']).strip().lower() != str(expected_taxon).strip().lower():
+                        findings.review(
+                            'EXCEPTION_TAXON_MISMATCH: %s:%s 的记录 taxon=%s 与本次 --taxon %s '
+                            '不一致; 该例外只能维持 REVIEW'
+                            % (canonical, start_codon, record.get('taxon'), expected_taxon))
                 else:
                     findings.review(
                         'NONCANONICAL_START_REVIEW: %s 起始密码子 %s 不在密码表 %d 的合法起始集合内, '
@@ -665,7 +716,7 @@ def parse_arguments(argv):
         sys.exit(0)
     options = {'fn': argv[0], 'table': 5, 'ref': None, 'require_circular': False,
                'tolerate_overlap': [], 'tolerate_start': [], 'overlap_severity': 'warn',
-               'allow_atypical': None, 'exception_registry': None}
+               'allow_atypical': None, 'exception_registry': None, 'taxon': None}
     index = 1
 
     def need(flag):
@@ -700,12 +751,14 @@ def parse_arguments(argv):
             options['allow_atypical'] = need(token)
         elif token == '--exception-registry':
             options['exception_registry'] = need(token)
+        elif token == '--taxon':
+            options['taxon'] = need(token)
         else:
             print('ERROR: 未知参数 %s' % token)
             sys.exit(1)
         index += 1
     if options['require_circular']:
-        print('REQUIRE_CIRCULAR_DECLARATION_ONLY: --require-circular 只校验 GenBank 的 topology 声明, '
+        print('CIRCULAR_DECLARATION_CHECK: --require-circular 只校验 GenBank 的 topology 声明, '
               '不等于物理环化证据; 环化证据必须来自接缝 reads / 组装图')
     return options
 
@@ -773,7 +826,7 @@ def main():
         if options['exception_registry'] else {}
 
     cds_findings(findings, genbank, cds, tbl, start_exceptions, used_start_exceptions,
-                 registry=registry)
+                 registry=registry, expected_taxon=options['taxon'])
     for gene, codon in sorted(start_exceptions - used_start_exceptions):
         findings.review('未匹配任何起始密码子: --tolerate-start "%s:%s" (配置未生效)' % (gene, codon))
 

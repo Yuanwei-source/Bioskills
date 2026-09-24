@@ -276,7 +276,7 @@ class ProductNamingTests(unittest.TestCase):
 class ContractWordingTests(unittest.TestCase):
     def test_require_circular_states_it_only_checks_the_declaration(self):
         result = run_annot_check("/nonexistent.gb", "--require-circular")
-        self.assertIn("REQUIRE_CIRCULAR_DECLARATION_ONLY", result.stdout + result.stderr)
+        self.assertIn("CIRCULAR_DECLARATION_CHECK", result.stdout + result.stderr)
 
     def test_unregistered_start_exception_carries_a_limitation(self):
         temp = tempfile.TemporaryDirectory()
