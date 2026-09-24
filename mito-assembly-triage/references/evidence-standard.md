@@ -110,3 +110,13 @@
 | MitoHiFi 方法（长读长语境，概念参考，非必需依赖） | DOI 10.1186/s12859-023-05385-y（= PMC10354987） |
 
 引用时写明**该来源覆盖的类群**；跨类群外推时必须标注为外推。
+
+## 7. 已知技术债
+
+1. **案例验证有两套实现**：`schemas/case.schema.json` + `jsonschema` 路径，以及无依赖时的显式兜底
+   `_case_errors_without_jsonschema()`。两者遵循**同一份 schema**，差异由固定数据集的等价性测试锁住
+   （`tests/test_evidence_contracts.py::SchemaValidatorEquivalenceTests`：合法 / 缺字段 / 类型错 / 非法枚举 /
+   嵌套对象错 / 跨字段冲突都必须产生相同裁定）。**修改 schema 时必须同时跑这组测试** —— 否则两条验证路径
+   可能再次静默偏离。该测试已经实际抓出过一次偏差：显式 `decision: null` 被兜底当成“字段缺失”而放行。
+2. **跨字段矛盾不校验**：如案例级 `RESOLVED` 与某异常 `UNRESOLVED` 并存。Schema 不表达此类规则，
+   **两套实现都不拒绝**；若将来要加，必须同时加在两边，否则就制造了第 1 条要防的偏差。

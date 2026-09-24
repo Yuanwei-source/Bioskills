@@ -122,8 +122,10 @@ reads、read pairs、组装图或长读长证据。不能唯一解析时保留�
 查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。它使用 `FORMAT_TYPE=XML2` 结构化解析，
 报告每个候选的 **query coverage**（多 HSP 并集）与 identity，并把 RID 轮询与结果下载分开。
 退出码把任务状态与判读状态分开：`0` 得判读 / `1` insufficient 或 no_match（分析结论）/ `2` 拒绝执行 /
-`3` 网络或结果格式故障。多 HSP 的指标只有同时满足**不重叠**与**目标共线**（query 与 hit 方向一致、目标坐标单调、目标跨度不超过比对长度的 3 倍）才回总；
-重叠时记 `overlapping_hsps`，目标坐标散落或方向冲突时记 `non_collinear_hsps` + `CONFLICTING_ALIGNMENT`。
+`3` 网络或结果格式故障。多 HSP 的指标只有同时满足**不重叠**与**目标共线**（全部 HSP 同一目标链、按 query 排序后目标坐标单调推进、目标跨度不超过比对长度的 3 倍）才回总；
+其中 **`max_span_ratio=3.0` 是工程启发式，不是 COX1 生物学标准**。
+同一 hit 的 HSP 若混处目标正负链，则属矛盾证据。
+回总失败时记 `overlapping_hsps` 或 `non_collinear_hsps` + `CONFLICTING_ALIGNMENT`。
 两种情形都**不参与自动择优**，但 `AMBIGUOUS_ALIGNMENT` 的含义是“**多 HSP 指标无法可靠汇总**”，
 **不是**“该 hit 不是有效候选”；原始 HSP / 逐 HSP identity / bitscore / 坐标均保留，供人工核对。
 最优 accession 不等于已完成物种鉴定。

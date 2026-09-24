@@ -460,15 +460,25 @@ def _case_errors_without_jsonschema(case):
         if not isinstance(item, dict) or not {'role', 'path', 'sha256'} <= set(item):
             errors.append('inputs[%d] 缺少必需字段 (role/path/sha256)' % index)
     decision = case.get('decision')
-    if isinstance(decision, dict):
-        if not {'status', 'confidence', 'rationale'} <= set(decision):
-            errors.append('decision 缺少必需字段 (status/confidence/rationale)')
-        if decision.get('status') not in DECISION_STATUSES:
-            errors.append('decision.status 取值非法: %s' % decision.get('status'))
-        if decision.get('confidence') not in CONFIDENCE_LEVELS:
-            errors.append('decision.confidence 取值非法: %s' % decision.get('confidence'))
-    elif decision is not None:
-        errors.append('decision 必须是对象')
+    if 'decision' in case:
+        if not isinstance(decision, dict):
+            # explicit null/str is NOT the same as an absent key
+            errors.append('decision 必须是对象')
+        else:
+            if not {'status', 'confidence', 'rationale'} <= set(decision):
+                errors.append('decision 缺少必需字段 (status/confidence/rationale)')
+            if decision.get('status') not in DECISION_STATUSES:
+                errors.append('decision.status 取值非法: %s' % decision.get('status'))
+            if decision.get('confidence') not in CONFIDENCE_LEVELS:
+                errors.append('decision.confidence 取值非法: %s' % decision.get('confidence'))
+    if 'issue' in case:
+        issue = case['issue']
+        if not isinstance(issue, dict):
+            errors.append('issue 必须是对象')
+        elif 'type' not in issue:
+            errors.append('issue 缺少必需字段 (type)')
+    if 'taxon' in case and not isinstance(case['taxon'], dict):
+        errors.append('taxon 必须是对象')
     for index, item in enumerate(case.get('anomalies') or []):
         if not isinstance(item, dict):
             errors.append('anomalies[%d] 必须是对象' % index)

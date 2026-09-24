@@ -19,7 +19,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gb_fixtures import (  # noqa: E402
-    ROOT, biopython_available, load_module, run_annot_check, write_gb_raw,
+    ROOT, biopython_available, have, load_module, run_annot_check, write_gb_raw,
 )
 
 REASON = "合成测试: 单基因记录, 基因集差异已逐项确认"
@@ -280,6 +280,34 @@ class HspCollinearityTests(unittest.TestCase):
         self.assertIsNotNone(hit["identity"])
         self.assertAlmostEqual(hit["coverage"], 0.8, places=6)
 
+    def test_reverse_strand_multi_hsp_is_accepted(self):
+        # Coordinates taken verbatim from a local blastn run: query 1..400 ->
+        # subject 700..301 and query 451..850 -> subject 1600..1201, i.e. both
+        # HSPs on the subject's MINUS strand with hit_from > hit_to and the
+        # subject coordinates advancing as the query advances.
+        hit = self._hit("NC_MINUS", self._hsp(1, 400, 700, 301, 400, 400)
+                        + self._hsp(451, 850, 1600, 1201, 400, 400))
+        self.assertEqual(hit["collinearity"]["subject_strand"], "-")
+        self.assertTrue(hit["collinearity"]["consistent_direction"])
+        self.assertTrue(hit["collinearity"]["collinear"], hit["collinearity"])
+        self.assertFalse(hit["ambiguous_alignment"], hit["ambiguity_reasons"])
+        self.assertIsNotNone(hit["identity"])
+
+    def test_reverse_strand_single_hsp_is_accepted(self):
+        hit = self._hit("NC_MINUS1", self._hsp(1, 500, 1000, 501, 495, 500))
+        self.assertTrue(hit["collinearity"]["collinear"])
+        self.assertFalse(hit["ambiguous_alignment"])
+        self.assertIsNotNone(hit["identity"])
+
+    def test_mixed_subject_strands_are_conflicting(self):
+        # one HSP on the subject plus strand, one on its minus strand
+        hit = self._hit("NC_MIXED", self._hsp(1, 400, 1, 400, 400, 400)
+                        + self._hsp(451, 850, 1600, 1201, 390, 400))
+        self.assertFalse(hit["collinearity"]["consistent_direction"])
+        self.assertEqual(hit["collinearity"]["subject_strand"], "mixed")
+        self.assertTrue(hit["conflicting_alignment"])
+        self.assertIsNone(hit["identity"])
+
     def test_scattered_hsps_are_not_treated_as_one_alignment(self):
         # query coverage is high, but the two halves hit far-apart target positions
         hit = self._hit("NC_B", self._hsp(1, 400, 1, 400, 400, 400)
@@ -315,6 +343,48 @@ class HspCollinearityTests(unittest.TestCase):
         self.assertEqual(hit["hsps"][1]["hit_from"], 9000)
         self.assertIsNotNone(hit["identity_range"])
         self.assertGreater(hit["bitscore"], 0)
+
+
+@unittest.skipUnless(biopython_available() and have("blastn", "makeblastdb"),
+                     "Biopython and blastn are required")
+class BlastCoordinateConventionTests(unittest.TestCase):
+    """Locks the coordinate convention hsp_collinearity() depends on.
+
+    If a future BLAST changed how a subject-minus hit is reported, the
+    collinearity check would silently start rejecting valid reverse-strand hits.
+    This test re-derives the convention from a real blastn run instead of trusting
+    the comment in the source.
+    """
+
+    def test_subject_minus_multi_hsp_is_collinear(self):
+        import random
+        import subprocess
+        from Bio.Seq import Seq
+
+        module = load_module("cox1_convention", Path("scripts") / "cox1_id.py")
+        rng = random.Random(5)
+        subject = "".join(rng.choice("ACGT") for _ in range(2000))
+        query = (str(Seq(subject[300:700]).reverse_complement()) + "A" * 50
+                 + str(Seq(subject[1200:1600]).reverse_complement()))
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            (directory / "subject.fa").write_text(">s\n%s\n" % subject, encoding="utf-8")
+            (directory / "query.fa").write_text(">q\n%s\n" % query, encoding="utf-8")
+            result = subprocess.run(
+                ["blastn", "-query", str(directory / "query.fa"),
+                 "-subject", str(directory / "subject.fa"), "-outfmt", "5"],
+                capture_output=True, text=True, check=True, timeout=120)
+        parsed = module.parse_blast_xml(result.stdout)
+        self.assertEqual(len(parsed["hits"]), 1)
+        hit = parsed["hits"][0]
+        self.assertGreaterEqual(hit["hsp_count"], 2)
+        # every HSP on the subject's minus strand
+        self.assertTrue(all(item["hit_from"] > item["hit_to"] for item in hit["hsps"]))
+        self.assertTrue(all(item["query_from"] < item["query_to"] for item in hit["hsps"]))
+        self.assertEqual(hit["collinearity"]["subject_strand"], "-")
+        self.assertTrue(hit["collinearity"]["collinear"], hit["collinearity"])
+        self.assertFalse(hit["conflicting_alignment"])
+        self.assertIsNotNone(hit["identity"])
 
 
 @unittest.skipUnless(biopython_available(), "Biopython is not installed")

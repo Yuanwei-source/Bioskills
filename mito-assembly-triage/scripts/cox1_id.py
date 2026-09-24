@@ -103,46 +103,51 @@ def hsp_collinearity(hsps, max_span_ratio=3.0):
 
     Two HSPs can be non-overlapping on the query yet still be useless as evidence
     of one continuous alignment: e.g. the first half hits one target position and
-    the second half hits a far-away, opposite-strand position.  High query
-    coverage alone must not present that as one reliable alignment.
+    the second half hits a far-away position.  High query coverage alone must not
+    present that as one reliable alignment.
 
-    Rules (no HSP reconstruction):
-      - each HSP must have query and target in the same direction;
-      - all HSPs must share one direction;
-      - in query order, target coordinates must advance monotonically;
-      - the target span must not exceed ``max_span_ratio`` x the aligned bases
-        (a large span with little alignment means scattered, not one gene).
+    BLAST coordinate convention (verified with a local blastn run, do not
+    re-derive): for an alignment to the subject's MINUS strand BLAST reports
+    ``Hsp_hit-from > Hsp_hit-to`` while ``Hsp_query-from < Hsp_query-to``.  So
+    requiring query and target to run in the same direction *within* an HSP would
+    reject every legitimate reverse-strand hit.  What matters is:
+
+      1. all HSPs share one orientation signature (same subject strand) -- a mix
+         of strands for one query/hit pair is contradictory evidence;
+      2. ordered by query position, the aligned target coordinates advance
+         monotonically, using each HSP's lower coordinate (works for both
+         polarities: plus 1->601, minus 301->1201 in the blastn example);
+      3. the target span stays within ``max_span_ratio`` x the aligned bases.
+         This ratio is an ENGINEERING heuristic, not a COX1 biological standard.
     """
     usable = [hsp for hsp in hsps
               if None not in (hsp.get('query_from'), hsp.get('query_to'),
                               hsp.get('hit_from'), hsp.get('hit_to'))]
     if len(usable) < 2:
         return {'consistent_direction': True, 'monotonic': True,
-                'span_ratio': 1.0, 'collinear': True, 'max_span_ratio': max_span_ratio}
-    directions = set()
+                'span_ratio': 1.0, 'collinear': True, 'max_span_ratio': max_span_ratio,
+                'subject_strand': '+'}
+    signatures = set()
     for hsp in usable:
-        query_direction = 1 if hsp['query_to'] >= hsp['query_from'] else -1
-        target_direction = 1 if hsp['hit_to'] >= hsp['hit_from'] else -1
-        if query_direction != target_direction:
-            return {'consistent_direction': False, 'monotonic': False, 'span_ratio': 0.0,
-                    'collinear': False, 'max_span_ratio': max_span_ratio}
-        directions.add(target_direction)
-    consistent = len(directions) == 1
-    if not consistent:
+        query_direction = '+' if hsp['query_to'] >= hsp['query_from'] else '-'
+        target_direction = '+' if hsp['hit_to'] >= hsp['hit_from'] else '-'
+        signatures.add((query_direction, target_direction))
+    if len(signatures) != 1:
+        # e.g. one HSP on the subject's plus strand and another on its minus strand
         return {'consistent_direction': False, 'monotonic': False, 'span_ratio': 0.0,
-                'collinear': False, 'max_span_ratio': max_span_ratio}
-    direction = directions.pop()
+                'collinear': False, 'max_span_ratio': max_span_ratio,
+                'subject_strand': 'mixed'}
+    query_direction, target_direction = signatures.pop()
     ordered = sorted(usable, key=lambda hsp: min(hsp['query_from'], hsp['query_to']))
-    targets = [min(hsp['hit_from'], hsp['hit_to']) if direction > 0
-               else max(hsp['hit_from'], hsp['hit_to']) for hsp in ordered]
-    monotonic = all(later >= earlier for earlier, later in zip(targets, targets[1:]))
+    lower_targets = [min(hsp['hit_from'], hsp['hit_to']) for hsp in ordered]
+    monotonic = all(later >= earlier for earlier, later in zip(lower_targets, lower_targets[1:]))
     aligned = sum(abs(hsp['query_to'] - hsp['query_from']) + 1 for hsp in usable)
     coordinates = [hsp['hit_from'] for hsp in usable] + [hsp['hit_to'] for hsp in usable]
     span = max(coordinates) - min(coordinates) + 1
     ratio = (span / aligned) if aligned else 0.0
     return {'consistent_direction': True, 'monotonic': monotonic, 'span_ratio': ratio,
             'collinear': monotonic and ratio <= max_span_ratio,
-            'max_span_ratio': max_span_ratio}
+            'max_span_ratio': max_span_ratio, 'subject_strand': target_direction}
 
 
 def parse_blast_xml(text):
