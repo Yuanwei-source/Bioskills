@@ -7,6 +7,25 @@
 import sys, os, subprocess, tempfile
 
 
+def merge_hsps(hsps):
+    """Merge query intervals for one target/strand; overlapping HSPs count once."""
+    if not hsps:
+        return None
+    ordered = sorted(hsps, key=lambda h: (h['qstart'], h['qend']))
+    q_union = 0
+    qlo, qhi = ordered[0]['qstart'], ordered[0]['qend']
+    for hit in ordered[1:]:
+        if hit['qstart'] <= qhi:
+            qhi = max(qhi, hit['qend'])
+        else:
+            q_union += qhi - qlo + 1
+            qlo, qhi = hit['qstart'], hit['qend']
+    q_union += qhi - qlo + 1
+    best = max(ordered, key=lambda h: (h['identity'], -h['evalue']))
+    return dict(best, aln_len=q_union, start=min(h['start'] for h in ordered),
+                end=max(h['end'] for h in ordered))
+
+
 def select_gene_hits(hits, min_identity=80.0, min_coverage=0.8, expected_names=None):
     selected = {}
     errors = []
@@ -65,20 +84,24 @@ def main():
             with open(q, 'w') as fh:
                 fh.write('>query\n%s\n' % seq)
             r = subprocess.run(['blastn', '-query', q, '-db', db, '-task', 'blastn-short',
-                                '-outfmt', '6 qseqid pident length sstart send evalue',
+                                '-outfmt', '6 qseqid sseqid pident length qstart qend sstart send evalue',
                                 '-evalue', evalue, '-word_size', '7', '-gapopen', '5', '-gapextend', '2',
                                 '-max_target_seqs', '2'], capture_output=True, text=True, check=True)
             candidates = hits.setdefault(name, [])
+            raw = {}
             for line in r.stdout.split('\n'):
                 if not line.strip(): continue
                 p = line.split('\t')
-                ss, se = int(p[3]), int(p[4])
-                candidates.append({
-                    'evalue': float(p[5]), 'identity': float(p[1]),
-                    'aln_len': int(p[2]), 'query_len': len(seq),
+                ss, se = int(p[6]), int(p[7])
+                key = (p[1], '+' if ss < se else '-')
+                raw.setdefault(key, []).append({
+                    'evalue': float(p[8]), 'identity': float(p[2]),
+                    'aln_len': int(p[3]), 'query_len': len(seq),
+                    'qstart': int(p[4]), 'qend': int(p[5]),
                     'start': min(ss, se), 'end': max(ss, se),
                     'strand': '+' if ss < se else '-', 'type': ftype,
                 })
+            candidates.extend(filter(None, (merge_hsps(group) for group in raw.values())))
     finally:
         subprocess.run(['rm', '-rf', tmpdir])
 

@@ -17,6 +17,29 @@ def select_unique_candidate(candidates):
     return top[0] if len(top) == 1 else None
 
 
+def interval_union_length(intervals):
+    """Return the union length of half-open intervals (never double-count HSPs)."""
+    merged = []
+    for start, end in sorted((min(a, b), max(a, b)) for a, b in intervals if b > a):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return sum(end - start for start, end in merged)
+
+
+def suffix_prefix_overlap(left, right, minimum=20):
+    for size in range(min(len(left), len(right)), minimum - 1, -1):
+        if left[-size:] == right[:size]:
+            return size
+    return 0
+
+
+def join_scaffolds(left, right, minimum_overlap=20):
+    overlap = suffix_prefix_overlap(left, right, minimum_overlap)
+    return left + right[overlap:], overlap
+
+
 def circular_order_matches(query, reference):
     query = [str(gene).lower() for gene in query]
     reference = [str(gene).lower() for gene in reference]
@@ -80,9 +103,10 @@ def main():
     bam = sys.argv[sys.argv.index('--bam') + 1] if '--bam' in sys.argv else None
     junction_region = sys.argv[sys.argv.index('--junction-region') + 1] if '--junction-region' in sys.argv else None
     os.makedirs(outdir, exist_ok=True)
-    out_fa = os.path.join(outdir, 'genome_circular.fasta')
+    out_fa = os.path.join(outdir, 'genome_candidate.fasta')
+    accept_candidate = '--accept-candidate' in sys.argv
     if os.path.exists(out_fa):
-        print('输出目录已有 genome_circular.fasta，请使用新目录避免误用旧结果', file=sys.stderr)
+        print('输出目录已有 genome_candidate.fasta，请使用新目录避免误用旧结果', file=sys.stderr)
         sys.exit(1)
 
     try:
@@ -112,16 +136,18 @@ def main():
     print('参考基因数:', len(ref_genes))
 
     # 生成 4 种候选组合
-    variants = {
-        's1+s2': seq1 + seq2,
-        's1+rc(s2)': seq1 + str(Seq(seq2).reverse_complement()),
-        'rc(s1)+s2': str(Seq(seq1).reverse_complement()) + seq2,
-        'rc(s1)+rc(s2)': str(Seq(seq1).reverse_complement()) + str(Seq(seq2).reverse_complement()),
-    }
+    variants = {}
+    for name, left, right in (
+        ('s1+s2', seq1, seq2),
+        ('s1+rc(s2)', seq1, str(Seq(seq2).reverse_complement())),
+        ('rc(s1)+s2', str(Seq(seq1).reverse_complement()), seq2),
+        ('rc(s1)+rc(s2)', str(Seq(seq1).reverse_complement()), str(Seq(seq2).reverse_complement())),
+    ):
+        variants[name] = join_scaffolds(left, right)
 
     print('\n=== 候选组合验证 ===')
     ranked = []
-    for name, seq in variants.items():
+    for name, (seq, overlap) in variants.items():
         tmp = os.path.join(outdir, 'cand_%s.fasta' % name.replace('(','').replace(')','').replace('+','_'))
         with open(tmp, 'w') as fh:
             fh.write('>candidate\n%s\n' % seq)
@@ -136,11 +162,11 @@ def main():
             if not line.strip(): continue
             p = line.split('\t')
             blocks.append((int(p[2]), int(p[3]), p[4], int(p[7]), int(p[8])))
-        total_cov = sum(b[1]-b[0] for b in blocks)
+        total_cov = interval_union_length([(b[0], b[1]) for b in blocks])
         fwd_blocks = sum(1 for b in blocks if b[2] == '+')
         score = total_cov * (1 if fwd_blocks == len(blocks) and fwd_blocks > 0 else 0.5)
-        print('%-15s 比对块=%d 正向块=%d 覆盖=%dbp 分数=%.0f' % (name, len(blocks), fwd_blocks, total_cov, score))
-        ranked.append((score, name, seq, blocks))
+        print('%-15s 端部重叠=%dbp 比对块=%d 正向块=%d 覆盖=%dbp 分数=%.0f' % (name, overlap, len(blocks), fwd_blocks, total_cov, score))
+        ranked.append((score, name, seq, blocks, overlap))
 
     best = select_unique_candidate(ranked)
     if best is None and ranked:
@@ -150,7 +176,7 @@ def main():
         print('\n⚠ 所有组合都不匹配参考 — 可能需要更多 scaffold 或重新组装')
         sys.exit(1)
 
-    score, name, seq, blocks = best
+    score, name, seq, blocks, _overlap = best
     print('\n✓ 最佳组合: %s (分数 %.0f)' % (name, score))
     print('  比对块: %s' % blocks[:5])
 
@@ -174,7 +200,7 @@ def main():
         print('候选基因顺序或方向与参考不一致，拒绝输出', file=sys.stderr)
         sys.exit(1)
     if not reads_validated or not bam or not junction_region:
-        print('缺少 reads 接缝证据；需要 --bam、--junction-region 和 --reads-validated', file=sys.stderr)
+        print('缺少 reads 接缝证据；需要 --bam、--junction-region 和 --reads-validated；状态=UNRESOLVED', file=sys.stderr)
         sys.exit(2)
     try:
         has_spanning_read = junction_has_spanning_read(bam, junction_region)
@@ -186,8 +212,13 @@ def main():
         sys.exit(1)
 
     with open(out_fa, 'w') as fh:
-        fh.write('>mitogenome_circular\n%s\n' % seq)
-    print('输出: %s (%d bp)' % (out_fa, len(seq)))
+        fh.write('>mitogenome_candidate\n%s\n' % seq)
+    print('输出候选结构: %s (%d bp)' % (out_fa, len(seq)))
+    if not accept_candidate:
+        print('状态: PUTATIVE_CIRCULAR/REVIEW；当前单一区间证据不能宣称最终环化。')
+        print('若已人工核对全部新增接缝、重复歧义和组装图，再显式使用 --accept-candidate。')
+        sys.exit(2)
+    print('状态: CANDIDATE_ACCEPTED（仍需独立注释与完整 provenance）')
 
     print('\n下一步: 用 reads 回贴验证覆盖度 (depth_analysis.py), 然后注释 (SKILL.md ⑦)')
 

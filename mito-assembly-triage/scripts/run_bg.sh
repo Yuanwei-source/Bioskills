@@ -5,6 +5,7 @@
 #       logs/<任务名>.pid    - 进程 PID
 #       logs/<任务名>.status - running / done / failed
 set -u
+set -o pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOGDIR="$SKILL_DIR/logs"
 mkdir -p "$LOGDIR"
@@ -47,6 +48,11 @@ esac
 PIDFILE="$LOGDIR/$NAME.pid"
 STATUSFILE="$LOGDIR/$NAME.status"
 LOGFILE="$LOGDIR/$NAME.log"
+LOCKFILE="$LOGDIR/$NAME.lock"
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+  echo "⚠ 任务 $NAME 已有启动器持有锁"; exit 1
+fi
 
 # 同名任务已在运行则拒绝
 if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
@@ -54,7 +60,8 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   exit 1
 fi
 
-echo "running" > "$STATUSFILE"
+atomic_write() { local value="$1" target="$2" tmp; tmp="${target}.tmp.$$"; printf '%s\n' "$value" > "$tmp" && mv -f "$tmp" "$target"; }
+atomic_write running "$STATUSFILE"
 echo "=== 启动时间: $(date) ===" >> "$LOGFILE"
 
 run_and_monitor() {
@@ -64,15 +71,15 @@ run_and_monitor() {
     nohup "${COMMAND[@]}" >> "$LOGFILE" 2>&1 &
   fi
   PID=$!
-  echo "$PID" > "$PIDFILE"
+  atomic_write "$PID" "$PIDFILE"
   while kill -0 "$PID" 2>/dev/null; do sleep 5; done
   wait "$PID" 2>/dev/null
   RC=$?
   if [ "$RC" -eq 0 ]; then
-    echo "done" > "$STATUSFILE"
+    atomic_write done "$STATUSFILE"
     echo "=== 完成时间: $(date) (exit 0) ===" >> "$LOGFILE"
   else
-    echo "failed" > "$STATUSFILE"
+    atomic_write failed "$STATUSFILE"
     echo "=== 失败时间: $(date) (exit $RC) ===" >> "$LOGFILE"
   fi
 }

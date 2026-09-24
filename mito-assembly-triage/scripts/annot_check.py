@@ -40,10 +40,10 @@ def feature_gene(feature):
 
 def canonical_gene(feature):
     key = re.sub(r'[^a-z0-9]', '', feature_gene(feature).lower())
-    if key in ('16s', 'srrna'):
-        return 'rrns'
-    if key in ('12s', 'lrrna', 'lrna'):
+    if key in ('16s', 'lrrna', 'lrna', 'rrnl'):
         return 'rrnl'
+    if key in ('12s', 'srrna', 'rrns'):
+        return 'rrns'
     if key == 'trnl':
         return 'trnl1'
     if key == 'trns':
@@ -202,7 +202,7 @@ def main():
         for f2 in feats[i + 1:]:
             if f2.location.start >= f1.location.end:
                 break
-            ov = f1.location.end - f2.location.start
+            ov = max(0, min(f1.location.end, f2.location.end) - max(f1.location.start, f2.location.start))
             if ov <= 8:
                 continue
             g1 = f1.qualifiers.get('gene', ['?'])[0]

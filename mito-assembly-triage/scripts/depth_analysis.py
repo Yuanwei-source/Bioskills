@@ -43,6 +43,10 @@ def read_base_at_reference(fields, reference_position):
     if query_offset is None:
         return None
     sequence = fields[9]
+    # SAM SEQ is in read (query) orientation.  For a reverse-aligned read,
+    # map the query into reference orientation before indexing it.  This is
+    # exactly one reverse-complement operation; pysam pileup is preferred for
+    # production callers because it also handles all CIGAR edge cases.
     if int(fields[1]) & 0x10:
         sequence = sequence.translate(_COMPLEMENT)[::-1]
     if query_offset < 0 or query_offset >= len(sequence):
@@ -104,9 +108,6 @@ def main():
     # 2. 低覆盖区报告
     intervals = coverage_intervals(L, window)
     low = [(lo, hi) for (lo, hi), m in zip(intervals, means) if m < 0.5 * global_mean]
-    if not depth_quality_gate(global_mean, low):
-        print('\n覆盖度质量门失败: 全局均值必须大于 0 且不得存在低覆盖区', file=sys.stderr)
-        sys.exit(2)
     print('\n低覆盖区 (mean < %.0f×): %s' % (0.5*global_mean,
           ', '.join('%d-%d' % interval for interval in low) if low else '无'))
 

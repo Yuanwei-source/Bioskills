@@ -12,7 +12,7 @@ description: 线粒体基因组组装质检、诊断与修复流水线。用于�
 - **先检索后执行**：新任务开始前先查外部案例库，有相似案例先读历史做法
 - **准确度优先于速度（最高原则）**：
   - 耗时不是问题，产出必须经得起推敲。任何"图快"的捷径（如用参考序列拼接缺失片段、用宽松参数跳过验证）都违背本 skill 宗旨
-  - 每个修复动作必须能回答：**这个序列是 reads 支持的，还是我"借用"的？**（参考拼接的片段必须验证 reads 覆盖，<100× 即弃用）
+  - 每个修复动作必须能回答：**这个序列是 reads 支持的，还是我"借用"的？** 参考只能定位候选差异，不能凭覆盖度或相似度把参考序列引入样本；每个位点记录 pileup、碱基质量、MAPQ、链偏好和竞争候选。
   - 长任务（GetOrganelle 数小时、全量比对 1-2h、metaSPAdes 组装）用后台化策略等待，不因耗时偷工减料
   - 凡是要下结论的节点，必须过 Quality Gates
 - **经验不足时搜索文献（辅证原则）**：
@@ -65,7 +65,7 @@ bash scripts/check_env.sh
 
 - 必需：组装 fasta（NOVOPlasty/GetOrganelle/SPAdes 输出）
 - 强烈建议：原始 reads（R1/R2 fastq.gz）——无 reads 则跳过 Step⑤，修复后验证降级为仅参考比对
-- 可选：参考/近缘物种 GenBank 文件（无则用 Step④ 鉴定后下载）
+- 可选：参考/近缘物种 GenBank 文件（只作定位和比较，不作为样本序列来源）
 - 工具：blastn, minimap2, bwa, samtools, GetOrganelle, MitoFinder, MITOS2（见 check_env.sh）
 
 ## Quick Reference（快速定位）
@@ -76,7 +76,7 @@ bash scripts/check_env.sh
 | 重建基因顺序 | `python3 scripts/blast_genes.py <ref.gb> <target.fna>` |
 | 鉴定物种 | `python3 scripts/cox1_id.py <genome.fasta>` |
 | reads 验证组装 | bwa mem -> `python3 scripts/depth_analysis.py <bam> <fasta>` |
-| 修复反向块 | `python3 scripts/circularize.py <s1> <s2> <ref.gb> <outdir>` |
+| 生成环化候选 | `python3 scripts/circularize.py <s1> <s2> <ref.gb> <outdir> --bam <bam> --junction-region <chr:start-end> --reads-validated`（默认只输出 candidate；人工核对全部接缝后才可加 `--accept-candidate`） |
 | 后台跑长任务 | `bash scripts/run_bg.sh <名> -- <命令> [参数...]` + `bash scripts/check_bg.sh <名>` |
 | 检索历史案例 | `python3 tools/experience.py search --query "..."` |
 | 沉淀本次经验 | `python3 tools/experience.py add-case --sample ...` |
@@ -130,7 +130,7 @@ minimap2 -x asm5 <ref.fna> <contig.fna> > mm.paf   # 看链方向和断点
 blastn -query <contig.fna> -db <refdb> -outfmt "6 qseqid pident length qstart qend sstart send"
 # sstart > send 表示反向; 多个方向矛盾块 = 结构异常
 ```
-- **相似度 <90% -> 强烈提示参考物种不对**，转 Step④ 鉴定物种
+- **相似度 <90% -> 提示参考可能不合适**，转 Step④ 鉴定物种；参考差异本身不是样本错误。
 
 ### ③ 逐基因定位（降维重建基因顺序）
 ```bash
@@ -146,7 +146,7 @@ python3 scripts/blast_genes.py <ref.gb> <contig.fna> [--out out.txt]
 python3 scripts/cox1_id.py <contig.fna> --allow-public-upload [--coords 1,2]   # 默认自动找 COX1
 ```
 该命令会把选定片段上传到公共 NCBI；仅在确认数据可公开后使用。该命令会将选定片段上传到公共 NCBI；仅在确认数据可公开后执行。结果解读：
-- 同种 COX1 通常 >97%；85~90% = 同属不同种；更低 = 参考需换
+- COX1 结果必须同时报告 identity、alignment coverage、多个近似命中和数据库版本；固定序列模式不能定位 COX1，也不自动下确定物种结论。
 - 拿到近缘种后回到 Step② 换参考重新比对
 
 ### ⑤ reads 裁判（组装真伪验证，reads 可用时必做）
@@ -181,13 +181,13 @@ python3 scripts/circularize.py <scaffold1.fasta> <scaffold2.fasta> <ref.gb> <out
   bash scripts/run_bg.sh bwa_all --trusted-shell "bwa mem -t 16 genome.fasta R1.fastq.gz R2.fastq.gz | samtools sort -o all.bam && samtools index all.bam"
   samtools depth -r <chr>:<start>-<end> all.bam | awk '{s+=$3;n++; if($3<100) low++} END {print "mean:", s/n, "低覆盖位置:", low}'
   ```
-  覆盖 <100× 或大量位置低覆盖 -> **弃用参考拼接**，改用：
+  低覆盖、低 MAPQ、链偏好或存在竞争候选 -> **不得接受参考拼接**，改用：
   1. 全量 reads 比对 -> 提取基因区域（含侧翼）reads
   2. **metaSPAdes**（优于 SPAdes, Allio et al. 2020）组装
   3. 6 读码框 × blastp 定位干净 ORF -> 精修起始终止 -> 纯 reads 基因
 - 提取 reads 区域要**够宽**（覆盖完整基因 + 侧翼 ±200bp），否则缺失端段
 **双重验证（必做）**：
-1. 与近缘种参考：单一连续正向比对块 + 基因顺序完全一致
+1. 与近缘种参考：用于发现候选差异；基因顺序不同应标记 REVIEW，真实重排不得自动失败
 2. reads 回贴：编码区覆盖度均匀（CR 区异质性除外）
 
 ### ⑦ 注释（工具优先，勿造轮子）
@@ -223,11 +223,11 @@ bash scripts/run_circular_map.sh <final.gb> <out.png> --title "<物种> mitochon
 | G1 | 输入完整 | fasta 可读、长度合理（线粒体 14-20kb）、有 header | 修复文件/重新导出 |
 | G2 | 统计体检 | 模糊碱基已定位并归类（伪影 vs 真实） | 记录待修复 |
 | G3 | 参考匹配 | 相似度 ≥90% 或已确认参考为近缘种 | COX1 鉴定换参考 |
-| G4 | 基因完整性 | 37 基因全部定位，顺序与近缘种一致 | 记录缺失/反向 -> 修复 |
+| G4 | 基因完整性 | 37 基因定位结果、重复候选和缺失均可解释；顺序差异为 REVIEW | 记录缺失/反向/可能重排 |
 | G5 | reads 支持（如有 reads） | 编码区覆盖度均匀，无 unexplained 低覆盖区 | 标记可疑连接点 |
-| G6 | 修复验证 | 单一连续正向比对块 + reads 回贴均匀 | 换修复路线 |
+| G6 | 修复验证 | 样本 reads 支持每个修改位点；参考比对仅作辅助 | 换修复路线 |
 | G7 | 注释翻译 | 13 CDS 无内部终止，氨基酸长度接近参考 | 精修边界 |
-| G8 | 环化 | 序列可环形拼接，trnI 与 CR 正确连接 | 旋转/重排 |
+| G8 | 环化 | 每个新增接缝均有独立 reads/pair/组装图证据，端部重叠已去冗余 | 输出 PUTATIVE/UNRESOLVED，不强制环化 |
 | G9 | 注释质检 | `annot_check.py <gb> --require-circular` 全检通过（基因身份/翻译/起止/tRNA/rRNA/重叠/链分布）；真实例外需显式确认 | 修复坐标/确认重叠 |
 | G10 | NCBI 预检 | 可选：table2asn 本地验证无内部终止等（NCBI organelle 提交前必做） | 按报错修复 |
 

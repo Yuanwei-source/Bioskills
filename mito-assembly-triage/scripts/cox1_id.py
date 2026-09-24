@@ -67,15 +67,8 @@ def main():
         query = seq[start-1:end]
         print('使用指定区域 [%d..%d] (%d bp)' % (start, end, len(query)))
     else:
-        marker = r'GGAGG[ACGT]{4}GGAACTG'
-        m = re.search(marker, seq)
-        if m:
-            start = m.start() + 1
-            query = seq[start-1:start-1+1400]
-            print('自动定位 COX1: 位置 %d, 长度 %d bp' % (start, len(query)))
-        else:
-            print('未能自动定位 COX1, 请用 --coords 指定', file=sys.stderr)
-            sys.exit(1)
+        print('未提供 COX1 的可靠定位。固定 DNA 模式不能证明基因身份；请先用本地注释/tblastn 定位后以 --coords 提取。', file=sys.stderr)
+        sys.exit(2)
     if len(query) < 400:
         print('查询片段至少需要 400 bp', file=sys.stderr)
         sys.exit(2)

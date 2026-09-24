@@ -88,7 +88,7 @@ sample: %(sample)s
 species: %(species)s
 date: %(date)s
 tools: %(tools)s
-status: 进行中
+status: 待审核
 signals: [%(signals)s]
 ---
 
@@ -113,7 +113,7 @@ signals: [%(signals)s]
     }
     with open(fn, 'w' if force else 'x') as fh:
         fh.write(content)
-    print('✓ 案例写入: %s' % fn)
+    print('✓ 案例写入: %s (状态=待审核；审核后再改为已确认)' % fn)
     print('  记得同时更新 signals.md / pitfalls.md (有新知识时) 和 stats.md')
 
 
@@ -143,7 +143,7 @@ def suggest_promotions():
     sig_count = {}
     for fn in case_files():
         content = open(os.path.join(CASES, fn)).read()
-        m = re.search(r'^signals: \[(.*?)\]', content)
+        m = re.search(r'^signals: \[(.*?)\]', content, re.M)
         if m:
             for s in m.group(1).split(','):
                 s = s.strip()
@@ -151,7 +151,7 @@ def suggest_promotions():
     if sig_count:
         print('\n信号频次:')
         for s, c in sorted(sig_count.items(), key=lambda x: -x[1]):
-            mark = '  ★ 出现%d次 → 建议提升到 SKILL.md 主流程!' % c if c >= 3 else ''
+            mark = '  ★ 出现%d次 → 仅审核通过案例才可建议提升到 SKILL.md!' % c if c >= 3 else ''
             print('  %s: %d%s' % (s, c, mark))
     # 脚本固化建议
     print('\n建议: 当某手工操作重复 3 次以上, 固化为 scripts/ 下的脚本;')

@@ -3,6 +3,8 @@
 # 机器路径统一在 config/env.sh（本脚本自动 source），换机无需改本文件
 # 用法: bash check_env.sh
 set -u
+set -o pipefail
+missing=0
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../config/env.sh
 source "$SKILL_DIR/config/env.sh"
@@ -25,7 +27,7 @@ for t in blastn makeblastdb bwa samtools seqkit python3; do
     done
   fi
   if [ -n "$found" ]; then echo "  ✓ $t: $found"
-  else echo "  ✗ $t: 未找到"; fi
+  else echo "  ✗ $t: 未找到"; missing=1; fi
 done
 # minimap2: PATH -> 已配置路径 -> envs
 mini=""
@@ -36,7 +38,7 @@ else
     [ -x "$env/minimap2" ] && mini="$env/minimap2" && break
   done
 fi
-if [ -n "$mini" ]; then echo "  ✓ minimap2: $mini"; else echo "  ✗ minimap2: 未找到"; fi
+if [ -n "$mini" ]; then echo "  ✓ minimap2: $mini"; else echo "  ✗ minimap2: 未找到"; missing=1; fi
 
 echo ""
 echo "=== 组装/注释工具 (在 conda envs 中查找) ==="
@@ -70,6 +72,11 @@ if [ -n "${MITOS2_PY:-}" ] && [ -x "$MITOS2_PY" ]; then
   fi
 else
   echo "  ✗ MITOS2_PY 未设置或不存在 — 检查 config/env.sh"
+fi
+
+if [ "$missing" -ne 0 ]; then
+  echo "\n结果: 核心依赖缺失，不能进入依赖这些工具的流程" >&2
+  exit 2
 fi
 
 echo ""

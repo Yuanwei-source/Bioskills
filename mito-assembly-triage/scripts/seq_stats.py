@@ -4,6 +4,7 @@
 用法: python3 seq_stats.py <assembly.fasta> [--window 500]
 """
 import sys
+from Bio import SeqIO
 from collections import Counter
 
 def main():
@@ -14,28 +15,31 @@ def main():
     if '--window' in sys.argv:
         window = int(sys.argv[sys.argv.index('--window')+1])
 
-    seq = ''
-    headers = []
-    for line in open(fn):
-        if line.startswith('>'):
-            headers.append(line.strip())
-        else:
-            seq += line.strip().upper()
-
-    if not seq:
+    records = list(SeqIO.parse(fn, 'fasta'))
+    if not records:
         print('错误: 空序列'); sys.exit(1)
+    headers = ['>' + r.description for r in records]
+    seqs = [(r.id, str(r.seq).upper()) for r in records]
+    seq = ''.join(s for _, s in seqs)
 
     c = Counter(seq)
     amb = {k: v for k, v in c.items() if k not in 'ACGT'}
-    gc = (c['G'] + c['C']) / len(seq) * 100
+    acgt = sum(c[b] for b in 'ACGT')
+    gc = (c['G'] + c['C']) / acgt * 100 if acgt else 0
+    at = (c['A'] + c['T']) / acgt * 100 if acgt else 0
 
     print('文件: %s' % fn)
     print('contig 数: %d' % len(headers))
     for h in headers[:5]:
         print('  header: %s' % h)
     print('长度: %d bp' % len(seq))
-    print('GC%%: %.2f   AT%%: %.2f' % (gc, 100 - gc))
+    print('GC%%: %.2f   AT%%: %.2f (仅以 A/C/G/T 为分母)' % (gc, at))
     print('碱基组成:', dict(c))
+    print('\n各 contig 统计:')
+    for name, contig in seqs:
+        cc = Counter(contig); ca = sum(cc[b] for b in 'ACGT')
+        cg = (cc['G'] + cc['C']) / ca * 100 if ca else 0
+        print('  %s: length=%d GC=%.2f%% N/IUPAC=%d' % (name, len(contig), cg, len(contig) - ca))
     if amb:
         print('⚠ 模糊碱基 (%d 个):' % sum(amb.values()))
         for a, n in sorted(amb.items()):

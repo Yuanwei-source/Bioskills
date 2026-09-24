@@ -192,6 +192,13 @@ class GeneHitSelectionTests(unittest.TestCase):
         self.assertEqual(selected, {})
         self.assertTrue(any("COX1" in error and "多个" in error for error in errors))
 
+    def test_merges_overlapping_hsps_once(self):
+        h = {"evalue": 1e-40, "identity": 98.0, "aln_len": 500,
+             "query_len": 1000, "qstart": 1, "qend": 900,
+             "start": 1, "end": 900, "strand": "+", "type": "CDS"}
+        merged = self.module.merge_hsps([h, dict(h, qstart=500, qend=1000, start=500, end=1000)])
+        self.assertEqual(merged["aln_len"], 1000)
+
 
 class CircularizationSelectionTests(unittest.TestCase):
     def setUp(self):
@@ -216,6 +223,20 @@ class CircularizationSelectionTests(unittest.TestCase):
             [("a", "+"), ("b", "-"), ("c", "-")],
             [("a", "+"), ("b", "+"), ("c", "-")],
         ))
+
+    def test_union_and_scaffold_overlap_are_nonredundant(self):
+        self.assertEqual(self.module.interval_union_length([(0, 900), (500, 1500)]), 1500)
+        joined, overlap = self.module.join_scaffolds("AAACCC", "CCCGGG", minimum_overlap=3)
+        self.assertEqual((joined, overlap), ("AAACCCGGG", 3))
+
+
+class AnnotationNormalizationTests(unittest.TestCase):
+    def setUp(self):
+        self.module = load_script("annot_check", Path("scripts") / "annot_check.py")
+
+    def test_rrna_names_follow_biological_16s_12s_mapping(self):
+        self.assertEqual(self.module.canonical_gene(SimpleNamespace(qualifiers={"gene": ["16S"]})), "rrnl")
+        self.assertEqual(self.module.canonical_gene(SimpleNamespace(qualifiers={"gene": ["12S"]})), "rrns")
 
 
 class DepthMappingTests(unittest.TestCase):
