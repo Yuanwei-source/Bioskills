@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 外科手术拼接: 将 2 个 scaffold 拼接为正确的环状线粒体基因组, 并用参考验证
-用法: python3 circularize.py <scaffold1.fasta> <scaffold2.fasta> <ref.gb> <outdir> --bam <bam> --junction-region <chr:start-end> --reads-validated
+用法: python3 circularize.py <scaffold1.fasta> <scaffold2.fasta> <ref.gb> <outdir> --bam <candidate.bam> --reads-validated [--min-junction-support 3] [--min-mapq 20]
 原理: 分析两个 scaffold 的基因组成和方向, 尝试 4 种组合(正序/反向互补),
-      选择与参考基因顺序最一致的一种, 输出环状基因组并验证。
+      选择参考辅助排序的候选，自动计算新增接缝并验证；输出仍是候选结构。
 依赖: BioPython, blastn, minimap2
 """
 import sys, os, subprocess, tempfile, itertools, re
@@ -77,22 +77,30 @@ def sam_reference_span(fields):
     return start, end
 
 
-def junction_has_spanning_read(bam, region):
+def parse_region(region):
     try:
-        chrom, coordinates = region.rsplit(':', 1)
-        lo_text, hi_text = coordinates.split('-', 1)
+        chrom, coordinates = region.rsplit(':', 1); lo_text, hi_text = coordinates.split('-', 1)
         lo, hi = int(lo_text), int(hi_text)
-    except (ValueError, AttributeError):
-        raise ValueError('junction region must be chr:start-end')
+    except (ValueError, AttributeError): raise ValueError('junction region must be chr:start-end')
+    if lo < 1 or hi < lo: raise ValueError('invalid junction coordinates')
+    return chrom, lo, hi
+
+
+def junction_spanning_reads(bam, region, min_mapq=20):
+    chrom, lo, hi = parse_region(region)
     result = subprocess.run(['samtools', 'view', bam, '%s:%d-%d' % (chrom, lo, hi)], capture_output=True, text=True, check=True)
+    names = set()
     for line in result.stdout.splitlines():
         if not line.strip():
             continue
         fields = line.split('\t')
+        flag = int(fields[1])
+        if flag & (0x4 | 0x100 | 0x800) or int(fields[4]) < min_mapq:
+            continue
         start, end = sam_reference_span(fields)
         if start <= lo and end >= hi:
-            return True
-    return False
+            names.add(fields[0])
+    return names
 
 
 def main():
@@ -102,13 +110,12 @@ def main():
     reads_validated = '--reads-validated' in sys.argv
     bam = sys.argv[sys.argv.index('--bam') + 1] if '--bam' in sys.argv else None
     junction_region = sys.argv[sys.argv.index('--junction-region') + 1] if '--junction-region' in sys.argv else None
+    min_support = int(sys.argv[sys.argv.index('--min-junction-support') + 1]) if '--min-junction-support' in sys.argv else 3
+    min_mapq = int(sys.argv[sys.argv.index('--min-mapq') + 1]) if '--min-mapq' in sys.argv else 20
+    junction_flank = int(sys.argv[sys.argv.index('--junction-flank') + 1]) if '--junction-flank' in sys.argv else 10
     os.makedirs(outdir, exist_ok=True)
     out_fa = os.path.join(outdir, 'genome_candidate.fasta')
     accept_candidate = '--accept-candidate' in sys.argv
-    if os.path.exists(out_fa):
-        print('输出目录已有 genome_candidate.fasta，请使用新目录避免误用旧结果', file=sys.stderr)
-        sys.exit(1)
-
     try:
         from Bio import SeqIO
         from Bio.Seq import Seq
@@ -143,11 +150,12 @@ def main():
         ('rc(s1)+s2', str(Seq(seq1).reverse_complement()), seq2),
         ('rc(s1)+rc(s2)', str(Seq(seq1).reverse_complement()), str(Seq(seq2).reverse_complement())),
     ):
-        variants[name] = join_scaffolds(left, right)
+        joined, overlap = join_scaffolds(left, right)
+        variants[name] = (joined, overlap, len(left) - overlap)
 
     print('\n=== 候选组合验证 ===')
     ranked = []
-    for name, (seq, overlap) in variants.items():
+    for name, (seq, overlap, junction) in variants.items():
         tmp = os.path.join(outdir, 'cand_%s.fasta' % name.replace('(','').replace(')','').replace('+','_'))
         with open(tmp, 'w') as fh:
             fh.write('>candidate\n%s\n' % seq)
@@ -166,7 +174,7 @@ def main():
         fwd_blocks = sum(1 for b in blocks if b[2] == '+')
         score = total_cov * (1 if fwd_blocks == len(blocks) and fwd_blocks > 0 else 0.5)
         print('%-15s 端部重叠=%dbp 比对块=%d 正向块=%d 覆盖=%dbp 分数=%.0f' % (name, overlap, len(blocks), fwd_blocks, total_cov, score))
-        ranked.append((score, name, seq, blocks, overlap))
+        ranked.append((score, name, seq, blocks, overlap, junction))
 
     best = select_unique_candidate(ranked)
     if best is None and ranked:
@@ -176,7 +184,7 @@ def main():
         print('\n⚠ 所有组合都不匹配参考 — 可能需要更多 scaffold 或重新组装')
         sys.exit(1)
 
-    score, name, seq, blocks, _overlap = best
+    score, name, seq, blocks, _overlap, junction = best
     print('\n✓ 最佳组合: %s (分数 %.0f)' % (name, score))
     print('  比对块: %s' % blocks[:5])
 
@@ -186,7 +194,7 @@ def main():
     os.makedirs(validation_dir, exist_ok=True)
     validation_fa = os.path.join(validation_dir, 'candidate.fasta')
     with open(validation_fa, 'w') as fh:
-        fh.write('>mitogenome_circular\n%s\n' % seq)
+        fh.write('>mitogenome_candidate\n%s\n' % seq)
     gene_order_path = os.path.join(validation_dir, 'gene_order.txt')
     subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), 'blast_genes.py'),
                     ref_gb, validation_fa, '--out', gene_order_path], check=True)
@@ -199,21 +207,31 @@ def main():
     if not circular_annotation_matches(query_annotation, ref_annotation):
         print('候选基因顺序或方向与参考不一致，拒绝输出', file=sys.stderr)
         sys.exit(1)
-    if not reads_validated or not bam or not junction_region:
-        print('缺少 reads 接缝证据；需要 --bam、--junction-region 和 --reads-validated；状态=UNRESOLVED', file=sys.stderr)
+    if os.path.exists(out_fa):
+        existing = str(next(SeqIO.parse(out_fa, 'fasta')).seq)
+        if existing != seq:
+            print('已有候选与本次选出的结构不同，拒绝复用旧 BAM；请使用新输出目录', file=sys.stderr)
+            sys.exit(2)
+    else:
+        with open(out_fa, 'w') as fh:
+            fh.write('>mitogenome_candidate\n%s\n' % seq)
+        print('输出候选结构: %s (%d bp)' % (out_fa, len(seq)))
+    auto_region = 'mitogenome_candidate:%d-%d' % (max(1, junction - junction_flank), min(len(seq), junction + junction_flank))
+    if junction_region and parse_region(junction_region) != parse_region(auto_region):
+        print('指定 --junction-region 与实际新增接缝不一致；期望 %s' % auto_region, file=sys.stderr)
+        sys.exit(2)
+    if not reads_validated or not bam:
+        print('缺少 reads 接缝证据；需要候选序列回贴 BAM 和 --reads-validated；状态=UNRESOLVED', file=sys.stderr)
         sys.exit(2)
     try:
-        has_spanning_read = junction_has_spanning_read(bam, junction_region)
+        spanning = junction_spanning_reads(bam, auto_region, min_mapq=min_mapq)
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print('接缝证据验证失败:', exc, file=sys.stderr)
         sys.exit(1)
-    if not has_spanning_read:
-        print('BAM 中没有跨越指定接缝的 read，拒绝输出', file=sys.stderr)
+    if len(spanning) < min_support:
+        print('接缝 %s 仅有 %d 条独立 read 达到 MAPQ>=%d，需要至少 %d 条' % (auto_region, len(spanning), min_mapq, min_support), file=sys.stderr)
         sys.exit(1)
 
-    with open(out_fa, 'w') as fh:
-        fh.write('>mitogenome_candidate\n%s\n' % seq)
-    print('输出候选结构: %s (%d bp)' % (out_fa, len(seq)))
     if not accept_candidate:
         print('状态: PUTATIVE_CIRCULAR/REVIEW；当前单一区间证据不能宣称最终环化。')
         print('若已人工核对全部新增接缝、重复歧义和组装图，再显式使用 --accept-candidate。')

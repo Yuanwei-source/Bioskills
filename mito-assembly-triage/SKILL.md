@@ -105,7 +105,7 @@ bash scripts/check_env.sh
 | 重建基因顺序 | `python3 scripts/blast_genes.py <ref.gb> <target.fna>` |
 | 鉴定物种 | `python3 scripts/cox1_id.py <genome.fasta>` |
 | reads 验证组装 | bwa mem -> `python3 scripts/depth_analysis.py <bam> <fasta>` |
-| 生成环化候选 | `python3 scripts/circularize.py <s1> <s2> <ref.gb> <outdir> --bam <bam> --junction-region <chr:start-end> --reads-validated`（默认只输出 candidate；人工核对全部接缝后才可加 `--accept-candidate`） |
+| 生成环化候选 | `python3 scripts/circularize.py <s1> <s2> <ref.gb> <outdir> --bam <candidate.bam> --reads-validated`（自动绑定新增接缝；默认至少 3 条 MAPQ≥20 独立 reads；人工核对全部接缝后才可加 `--accept-candidate`） |
 | 后台跑长任务 | `bash scripts/run_bg.sh <名> -- <命令> [参数...]` + `bash scripts/check_bg.sh <名>` |
 | 检索历史案例 | `python3 tools/experience.py search --query "..."` |
 | 沉淀本次经验 | `python3 tools/experience.py add-case --sample ...` |
@@ -198,7 +198,7 @@ bash scripts/run_bg.sh getorganelle -- get_organelle_from_reads.py -1 R1.fq -2 R
 bash scripts/check_bg.sh getorganelle
 
 # 路线B: 外科手术拼接（重组装卡在重复区时）— 快, 直接跑
-python3 scripts/circularize.py <scaffold1.fasta> <scaffold2.fasta> <ref.gb> <outdir> --bam <candidate.bam> --junction-region <chr:start-end> --reads-validated
+python3 scripts/circularize.py <scaffold1.fasta> <scaffold2.fasta> <ref.gb> <outdir> --bam <candidate.bam> --reads-validated
 ```
 
 未完成 reads 回贴和接缝验证时不要添加 `--reads-validated`；脚本会拒绝输出最终环状序列。

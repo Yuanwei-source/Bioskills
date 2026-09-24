@@ -33,19 +33,30 @@ class ExperienceSharingTests(unittest.TestCase):
         (case / "case.json").write_text(json.dumps(data), encoding="utf-8"); (case / "events.jsonl").touch()
         return case
 
-    def test_contribution_requires_authorization_and_rejects_sensitive_case(self):
+    def test_contribution_requires_authorization_and_redacts_local_paths(self):
         case = self.make_case("case-a")
+        data = json.loads((case / "case.json").read_text())
+        data["inputs"] = [{"role": "assembly_fasta", "path": "/home/user/private.fa", "sha256": "a" * 64}]
+        (case / "case.json").write_text(json.dumps(data), encoding="utf-8")
         out = self.root / "contribution.json"
         with self.assertRaises(ValueError):
             self.module.export_contribution(SimpleNamespace(case=str(case), output=str(out), authorize=False))
-        (case / "case.json").write_text(json.dumps({"secret": "/home/user/token"}), encoding="utf-8")
+        self.module.export_contribution(SimpleNamespace(case=str(case), output=str(out), authorize=True))
+        self.assertNotIn("/home/user", out.read_text(encoding="utf-8"))
+
+    def test_lesson_id_and_events_file_cannot_escape(self):
+        case = self.make_case("case-safe")
         with self.assertRaises(ValueError):
-            self.module.export_contribution(SimpleNamespace(case=str(case), output=str(out), authorize=True))
+            self.module.propose_lesson(SimpleNamespace(case=str(case), lesson_id="../escape", next_test="pileup", allow_unresolved=False))
+        data = json.loads((case / "case.json").read_text()); data["events_file"] = "../outside.jsonl"
+        (case / "case.json").write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.module.case_event(SimpleNamespace(directory=str(case), action="x", result="x", impact="", command="", tool_version="", motivation=""))
 
     def test_conflicting_lessons_are_reported_not_merged(self):
         case = self.make_case("case-a")
         self.module.propose_lesson(SimpleNamespace(case=str(case), lesson_id="lesson-a", next_test="pileup", allow_unresolved=False))
-        case2 = self.make_case("case-b")
+        case2 = self.make_case("case-b", status="NO_CHANGE")
         self.module.propose_lesson(SimpleNamespace(case=str(case2), lesson_id="lesson-b", next_test="annotation", allow_unresolved=False))
         lesson = json.loads((Path(self.module.LESSON_CANDIDATES) / "lesson-b.json").read_text())
         self.assertTrue(lesson["conflicts"])
@@ -59,13 +70,16 @@ class ExperienceSharingTests(unittest.TestCase):
         self.assertEqual(json.loads(verified.read_text())["review_history"][0]["from"], "candidate")
 
     def test_public_sync_verifies_hash_and_skips_revoked(self):
-        public = self.root / "remote"; public.mkdir(); good = public / "lesson.json"; good.write_text('{"ok":true}', encoding="utf-8")
+        public = self.root / "remote"; public.mkdir(); good = public / "lesson.json"
+        lesson = {"lesson_id": "public-1", "applicable_when": ["stop"], "not_applicable_when": [], "diagnostic_clues": ["stop"], "suggested_next_test": "pileup", "supporting_case_ids": [], "counterexample_case_ids": [], "sources": [], "validation_status": "verified", "version": "1.0.0", "last_reviewed": "2026-09-24"}
+        good.write_text(json.dumps(lesson), encoding="utf-8")
         manifest = self.root / "manifest.json"; manifest.write_text(json.dumps({"format": "mito-public-knowledge-1", "items": [
             {"path": "lesson.json", "url": str(good), "sha256": hashlib.sha256(good.read_bytes()).hexdigest()},
             {"path": "revoked.json", "url": str(good), "sha256": hashlib.sha256(good.read_bytes()).hexdigest(), "status": "revoked"}]}), encoding="utf-8")
         self.module.sync_public(SimpleNamespace(manifest=str(manifest)))
         self.assertTrue((Path(self.module.PUBLIC_KNOWLEDGE) / "lesson.json").exists())
         self.assertFalse((Path(self.module.PUBLIC_KNOWLEDGE) / "revoked.json").exists())
+        self.assertTrue(self.module.structured_search("stop"))
 
     def test_failed_public_update_keeps_previous_cache(self):
         destination = Path(self.module.PUBLIC_KNOWLEDGE); destination.mkdir(parents=True)

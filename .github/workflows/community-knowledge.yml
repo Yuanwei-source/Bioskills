@@ -3,11 +3,12 @@ name: community-knowledge-check
 on:
   pull_request:
     paths:
-      - 'knowledge/**'
-      - 'schemas/**'
-      - 'tools/experience.py'
-      - 'tests/**'
+      - 'mito-assembly-triage/knowledge/**'
+      - 'mito-assembly-triage/schemas/**'
+      - 'mito-assembly-triage/tools/experience.py'
+      - 'mito-assembly-triage/tests/**'
       - '.github/PULL_REQUEST_TEMPLATE/**'
+      - '.github/workflows/community-knowledge.yml'
 
 permissions:
   contents: read
@@ -17,16 +18,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Reject secrets and raw data
         shell: bash
+        working-directory: mito-assembly-triage
         run: |
-          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -E '\.(fastq|fq|bam|sam)(\.gz)?$'; then
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" | grep -E '\.(fastq|fq|bam|sam)(\.gz)?$'; then
             echo 'raw sequencing files are not allowed in knowledge contributions'; exit 1
           fi
           if grep -RIE '(api[_-]?key|password|secret|BEGIN (RSA|OPENSSH) PRIVATE KEY)' knowledge; then
             echo 'possible secret detected'; exit 1
           fi
       - name: Python syntax and tests
+        working-directory: mito-assembly-triage
         run: |
           python3 -m py_compile tools/experience.py
-          python3 -m unittest -v tests/test_security.py
+          python3 -m unittest -v tests/test_security.py tests/test_experience_sharing.py

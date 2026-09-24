@@ -12,6 +12,12 @@ def merge_hsps(hsps):
     if not hsps:
         return None
     ordered = sorted(hsps, key=lambda h: (h['qstart'], h['qend']))
+    strand = ordered[0]['strand']
+    for previous, current in zip(ordered, ordered[1:]):
+        if strand == '+' and current['start'] < previous['start']:
+            return None
+        if strand == '-' and current['start'] > previous['start']:
+            return None
     q_union = 0
     qlo, qhi = ordered[0]['qstart'], ordered[0]['qend']
     for hit in ordered[1:]:
@@ -99,7 +105,7 @@ def main():
                     'aln_len': int(p[3]), 'query_len': len(seq),
                     'qstart': int(p[4]), 'qend': int(p[5]),
                     'start': min(ss, se), 'end': max(ss, se),
-                    'strand': '+' if ss < se else '-', 'type': ftype,
+                    'strand': '+' if ss < se else '-', 'type': ftype, 'target': p[1],
                 })
             candidates.extend(filter(None, (merge_hsps(group) for group in raw.values())))
     finally:

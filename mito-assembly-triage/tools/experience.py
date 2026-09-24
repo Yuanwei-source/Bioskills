@@ -22,6 +22,9 @@ STATS = os.path.join(KNOWLEDGE, 'stats.md')
 LESSON_CANDIDATES = os.path.join(KNOWLEDGE, 'lessons', 'candidates')
 LESSON_VERIFIED = os.path.join(KNOWLEDGE, 'lessons', 'verified')
 PUBLIC_KNOWLEDGE = os.path.join(KNOWLEDGE, 'public')
+MAX_PUBLIC_ITEM_BYTES = 2 * 1024 * 1024
+LESSON_STATUSES = {'candidate', 'verified', 'rejected', 'deprecated'}
+SAFE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
 
 
 def case_files():
@@ -46,6 +49,18 @@ def _write_json(path, value):
     with open(tmp, 'w', encoding='utf-8') as fh: json.dump(value, fh, ensure_ascii=False, indent=2); fh.write('\n')
     os.replace(tmp, path)
 
+def safe_identifier(value, label='identifier'):
+    if not isinstance(value, str) or not SAFE_ID.fullmatch(value) or value in ('.', '..'):
+        raise ValueError('%s 只能包含字母、数字、点、下划线和短横线' % label)
+    return value
+
+def safe_case_member(root, value, label='case member'):
+    if not isinstance(value, str) or pathlib.PurePath(value).name != value or '\\' in value or value in ('.', '..') or '\x00' in value:
+        raise ValueError('%s 必须是案例目录内的单一文件名' % label)
+    root = pathlib.Path(root).resolve(); target = root / value
+    if target.is_symlink(): raise ValueError('%s 不能是符号链接' % label)
+    return target
+
 def _tokens(value):
     return set(re.findall(r'[\w-]{2,}', json.dumps(value, ensure_ascii=False).lower()))
 
@@ -57,25 +72,38 @@ def structured_search(query):
         words = _tokens(case)
         score = len(terms & words)
         if score: results.append((score, case.get('decision', {}).get('status', 'UNKNOWN'), path, case))
-    for path in pathlib.Path(LESSON_CANDIDATES).glob('*.json') if os.path.isdir(LESSON_CANDIDATES) else []:
-        try: lesson = _json(path)
-        except (OSError, ValueError): continue
-        score = len(terms & _tokens(lesson))
-        if score: results.append((score, lesson.get('validation_status', 'candidate'), str(path), lesson))
+    sources = ((LESSON_CANDIDATES, 'local-candidate'), (LESSON_VERIFIED, 'local-verified'),
+               (PUBLIC_KNOWLEDGE, 'public'))
+    for directory, source in sources:
+        for path in pathlib.Path(directory).glob('**/*.json') if os.path.isdir(directory) else []:
+            if path.name == 'manifest.json': continue
+            try: lesson = _json(path)
+            except (OSError, ValueError): continue
+            if lesson.get('validation_status') in ('rejected', 'deprecated', 'revoked', 'withdrawn'): continue
+            score = len(terms & _tokens(lesson))
+            if score:
+                item = dict(lesson); item['knowledge_source'] = source
+                results.append((score, lesson.get('validation_status', 'candidate'), str(path), item))
     for score, status, path, _ in sorted(results, key=lambda x: (-x[0], x[2])):
         print('%d\t%s\t%s' % (score, status, path))
     if not results: print('未找到结构化经验: %s' % query)
     return results
 
 def detect_lesson_conflicts(lesson, directory=None):
-    directory = directory or LESSON_CANDIDATES
     conflicts=[]
-    for path in pathlib.Path(directory).glob('*.json') if os.path.isdir(directory) else []:
+    directories = [directory] if directory else [LESSON_CANDIDATES, LESSON_VERIFIED]
+    paths = []
+    for current in directories:
+        if current and os.path.isdir(current): paths.extend(pathlib.Path(current).glob('*.json'))
+    for path in paths:
         try: other = _json(path)
         except (OSError, ValueError): continue
+        if other.get('lesson_id') == lesson.get('lesson_id'): continue
         same_scope = _tokens(lesson.get('applicable_when', [])) & _tokens(other.get('applicable_when', []))
         same_clue = _tokens(lesson.get('diagnostic_clues', [])) & _tokens(other.get('diagnostic_clues', []))
-        if same_scope and same_clue and lesson.get('suggested_next_test') != other.get('suggested_next_test'):
+        decisions = {lesson.get('decision_status'), other.get('decision_status')} - {None, 'UNRESOLVED'}
+        opposite_scope = (_tokens(lesson.get('applicable_when', [])) & _tokens(other.get('not_applicable_when', []))) or (_tokens(other.get('applicable_when', [])) & _tokens(lesson.get('not_applicable_when', [])))
+        if same_scope and same_clue and (len(decisions) > 1 or opposite_scope):
             conflicts.append(str(path))
     return conflicts
 
@@ -83,10 +111,12 @@ def propose_lesson(args):
     lesson_dirs(); case = _json(pathlib.Path(args.case) / 'case.json')
     if case.get('decision', {}).get('status') == 'UNRESOLVED' and not args.allow_unresolved:
         raise ValueError('未解决案例不能直接提炼；使用 --allow-unresolved 仅生成候选并保留限制')
-    lesson = {'lesson_id': args.lesson_id or case.get('case_id'), 'applicable_when': [case.get('issue', {}).get('type')],
+    lesson_id = safe_identifier(args.lesson_id or case.get('case_id'), 'lesson_id')
+    lesson = {'lesson_id': lesson_id, 'applicable_when': [case.get('issue', {}).get('type')],
               'not_applicable_when': [], 'diagnostic_clues': [case.get('issue', {}).get('user_observation', '')],
               'suggested_next_test': args.next_test, 'supporting_case_ids': [case.get('case_id')],
               'counterexample_case_ids': [], 'sources': [{'case_id': case.get('case_id'), 'path': str(args.case)}],
+              'decision_status': case.get('decision', {}).get('status'),
               'validation_status': 'candidate', 'version': '1.0.0', 'last_reviewed': None}
     conflicts = detect_lesson_conflicts(lesson)
     if conflicts: lesson['conflicts'] = conflicts
@@ -95,6 +125,7 @@ def propose_lesson(args):
     if conflicts: print('冲突候选: %s' % ', '.join(conflicts))
 
 def review_lesson(args):
+    safe_identifier(args.lesson_id, 'lesson_id')
     if args.status not in ('verified', 'rejected', 'deprecated'): raise ValueError('非法经验状态')
     source = pathlib.Path(LESSON_CANDIDATES) / (args.lesson_id + '.json')
     if not source.exists(): source = pathlib.Path(LESSON_VERIFIED) / (args.lesson_id + '.json')
@@ -110,18 +141,51 @@ def review_lesson(args):
 def export_contribution(args):
     if not args.authorize: raise ValueError('必须显式指定 --authorize；默认不导出/上传')
     case = _json(pathlib.Path(args.case) / 'case.json')
-    payload = json.dumps(case, ensure_ascii=False)
-    sensitive = re.compile(r'(fastq|bam|token|password|secret|api[_-]?key|/home/|/root/)', re.I)
-    if sensitive.search(payload): raise ValueError('检测到敏感路径或凭据字段，拒绝生成贡献文件')
-    contribution = {'format': 'mito-experience-contribution-1', 'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'case': case, 'review_status': 'candidate'}
+    safe_case = {'schema_version': case.get('schema_version'),
+                 'case_id': hashlib.sha256(str(case.get('case_id', '')).encode()).hexdigest()[:16],
+                 'taxon': case.get('taxon', {}),
+                 'inputs': [{'role': item.get('role'), 'sha256': item.get('sha256')} for item in case.get('inputs', [])],
+                 'issue': {'type': case.get('issue', {}).get('type')},
+                 'hypotheses': case.get('hypotheses', []), 'decision': case.get('decision', {}),
+                 'validation': case.get('validation', []), 'modifications': case.get('modifications', [])}
+    safe_case = sanitize_for_share(safe_case)
+    payload = json.dumps(safe_case, ensure_ascii=False)
+    sensitive = re.compile(r'(token|password|secret|api[_-]?key|BEGIN (?:RSA|OPENSSH) PRIVATE KEY)', re.I)
+    if sensitive.search(payload): raise ValueError('检测到凭据字段，拒绝生成贡献文件')
+    contribution = {'format': 'mito-experience-contribution-1', 'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'case': safe_case, 'review_status': 'candidate'}
     _write_json(args.output, contribution); print('贡献文件已生成（未上传）: %s' % args.output)
 
-def _read_source(source):
+def sanitize_for_share(value):
+    if isinstance(value, dict):
+        blocked = re.compile(r'(?:^|_)(?:path|command|token|password|secret|api[_-]?key|account)(?:$|_)', re.I)
+        return {key: sanitize_for_share(item) for key, item in value.items() if not blocked.search(str(key))}
+    if isinstance(value, list): return [sanitize_for_share(item) for item in value]
+    if isinstance(value, str):
+        value = re.sub(r'(?<!\w)(?:/[\w. -]+){2,}', '[local-path-redacted]', value)
+        value = re.sub(r'\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b', '[email-redacted]', value)
+    return value
+
+def _read_source(source, max_bytes=MAX_PUBLIC_ITEM_BYTES):
     if re.match(r'^https?://', source):
-        with urllib.request.urlopen(source, timeout=30) as response: return response.read()
-    with open(source, 'rb') as fh: return fh.read()
+        with urllib.request.urlopen(source, timeout=30) as response: data = response.read(max_bytes + 1)
+    else:
+        with open(source, 'rb') as fh: data = fh.read(max_bytes + 1)
+    if len(data) > max_bytes: raise ValueError('公共知识文件超过大小限制')
+    return data
+
+def validate_public_lesson(data, expected_path):
+    try: lesson = json.loads(data.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc: raise ValueError('公共知识不是有效 JSON: %s' % expected_path) from exc
+    required = {'lesson_id', 'applicable_when', 'not_applicable_when', 'diagnostic_clues', 'suggested_next_test', 'supporting_case_ids', 'counterexample_case_ids', 'sources', 'validation_status', 'version', 'last_reviewed'}
+    missing = sorted(required - set(lesson))
+    if missing: raise ValueError('公共知识缺少字段 %s: %s' % (','.join(missing), expected_path))
+    safe_identifier(lesson['lesson_id'], 'lesson_id')
+    if lesson['validation_status'] not in LESSON_STATUSES: raise ValueError('公共知识状态不兼容: %s' % expected_path)
+    if lesson['validation_status'] != 'verified': raise ValueError('公共知识必须为 verified: %s' % expected_path)
+    return lesson
 
 def sync_public(args):
+    os.makedirs(KNOWLEDGE, exist_ok=True)
     raw = _read_source(args.manifest)
     manifest = json.loads(raw.decode('utf-8'))
     if manifest.get('format') != 'mito-public-knowledge-1': raise ValueError('manifest 格式不兼容')
@@ -130,12 +194,16 @@ def sync_public(args):
     backup = pathlib.Path(str(destination) + '.previous')
     moved_old = False
     try:
+        seen = set()
         for item in manifest.get('items', []):
             if item.get('status') in ('revoked', 'withdrawn'): continue
             rel = pathlib.PurePosixPath(item.get('path', ''))
             if not rel.parts or rel.is_absolute() or '..' in rel.parts: raise ValueError('非法公共知识路径')
+            if str(rel) in seen: raise ValueError('manifest 包含重复路径: %s' % rel)
+            seen.add(str(rel))
             data = _read_source(item.get('url') or os.path.join(os.path.dirname(args.manifest), str(rel)))
             if hashlib.sha256(data).hexdigest() != item.get('sha256'): raise ValueError('内容校验失败: %s' % rel)
+            validate_public_lesson(data, rel)
             target = staging.joinpath(*rel.parts); target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
         manifest_path = staging / 'manifest.json'; manifest_path.write_bytes(raw)
         if destination.exists():
@@ -296,7 +364,9 @@ def stats():
 # Structured case helpers are deliberately integrated here rather than exposed
 # as a second diagnostic engine. Legacy Markdown cases remain readable.
 def v2_case_root(raw):
-    root = pathlib.Path(raw).resolve()
+    requested = pathlib.Path(raw)
+    if requested.is_symlink(): raise ValueError('案例目录不能是符号链接')
+    root = requested.resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -323,7 +393,8 @@ def case_init(args):
     tmp = root / 'case.json.tmp'
     with open(tmp, 'w', encoding='utf-8') as fh: json.dump(case, fh, ensure_ascii=False, indent=2); fh.write('\n')
     os.replace(tmp, root / 'case.json')
-    (root / 'events.jsonl').touch()
+    events_path = safe_case_member(root, 'events.jsonl', 'events_file')
+    events_path.touch()
     print('case initialized: %s' % (root / 'case.json'))
 
 def case_event(args):
@@ -332,7 +403,8 @@ def case_event(args):
     record = {'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'action': args.action,
               'command': args.command, 'tool_versions': args.tool_version, 'result': args.result,
               'motivation': args.motivation, 'impact': args.impact}
-    with open(root / case.get('events_file', 'events.jsonl'), 'a', encoding='utf-8') as fh:
+    events_path = safe_case_member(root, case.get('events_file', 'events.jsonl'), 'events_file')
+    with open(events_path, 'a', encoding='utf-8') as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + '\n')
     print('event recorded')
 
@@ -343,7 +415,9 @@ def case_validate(args):
     if case.get('schema_version') != '2.0': errors.append('schema_version must be 2.0')
     if case.get('decision', {}).get('status') not in {'RESOLVED', 'NO_CHANGE', 'UNRESOLVED'}: errors.append('invalid decision.status')
     if case.get('decision', {}).get('confidence') not in {'high', 'moderate', 'low', 'not_assessable'}: errors.append('invalid decision.confidence')
-    if not (root / case.get('events_file', 'events.jsonl')).is_file(): errors.append('events file missing')
+    try: events_path = safe_case_member(root, case.get('events_file', 'events.jsonl'), 'events_file')
+    except ValueError as exc: errors.append(str(exc)); events_path = None
+    if events_path is not None and not events_path.is_file(): errors.append('events file missing')
     if errors:
         print('INVALID'); [print('- ' + e) for e in errors]; return 1
     print('VALID'); return 0
@@ -352,7 +426,7 @@ def case_report(args):
     root = pathlib.Path(args.directory).resolve()
     with open(root / 'case.json', encoding='utf-8') as fh: case = json.load(fh)
     lines = ['# 诊断案例 %s' % case['case_id'], '', '## 事件', '']
-    with open(root / case.get('events_file', 'events.jsonl'), encoding='utf-8') as fh:
+    with open(safe_case_member(root, case.get('events_file', 'events.jsonl'), 'events_file'), encoding='utf-8') as fh:
         for line in fh:
             e = json.loads(line)
             lines.append('- `%s`：%s；影响：%s' % (e.get('action'), e.get('result'), e.get('impact') or '未记录'))
