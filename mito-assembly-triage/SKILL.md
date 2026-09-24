@@ -34,13 +34,16 @@ description: >-
 4. **EXECUTE**：优先使用现有脚本和成熟工具；记录实际命令、版本、数据库、输入哈希、退出状态和日志。
    只有现有工具不足时才写补充程序，并为其增加测试和独立交叉验证。
 5. **UPDATE**：逐项记录结果对假设的支持、反对或无法区分。只有当下一项检查预期会改变判定、修复选择或置信度时继续。
-6. **DECIDE**：每个异常分别判为 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED`，并记录证据范围、局限和
-   `high`/`moderate`/`low`/`not_assessable` 置信度；一个样本可有多个不同状态的异常。
+6. **DECIDE**：每个异常分别判为 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED`，并各自携带证据范围、局限与
+   `high`/`moderate`/`low`/`not_assessable` 置信度。逐个异常的判定写入 `case.json` 的 `anomalies[]`
+   （schema 校验 `id`/`claim`/`status`/`confidence`，可选 `reads_support`）；`decision` 仅是案例级汇总，
+   不代替逐异常的判定。一个样本可有多个不同状态的异常。
 7. **VERIFY**：把修复建议与修复验证分开。验证标准必须匹配修改类型，不能用候选来源本身证明候选正确。
 8. **LEARN**：仅在用户允许持久化时保存结构化案例、尝试和反例。新经验先是候选，不因重复次数自动成为规则或修改本文件。
 
 每项结论至少包含：`claim`、`evidence_for`、`evidence_against`、`not_tested`、`scope`、
-`limitations`、`status`、`confidence`。`case-validate` 只证明记录格式合格，不证明科学结论。
+`limitations`、`status`、`confidence`。`case-validate` 按 `schemas/case.schema.json` 校验字段与枚举，
+只证明**记录格式**合格，不证明科学结论；`confidence` 属于每条结论，不设全局上限。
 
 ## 按异常加载资料
 
@@ -58,12 +61,29 @@ description: >-
 ### 注释层面
 
 FASTA、同源性、翻译、RNA 结构和比较基因组证据可以支持候选注释修改，但不能把修改升级为
-已验证的样本碱基或连接结构。13 CDS / 22 tRNA / 2 rRNA、序列长度、起点、链分布和基因顺序
-都是典型类群下的预期，不是全部动物线粒体的硬性定律。非典型类群使用
-`annot_check.py --allow-atypical` 只会降级为待核查，不会自动通过。
+已验证的样本碱基或连接结构。
+
+判据分三层，陈述时必须分开：**(a) 一般生物学预期**（13 CDS / 22 tRNA / 2 rRNA、序列长度、起点、
+链分布、基因顺序 —— 均有类群例外）、**(b) NCBI 提交审查要求**（需提供注释并向策展人说明差异）、
+**(c) 本工具的工程预警阈值**（`>8bp` 重叠、tRNA `60–75bp`、rrnL/rrnS 区间、`9+/4−`）。
+(c) 层不得写成"NCBI 要求…"，也不得当成领域公理。
+
+非典型类群用 `annot_check.py --allow-atypical "<理由>"`：**只**把基因集数量与身份差异降为待核查，
+需给出理由，且不放松起始密码子、重叠、长度与链分布。
+
+类群特异的**非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不得靠伪造 5' 端缺失或改碱基绕过；
+用 `--tolerate-start "基因:密码子"` 逐条声明为已知例外，保留证据等级与不确定性。
+
+**重叠**只记录与分级（`≤8bp` INFO，`>8bp` 默认 REVIEW，`--overlap-severity error` 可升级），
+`--tolerate-overlap` 的含义是"已人工审核并保留该注释"，不代表已证明功能真实性；
+**任何重叠都不构成自动裁剪序列的理由**。
+
+`annot_check.py` 退出码：`0` 无发现 / `1` 有错误（含参数错误）/ `2` 仅待核查。
+**退出码 2 不等于通过**：每条待核查项必须在案例中逐条入账（被降级项 + 支持证据 + 判定人）。
 
 内部终止、模糊碱基、基因缺失、重复、反向块、控制区 soft-clip 或低覆盖都只是异常信号。
 至少比较密码表、边界/阅读框、测序或组装错误、真实生物学变异、NUMT 和结构重复等相容解释。
+**"无内部终止"不证明序列来自线粒体**：numt 可以不携带 in-frame 终止密码子。
 MITOS2、MitoFinder、参考锚定或单一 BLAST 结果都不能作为不可挑战的金标准。
 
 ### 碱基层面
@@ -126,9 +146,10 @@ reads、read pairs、组装图或长读长证据。不能唯一解析时保留�
 不能覆盖它。
 
 ```bash
-# 结构化案例：事实、事件、判定和报告
+# 结构化案例：事实、事件、判定和报告（case-init 必须给出至少 1 条候选解释）
 python3 tools/experience.py case-init work/case-001 --issue internal_stop \
-  --observation 'nad5 出现内部 stop' --input assembly_fasta assembly.fasta
+  --observation 'nad5 出现内部 stop' --input assembly_fasta assembly.fasta \
+  --hypothesis 'H1 边界/读码框错误' --hypothesis 'H2 碱基错误' --hypothesis 'H3 真实生物例外'
 python3 tools/experience.py case-event work/case-001 --action annot_check \
   --result 'table 5 下仍有内部 stop' --impact H1:against
 python3 tools/experience.py case-validate work/case-001

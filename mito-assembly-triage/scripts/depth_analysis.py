@@ -37,21 +37,78 @@ def coverage_intervals(length, window):
     return [(start, min(start + window - 1, length)) for start in range(1, length + 1, window)]
 
 
-def read_base_at_reference(fields, reference_position):
+def read_base_and_quality_at_reference(fields, reference_position):
+    """Return (base, base_quality) in reference orientation, or (None, None)."""
     reference_offset = reference_position - int(fields[3])
     query_offset = reference_to_query_offset(fields[5], reference_offset)
     if query_offset is None:
-        return None
+        return None, None
     sequence = fields[9]
-    # SAM SEQ is in read (query) orientation.  For a reverse-aligned read,
-    # map the query into reference orientation before indexing it.  This is
-    # exactly one reverse-complement operation; pysam pileup is preferred for
-    # production callers because it also handles all CIGAR edge cases.
+    qualities = fields[10] if len(fields) > 10 else ''
+    # SAM SEQ/QUAL are in read (query) orientation.  For a reverse-aligned read,
+    # map both into reference orientation before indexing.
     if int(fields[1]) & 0x10:
         sequence = sequence.translate(_COMPLEMENT)[::-1]
+        qualities = qualities[::-1]
     if query_offset < 0 or query_offset >= len(sequence):
-        return None
-    return sequence[query_offset].upper()
+        return None, None
+    base = sequence[query_offset].upper()
+    quality = (ord(qualities[query_offset]) - 33) if query_offset < len(qualities) else None
+    return base, quality
+
+
+def read_base_at_reference(fields, reference_position):
+    return read_base_and_quality_at_reference(fields, reference_position)[0]
+
+
+def base_support(records, position, min_mapq=20, min_baseq=20, min_depth=5,
+                 max_strand_fraction=0.9):
+    """Aggregate read-level evidence for one reference position.
+
+    ``callable`` is True only when MAPQ, base quality, depth and strand balance all
+    pass; otherwise the caller must not propose base replacement.  These four
+    numbers are the documented evidence fields for a single-base repair.
+    """
+    bases = collections.Counter()
+    strands = {'+': collections.Counter(), '-': collections.Counter()}
+    excluded = {'duplicate': 0, 'low_mapq': 0, 'low_baseq': 0, 'no_base': 0, 'secondary': 0}
+    for fields in records:
+        if len(fields) < 6:
+            continue
+        try:
+            flag = int(fields[1]); mapq = int(fields[4])
+        except ValueError:
+            continue
+        if flag & 0x400:
+            excluded['duplicate'] += 1; continue
+        if flag & (0x4 | 0x100 | 0x800):
+            excluded['secondary'] += 1; continue
+        if mapq < min_mapq:
+            excluded['low_mapq'] += 1; continue
+        base, quality = read_base_and_quality_at_reference(fields, position)
+        if base is None:
+            excluded['no_base'] += 1; continue
+        if quality is not None and quality < min_baseq:
+            excluded['low_baseq'] += 1; continue
+        bases[base] += 1
+        strands['-' if flag & 0x10 else '+'][base] += 1
+
+    depth = sum(bases.values())
+    dominant, dominant_count = bases.most_common(1)[0] if bases else (None, 0)
+    support = dominant_count / depth if depth else 0.0
+    reasons = []
+    if depth == 0:
+        reasons.append('深度为 0 (无可用 reads)')
+    elif depth < min_depth:
+        reasons.append('深度 %d < %d' % (depth, min_depth))
+    if dominant_count:
+        on_dominant = max(strands['+'][dominant], strands['-'][dominant])
+        fraction = on_dominant / dominant_count
+        if fraction > max_strand_fraction:
+            reasons.append('链向偏倚: 优势碱基单链占比 %.2f > %.2f' % (fraction, max_strand_fraction))
+    return {'position': position, 'base': dominant, 'depth': depth, 'support': support,
+            'strand_counts': {'+': dict(strands['+']), '-': dict(strands['-'])},
+            'excluded': excluded, 'callable': not reasons, 'reasons': reasons}
 
 def main():
     if len(sys.argv) < 3:
@@ -157,20 +214,21 @@ def main():
                 pos = i + 1
                 out = subprocess.run(['samtools', 'view', bam, '%s:%d-%d' % (chrom, max(1,pos-30), pos+30)],
                                      capture_output=True, text=True).stdout
-                bc = collections.Counter()
-                for line in out.split('\n'):
-                    if not line.strip(): continue
-                    f = line.split('\t')
-                    if int(f[1]) & 0x100: continue
-                    base = read_base_at_reference(f, pos)
-                    if base:
-                        bc[base] += 1
-                if bc:
-                    dom, cnt = bc.most_common(1)[0]
-                    support = cnt / sum(bc.values())
-                    recommendation = '→ 伪影, 可替换为 %s' % dom if allow_replacement and support > 0.95 else '→ 需人工确认，未授权替换'
-                    print('位置 %d (%s): reads 支持 %s=%d (%.0f%%) %s' % (
-                        pos, ch, dom, cnt, support * 100, recommendation))
+                records = [line.split('\t') for line in out.split('\n') if line.strip()]
+                evidence = base_support(records, pos)
+                if evidence['depth']:
+                    authorized = (allow_replacement and evidence['callable']
+                                  and evidence['support'] > 0.95)
+                    recommendation = ('→ 伪影, 可替换为 %s' % evidence['base']) if authorized \
+                        else '→ 证据不足或未授权替换, 需人工确认'
+                    print('位置 %d (%s): %s=%d (%.0f%%) depth=%d 链向=%s MAPQ>=%d 排除(dup=%d, lowMAPQ=%d, lowBQ=%d)' % (
+                        pos, ch, evidence['base'], evidence['support'] * evidence['depth'],
+                        evidence['support'] * 100, evidence['depth'], evidence['strand_counts'],
+                        20, evidence['excluded']['duplicate'], evidence['excluded']['low_mapq'],
+                        evidence['excluded']['low_baseq']))
+                    if evidence['reasons']:
+                        print('    未通过证据要求: %s' % '; '.join(evidence['reasons']))
+                    print('    %s (%s)' % (recommendation, '单碱基修复需 MAPQ/碱基质量/链向/深度四项同时通过'))
 
     if low:
         print('\n判定: 存在低覆盖区，未通过 reads 质量门')

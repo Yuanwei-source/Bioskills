@@ -27,6 +27,7 @@ LESSON_STATUSES = {'candidate', 'verified', 'rejected', 'deprecated', 'withdrawn
 # candidate 以外的状态都是终态/审核结论; 只有 verified 可进入公共同步
 LESSON_REVIEW_STATUSES = LESSON_STATUSES - {'candidate'}
 LESSON_RETIRED_STATUSES = {'rejected', 'deprecated', 'withdrawn', 'superseded', 'revoked'}
+CASE_SCHEMA = os.path.join(SKILL_DIR, 'schemas', 'case.schema.json')
 SAFE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
 
 
@@ -387,10 +388,17 @@ def case_init(args):
         path = pathlib.Path(raw).resolve()
         if not path.is_file(): raise ValueError('输入不存在: %s' % raw)
         inputs.append({'role': role, 'path': str(path), 'sha256': file_sha256(path)})
+    statements = [str(text).strip() for text in (getattr(args, 'hypothesis', None) or []) if str(text).strip()]
+    if not statements:
+        raise ValueError('case-init 至少要给出 1 条候选解释: --hypothesis "..." '
+                         '(SKILL.md 的 HYPOTHESIZE 步骤建议先列出多条竞争解释)')
+    hypotheses = [{'id': 'H%d' % (index + 1), 'explanation': text,
+                   'support': [], 'against': [], 'unknown': []}
+                  for index, text in enumerate(statements)]
     case = {'schema_version': '2.0', 'case_id': args.case_id or root.name,
             'taxon': {'name': args.taxon, 'taxid': None, 'genetic_code': None},
             'inputs': inputs, 'issue': {'type': args.issue, 'user_observation': args.observation},
-            'hypotheses': [], 'events_file': 'events.jsonl',
+            'hypotheses': hypotheses, 'events_file': 'events.jsonl',
             'decision': {'status': 'UNRESOLVED', 'confidence': 'not_assessable', 'rationale': '尚未完成足够检查'},
             'modifications': [], 'validation': [], 'lessons_proposed': []}
     tmp = root / 'case.json.tmp'
@@ -411,10 +419,46 @@ def case_event(args):
         fh.write(json.dumps(record, ensure_ascii=False) + '\n')
     print('event recorded')
 
+def case_schema_errors(case):
+    """Enforce schemas/case.schema.json; fall back to an equivalent explicit check."""
+    schema_path = CASE_SCHEMA
+    try:
+        import jsonschema
+    except ImportError:
+        jsonschema = None
+    if jsonschema is not None and os.path.exists(schema_path):
+        try:
+            jsonschema.validate(case, _json(schema_path))
+        except jsonschema.ValidationError as exc:
+            location = '/'.join(str(part) for part in exc.absolute_path) or '<root>'
+            return ['schema 校验失败: %s (%s)' % (exc.message, location)]
+        return []
+    errors = []
+    required = ('schema_version', 'case_id', 'inputs', 'issue', 'hypotheses', 'decision', 'events_file')
+    for key in required:
+        if key not in case:
+            errors.append('缺少必需字段: %s' % key)
+    hypotheses = case.get('hypotheses')
+    if isinstance(hypotheses, list):
+        if not hypotheses:
+            errors.append('hypotheses 不能为空 (至少 1 条候选解释)')
+        for index, item in enumerate(hypotheses):
+            if not isinstance(item, dict) or not {'id', 'explanation', 'support', 'against', 'unknown'} <= set(item):
+                errors.append('hypotheses[%d] 缺少必需字段 (id/explanation/support/against/unknown)' % index)
+    elif hypotheses is not None:
+        errors.append('hypotheses 必须是数组')
+    inputs = case.get('inputs')
+    if isinstance(inputs, list):
+        for index, item in enumerate(inputs):
+            if not isinstance(item, dict) or not {'role', 'path', 'sha256'} <= set(item):
+                errors.append('inputs[%d] 缺少必需字段 (role/path/sha256)' % index)
+    return errors
+
+
 def case_validate(args):
     root = pathlib.Path(args.directory).resolve()
     with open(root / 'case.json', encoding='utf-8') as fh: case = json.load(fh)
-    errors = []
+    errors = case_schema_errors(case)
     if case.get('schema_version') != '2.0': errors.append('schema_version must be 2.0')
     if case.get('decision', {}).get('status') not in {'RESOLVED', 'NO_CHANGE', 'UNRESOLVED'}: errors.append('invalid decision.status')
     if case.get('decision', {}).get('confidence') not in {'high', 'moderate', 'low', 'not_assessable'}: errors.append('invalid decision.confidence')
@@ -490,7 +534,7 @@ def main():
     elif cmd in ('case-init', 'case-event', 'case-validate', 'case-report'):
         ap = argparse.ArgumentParser()
         if cmd == 'case-init':
-            ap.add_argument('directory'); ap.add_argument('--case-id'); ap.add_argument('--issue', required=True); ap.add_argument('--observation', required=True); ap.add_argument('--taxon'); ap.add_argument('--input', nargs=2, action='append', default=[], metavar=('ROLE', 'PATH'))
+            ap.add_argument('directory'); ap.add_argument('--case-id'); ap.add_argument('--issue', required=True); ap.add_argument('--observation', required=True); ap.add_argument('--taxon'); ap.add_argument('--input', nargs=2, action='append', default=[], metavar=('ROLE', 'PATH')); ap.add_argument('--hypothesis', action='append', default=[], metavar='TEXT')
             try: case_init(ap.parse_args(sys.argv[2:]))
             except (ValueError, OSError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
         elif cmd == 'case-event':

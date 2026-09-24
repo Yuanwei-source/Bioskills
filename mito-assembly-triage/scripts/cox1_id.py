@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 COX1 物种鉴定: 提取 COX1 (或给定区域), 提交 NCBI blastn, RID 轮询, 解析最佳命中
-用法: python3 cox1_id.py <genome.fasta> --allow-public-upload [--coords 1353,2891] [--max-results 5]
+
+必须显式给出 --coords (本脚本不自动识别 COX1) 与 --allow-public-upload。
+结果报告 identity、**query coverage** 与多个候选; 不做物种级确定结论:
+identity/coverage 只能给出候选归属, 阈值分档属工程启发式, 无类群特异性依据。
+
+用法: python3 cox1_id.py <genome.fasta> --allow-public-upload --coords 1353,2891 [--max-results 5]
 依赖: 网络 (NCBI eutils/blast), 可选 BioPython
 """
 import sys, re, time, urllib.request, urllib.parse
@@ -24,16 +29,59 @@ def read_single_fasta(fn):
         raise ValueError('输入必须包含且仅包含一条 FASTA 序列')
     return records[0]
 
-def select_supported_hit(hits, min_identity=85.0):
-    supported = [(identity, description) for identity, description in hits if identity >= min_identity]
+MIN_IDENTITY = 85.0
+MIN_QUERY_COVERAGE = 0.8
+
+
+def _hit_parts(hit):
+    """Accept (identity, description) and (identity, align_len, description)."""
+    if len(hit) >= 3:
+        return float(hit[0]), hit[1], hit[2]
+    return float(hit[0]), None, hit[1]
+
+
+def select_supported_hit(hits, min_identity=MIN_IDENTITY, min_coverage=None, query_len=None):
+    """Return the unique best hit, or None when the evidence is not discriminating.
+
+    Hits below ``min_identity`` -- or, when ``min_coverage`` and ``query_len`` are
+    given, hits covering less than that fraction of the query -- are dropped before
+    deciding.  A top hit not separated by at least 1% identity from the next is
+    treated as ambiguous.
+    """
+    supported = []
+    for hit in hits:
+        identity, align_len, _ = _hit_parts(hit)
+        if identity < min_identity:
+            continue
+        if min_coverage and query_len:
+            if not align_len or align_len / query_len < min_coverage:
+                continue
+        supported.append(hit)
     if not supported:
         return None
-    top_identity = max(identity for identity, _ in supported)
-    lower = [identity for identity, _ in supported if identity < top_identity]
+    top_identity = max(_hit_parts(hit)[0] for hit in supported)
+    lower = [_hit_parts(hit)[0] for hit in supported if _hit_parts(hit)[0] < top_identity]
     if lower and top_identity - max(lower) < 1.0:
         return None
-    top = [hit for hit in supported if hit[0] == top_identity]
+    top = [hit for hit in supported if _hit_parts(hit)[0] == top_identity]
     return top[0] if len(top) == 1 else None
+
+
+def interpret(identity, coverage, min_identity=MIN_IDENTITY,
+              min_coverage=MIN_QUERY_COVERAGE):
+    """Provisional, non-species verdict for one barcode query."""
+    if identity is None or coverage is None or coverage < min_coverage:
+        return {'status': 'insufficient',
+                'message': 'query coverage %.2f < %.2f: 覆盖率不足, 不能得出任何条码结论'
+                           % (coverage or 0.0, min_coverage)}
+    if identity < min_identity:
+        return {'status': 'ambiguous',
+                'message': 'identity %.1f%% < %.0f%%: 参考物种可能不合适'
+                           % (identity, min_identity)}
+    return {'status': 'provisional_candidate',
+            'message': 'identity %.1f%% / query coverage %.0f%%: 仅候选归属, 需形态、多位点与'
+                       '文献证据; identity 不等于物种鉴定'
+                       % (identity, coverage * 100)}
 
 
 def main():
@@ -113,21 +161,27 @@ def main():
 
     # 解析
     print('\n=== 物种鉴定结果 (COX1 blastn vs nt) ===')
-    print('%-45s %8s %6s' % ('物种', 'Score', 'Ident%'))
-    print('-' * 65)
+    print('查询长度: %d bp | 数据库: nt (NCBI BLAST URL API 提交, 该接口不暴露库版本号)' % len(query))
     hits = re.findall(r'>(\S+?) (.+?)\nLength=\d+\n\n Score = (\d+) bits.*?Identities = (\d+)/(\d+)', out, re.S)
-    parsed_hits = [(int(idn) / int(tot) * 100, desc.strip()) for _, desc, _, idn, tot in hits if int(tot) >= 400]
-    best_hit = select_supported_hit(parsed_hits)
+    query_len = len(query)
+    parsed_hits = [(int(idn) / int(tot) * 100, int(tot), desc.strip())
+                   for _, desc, _, idn, tot in hits]
+    print('%-45s %8s %8s' % ('命中描述', 'Ident%', 'cov%'))
+    for identity, align_len, description in parsed_hits[:max_res]:
+        print('%-45s %7.1f%% %7.0f%%' % (description[:45], identity, align_len / query_len * 100))
+    best_hit = select_supported_hit(parsed_hits, min_identity=MIN_IDENTITY,
+                                    min_coverage=MIN_QUERY_COVERAGE, query_len=query_len)
     if best_hit is None:
-        print('没有唯一且达到 85% identity 的 COI 命中', file=sys.stderr)
+        print('没有唯一、达到 %.0f%% identity 且 query coverage >= %.0f%% 的 COI 命中; 状态: insufficient'
+              % (MIN_IDENTITY, MIN_QUERY_COVERAGE * 100), file=sys.stderr)
         sys.exit(1)
-    identity, description = best_hit
-    print('%-45s %5.1f%%' % (description[:45], identity))
-
-    print('\n判读标准:')
-    print('  >97%  同种 (intraspecific)')
-    print('  85-97% 同属不同种')
-    print('  <85%  不同属/科 → 参考物种需更换')
+    identity, align_len, description = best_hit
+    coverage = align_len / query_len
+    verdict = interpret(identity, coverage)
+    print('\n最佳候选: %s' % description[:60])
+    print('  identity=%.1f%%  query coverage=%.0f%%' % (identity, coverage * 100))
+    print('  [%s] %s' % (verdict['status'], verdict['message']))
+    print('\n注意: 本节不给出物种级确定结论; 阈值分档为工程启发式, 无类群特异性依据。')
 
 if __name__ == '__main__':
     main()
