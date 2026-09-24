@@ -29,6 +29,7 @@ python3 tools/experience.py case-report work/case-001
 python3 tools/experience.py search-structured --query "internal_stop nad5"
 python3 tools/experience.py propose-lesson --case work/case-001 --next-test "检查 table 与 CDS 边界"
 python3 tools/experience.py export-contribution --case work/case-001 --output contribution.json --authorize
+python3 tools/experience.py review-lesson --lesson-id lesson-001 --status verified --reviewer human --reason "独立证据核验"
 python3 tools/experience.py sync-public --manifest https://raw.githubusercontent.com/<org>/<repo>/main/knowledge/manifest.json
 ```
 贡献命令没有 `--authorize` 时拒绝生成文件；公共同步只读入隔离缓存，不能覆盖本地案例，也不会执行下载内容。

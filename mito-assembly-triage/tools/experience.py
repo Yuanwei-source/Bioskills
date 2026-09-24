@@ -94,6 +94,19 @@ def propose_lesson(args):
     _write_json(path, lesson); print('候选经验写入: %s' % path)
     if conflicts: print('冲突候选: %s' % ', '.join(conflicts))
 
+def review_lesson(args):
+    if args.status not in ('verified', 'rejected', 'deprecated'): raise ValueError('非法经验状态')
+    source = pathlib.Path(LESSON_CANDIDATES) / (args.lesson_id + '.json')
+    if not source.exists(): source = pathlib.Path(LESSON_VERIFIED) / (args.lesson_id + '.json')
+    if not source.exists(): raise ValueError('找不到 lesson: %s' % args.lesson_id)
+    lesson = _json(source); previous = lesson.get('validation_status', 'candidate')
+    lesson['validation_status'] = args.status; lesson['last_reviewed'] = datetime.date.today().isoformat()
+    lesson.setdefault('review_history', []).append({'from': previous, 'to': args.status, 'reviewer': args.reviewer, 'reason': args.reason, 'date': lesson['last_reviewed']})
+    target = pathlib.Path(LESSON_VERIFIED) / source.name if args.status == 'verified' else pathlib.Path(LESSON_CANDIDATES) / source.name
+    _write_json(target, lesson)
+    if target != source: source.unlink()
+    print('经验状态已更新: %s -> %s' % (previous, args.status))
+
 def export_contribution(args):
     if not args.authorize: raise ValueError('必须显式指定 --authorize；默认不导出/上传')
     case = _json(pathlib.Path(args.case) / 'case.json')
@@ -388,6 +401,10 @@ def main():
     elif cmd == 'export-contribution':
         ap = argparse.ArgumentParser(); ap.add_argument('--case', required=True); ap.add_argument('--output', required=True); ap.add_argument('--authorize', action='store_true')
         try: export_contribution(ap.parse_args(sys.argv[2:]))
+        except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
+    elif cmd == 'review-lesson':
+        ap = argparse.ArgumentParser(); ap.add_argument('--lesson-id', required=True); ap.add_argument('--status', required=True); ap.add_argument('--reviewer', required=True); ap.add_argument('--reason', required=True)
+        try: review_lesson(ap.parse_args(sys.argv[2:]))
         except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
     elif cmd == 'sync-public':
         ap = argparse.ArgumentParser(); ap.add_argument('--manifest', required=True)

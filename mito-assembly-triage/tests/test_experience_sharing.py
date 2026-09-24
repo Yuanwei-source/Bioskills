@@ -50,6 +50,14 @@ class ExperienceSharingTests(unittest.TestCase):
         lesson = json.loads((Path(self.module.LESSON_CANDIDATES) / "lesson-b.json").read_text())
         self.assertTrue(lesson["conflicts"])
 
+    def test_lesson_review_promotes_and_records_history(self):
+        case = self.make_case("case-review")
+        self.module.propose_lesson(SimpleNamespace(case=str(case), lesson_id="review-me", next_test="pileup", allow_unresolved=False))
+        self.module.review_lesson(SimpleNamespace(lesson_id="review-me", status="verified", reviewer="human", reason="independent evidence"))
+        verified = Path(self.module.LESSON_VERIFIED) / "review-me.json"
+        self.assertTrue(verified.exists())
+        self.assertEqual(json.loads(verified.read_text())["review_history"][0]["from"], "candidate")
+
     def test_public_sync_verifies_hash_and_skips_revoked(self):
         public = self.root / "remote"; public.mkdir(); good = public / "lesson.json"; good.write_text('{"ok":true}', encoding="utf-8")
         manifest = self.root / "manifest.json"; manifest.write_text(json.dumps({"format": "mito-public-knowledge-1", "items": [
