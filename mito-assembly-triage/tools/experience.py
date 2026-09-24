@@ -10,7 +10,7 @@
   suggest-promotions                # 模式提炼: 统计重复信号/动作, 建议固化
   stats                             # 显示知识库统计
 """
-import sys, os, re, argparse, datetime
+import sys, os, re, argparse, datetime, hashlib, json, pathlib
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DATA_ROOT = os.environ.get('XDG_DATA_HOME') or os.path.join(os.path.expanduser('~'), '.local', 'share')
@@ -169,6 +169,74 @@ def stats():
     for d in [CASES, SIGNALS, PITFALLS, STATS]:
         print('  %s' % d)
 
+# Structured case helpers are deliberately integrated here rather than exposed
+# as a second diagnostic engine. Legacy Markdown cases remain readable.
+def v2_case_root(raw):
+    root = pathlib.Path(raw).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+def case_init(args):
+    root = v2_case_root(args.directory)
+    inputs = []
+    for role, raw in args.input:
+        path = pathlib.Path(raw).resolve()
+        if not path.is_file(): raise ValueError('输入不存在: %s' % raw)
+        inputs.append({'role': role, 'path': str(path), 'sha256': file_sha256(path)})
+    case = {'schema_version': '2.0', 'case_id': args.case_id or root.name,
+            'taxon': {'name': args.taxon, 'taxid': None, 'genetic_code': None},
+            'inputs': inputs, 'issue': {'type': args.issue, 'user_observation': args.observation},
+            'hypotheses': [], 'events_file': 'events.jsonl',
+            'decision': {'status': 'UNRESOLVED', 'confidence': 'not_assessable', 'rationale': '尚未完成足够检查'},
+            'modifications': [], 'validation': [], 'lessons_proposed': []}
+    tmp = root / 'case.json.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh: json.dump(case, fh, ensure_ascii=False, indent=2); fh.write('\n')
+    os.replace(tmp, root / 'case.json')
+    (root / 'events.jsonl').touch()
+    print('case initialized: %s' % (root / 'case.json'))
+
+def case_event(args):
+    root = pathlib.Path(args.directory).resolve()
+    with open(root / 'case.json', encoding='utf-8') as fh: case = json.load(fh)
+    record = {'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'action': args.action,
+              'command': args.command, 'tool_versions': args.tool_version, 'result': args.result,
+              'motivation': args.motivation, 'impact': args.impact}
+    with open(root / case.get('events_file', 'events.jsonl'), 'a', encoding='utf-8') as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + '\n')
+    print('event recorded')
+
+def case_validate(args):
+    root = pathlib.Path(args.directory).resolve()
+    with open(root / 'case.json', encoding='utf-8') as fh: case = json.load(fh)
+    errors = []
+    if case.get('schema_version') != '2.0': errors.append('schema_version must be 2.0')
+    if case.get('decision', {}).get('status') not in {'RESOLVED', 'NO_CHANGE', 'UNRESOLVED'}: errors.append('invalid decision.status')
+    if case.get('decision', {}).get('confidence') not in {'high', 'moderate', 'low', 'not_assessable'}: errors.append('invalid decision.confidence')
+    if not (root / case.get('events_file', 'events.jsonl')).is_file(): errors.append('events file missing')
+    if errors:
+        print('INVALID'); [print('- ' + e) for e in errors]; return 1
+    print('VALID'); return 0
+
+def case_report(args):
+    root = pathlib.Path(args.directory).resolve()
+    with open(root / 'case.json', encoding='utf-8') as fh: case = json.load(fh)
+    lines = ['# 诊断案例 %s' % case['case_id'], '', '## 事件', '']
+    with open(root / case.get('events_file', 'events.jsonl'), encoding='utf-8') as fh:
+        for line in fh:
+            e = json.loads(line)
+            lines.append('- `%s`：%s；影响：%s' % (e.get('action'), e.get('result'), e.get('impact') or '未记录'))
+    d = case['decision']
+    lines += ['', '## 当前判定', '', '- 状态：`%s`' % d['status'], '- 置信等级：`%s`' % d['confidence'], '- 理由：%s' % d['rationale'], '', '## 证据边界', '', '缺少 reads 时不得写成 raw-read-supported。']
+    (root / 'case.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    print('report written')
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__); sys.exit(0)
@@ -200,6 +268,19 @@ def main():
         suggest_promotions()
     elif cmd == 'stats':
         stats()
+    elif cmd in ('case-init', 'case-event', 'case-validate', 'case-report'):
+        ap = argparse.ArgumentParser()
+        if cmd == 'case-init':
+            ap.add_argument('directory'); ap.add_argument('--case-id'); ap.add_argument('--issue', required=True); ap.add_argument('--observation', required=True); ap.add_argument('--taxon'); ap.add_argument('--input', nargs=2, action='append', default=[], metavar=('ROLE', 'PATH'))
+            try: case_init(ap.parse_args(sys.argv[2:]))
+            except (ValueError, OSError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
+        elif cmd == 'case-event':
+            ap.add_argument('directory'); ap.add_argument('--action', required=True); ap.add_argument('--result', required=True); ap.add_argument('--impact', default=''); ap.add_argument('--command', default=''); ap.add_argument('--tool-version', default=''); ap.add_argument('--motivation', default='')
+            case_event(ap.parse_args(sys.argv[2:]))
+        elif cmd == 'case-validate':
+            ap.add_argument('directory'); sys.exit(case_validate(ap.parse_args(sys.argv[2:])))
+        else:
+            ap.add_argument('directory'); case_report(ap.parse_args(sys.argv[2:]))
     else:
         print('未知命令: %s' % cmd); print(__doc__)
 

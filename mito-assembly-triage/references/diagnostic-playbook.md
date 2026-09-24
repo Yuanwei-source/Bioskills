@@ -1,4 +1,4 @@
-# V2 动态诊断手册
+# 动态诊断手册
 
 诊断遵循 `INTAKE → HYPOTHESIZE → CHOOSE_TEST → EXECUTE → UPDATE → DECIDE → VERIFY → LEARN`。
 

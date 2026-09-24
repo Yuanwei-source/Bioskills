@@ -13,14 +13,14 @@ description: 线粒体基因组组装质检、诊断与修复流水线。用于�
 
 每个异常只能判为 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED`，另记录 `high/moderate/low/not_assessable` 置信等级。没有 reads 时不得报告 raw-read-supported；参考和单软件结果不能代替样本证据。
 
-结构化案例可用：
+现有经验模块支持结构化案例：
 ```bash
-python3 scripts/v2_case.py init work/case-001 --issue internal_stop \
+python3 tools/experience.py case-init work/case-001 --issue internal_stop \
   --observation 'nad5 出现内部 stop' --input assembly_fasta assembly.fasta
-python3 scripts/v2_case.py event work/case-001 --action annot_check \
+python3 tools/experience.py case-event work/case-001 --action annot_check \
   --result 'table 5 下仍有内部 stop' --impact H1:against
-python3 scripts/v2_case.py validate work/case-001
-python3 scripts/v2_case.py report work/case-001
+python3 tools/experience.py case-validate work/case-001
+python3 tools/experience.py case-report work/case-001
 ```
 案例目录应位于工作目录或外部知识目录，不覆盖输入；`case.json`、`events.jsonl` 和 `case.md` 是同一事实链的结构化/可读表示。
 

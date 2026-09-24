@@ -88,6 +88,16 @@ class ExperienceSecurityTests(unittest.TestCase):
         self.module.stats()
         self.module.suggest_promotions()
 
+    def test_structured_case_lifecycle_is_integrated_with_experience(self):
+        assembly = Path(self.temp_dir.name) / "assembly.fasta"
+        assembly.write_text(">ctg1\nACGTN\n", encoding="utf-8")
+        case = Path(self.temp_dir.name) / "case"
+        self.module.case_init(SimpleNamespace(directory=str(case), case_id=None, issue="internal_stop", observation="nad5 stop", taxon=None, input=[["assembly_fasta", str(assembly)]]))
+        self.module.case_event(SimpleNamespace(directory=str(case), action="annot_check", result="stop remains", impact="H1:against", command="", tool_version="", motivation=""))
+        self.assertEqual(self.module.case_validate(SimpleNamespace(directory=str(case))), 0)
+        self.module.case_report(SimpleNamespace(directory=str(case)))
+        self.assertIn("annot_check", (case / "case.md").read_text(encoding="utf-8"))
+
 
 class ExternalUploadTests(unittest.TestCase):
     def test_cox1_requires_explicit_public_upload_opt_in(self):
