@@ -81,13 +81,12 @@ def write_gb(path, sequence, features, topology="circular", accession=None):
 
     seq_features = []
     for spec in features:
+        strand = 1 if spec.get("strand", "+") == "+" else -1
         if spec.get("segments"):
-            parts = [FeatureLocation(a, b) for a, b in spec["segments"]]
+            parts = [FeatureLocation(a, b, strand=strand) for a, b in spec["segments"]]
             location = CompoundLocation(parts) if len(parts) > 1 else parts[0]
         else:
-            location = FeatureLocation(spec["start"], spec["end"])
-        strand = 1 if spec.get("strand", "+") == "+" else -1
-        location = location._replace(strand=strand)
+            location = FeatureLocation(spec["start"], spec["end"], strand=strand)
         qualifiers = {}
         if spec.get("gene"):
             qualifiers["gene"] = [spec["gene"]]

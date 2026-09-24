@@ -93,7 +93,7 @@ class ExperienceSecurityTests(unittest.TestCase):
         assembly = Path(self.temp_dir.name) / "assembly.fasta"
         assembly.write_text(">ctg1\nACGTN\n", encoding="utf-8")
         case = Path(self.temp_dir.name) / "case"
-        self.module.case_init(SimpleNamespace(directory=str(case), case_id=None, issue="internal_stop", observation="nad5 stop", taxon=None, input=[["assembly_fasta", str(assembly)]]))
+        self.module.case_init(SimpleNamespace(directory=str(case), case_id=None, issue="internal_stop", observation="nad5 stop", taxon=None, input=[["assembly_fasta", str(assembly)]], hypothesis=["H1 边界错误"]))
         self.module.case_event(SimpleNamespace(directory=str(case), action="annot_check", result="stop remains", impact="H1:against", command="", tool_version="", motivation=""))
         self.assertEqual(self.module.case_validate(SimpleNamespace(directory=str(case))), 0)
         self.module.case_report(SimpleNamespace(directory=str(case)))

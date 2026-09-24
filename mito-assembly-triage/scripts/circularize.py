@@ -4,6 +4,8 @@
 用法: python3 circularize.py <scaffold1.fasta> <scaffold2.fasta> <ref.gb> <outdir> --bam <candidate.bam> --reads-validated [--min-junction-support 3] [--min-mapq 20]
 原理: 分析两个 scaffold 的基因组成和方向, 尝试 4 种组合(正序/反向互补),
       选择参考辅助排序的候选，自动计算新增接缝并验证；输出仍是候选结构。
+      候选基因顺序/方向与参考不一致时记 REVIEW(退出码 2)并保留候选,
+      不作为自动失败条件, 也不允许据此接受为最终环化。
 依赖: BioPython, blastn, minimap2
 """
 import sys, os, subprocess, tempfile, itertools, re
@@ -86,21 +88,44 @@ def parse_region(region):
     return chrom, lo, hi
 
 
-def junction_spanning_reads(bam, region, min_mapq=20):
+def junction_evidence(bam, region, min_mapq=20):
+    """Read-level evidence for one junction: molecules, MAPQ, strand, duplicates.
+
+    Duplicate-flagged reads (0x400) are excluded, but be aware that this only
+    removes reads already marked by ``samtools markdup``/``fixmate``; running
+    markdup on the candidate BAM is a prerequisite for molecule-level counting.
+    """
     chrom, lo, hi = parse_region(region)
-    result = subprocess.run(['samtools', 'view', bam, '%s:%d-%d' % (chrom, lo, hi)], capture_output=True, text=True, check=True)
+    result = subprocess.run(['samtools', 'view', bam, '%s:%d-%d' % (chrom, lo, hi)],
+                            capture_output=True, text=True, check=True)
     names = set()
+    strand_counts = {'+': 0, '-': 0}
+    mapqs = []
+    duplicates = 0
     for line in result.stdout.splitlines():
         if not line.strip():
             continue
         fields = line.split('\t')
         flag = int(fields[1])
+        if flag & 0x400:
+            duplicates += 1
+            continue
         if flag & (0x4 | 0x100 | 0x800) or int(fields[4]) < min_mapq:
             continue
         start, end = sam_reference_span(fields)
         if start <= lo and end >= hi:
             names.add(fields[0])
-    return names
+            mapqs.append(int(fields[4]))
+            strand_counts['-' if flag & 0x10 else '+'] += 1
+    mapqs.sort()
+    return {'region': region, 'support': len(names), 'names': sorted(names),
+            'strand_counts': strand_counts, 'duplicates_excluded': duplicates,
+            'mapq_min': mapqs[0] if mapqs else None,
+            'mapq_median': mapqs[len(mapqs) // 2] if mapqs else None}
+
+
+def junction_spanning_reads(bam, region, min_mapq=20):
+    return set(junction_evidence(bam, region, min_mapq=min_mapq)['names'])
 
 
 def main():
@@ -205,8 +230,12 @@ def main():
             if len(fields) >= 5:
                 query_annotation.append((fields[0], fields[4]))
     if not circular_annotation_matches(query_annotation, ref_annotation):
-        print('候选基因顺序或方向与参考不一致，拒绝输出', file=sys.stderr)
-        sys.exit(1)
+        order_review = True
+        print('候选基因顺序或方向与参考不一致: 记 REVIEW (保留候选与诊断记录)', file=sys.stderr)
+        print('  顺序差异不是自动失败条件; 需人工核对参考亲缘度、反向块与接缝证据', file=sys.stderr)
+    else:
+        order_review = False
+    # 候选先落盘: 顺序不一致属 REVIEW, 不能因此丢弃候选或当成拼接失败
     if os.path.exists(out_fa):
         existing = str(next(SeqIO.parse(out_fa, 'fasta')).seq)
         if existing != seq:
@@ -224,17 +253,26 @@ def main():
         print('缺少 reads 接缝证据；需要候选序列回贴 BAM 和 --reads-validated；状态=UNRESOLVED', file=sys.stderr)
         sys.exit(2)
     try:
-        spanning = junction_spanning_reads(bam, auto_region, min_mapq=min_mapq)
+        evidence = junction_evidence(bam, auto_region, min_mapq=min_mapq)
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print('接缝证据验证失败:', exc, file=sys.stderr)
         sys.exit(1)
-    if len(spanning) < min_support:
-        print('接缝 %s 仅有 %d 条独立 read 达到 MAPQ>=%d，需要至少 %d 条' % (auto_region, len(spanning), min_mapq, min_support), file=sys.stderr)
+    print('接缝证据 %s: 支持分子=%d  链向=%s  MAPQ(min/median)=%s/%s  重复标记剔除=%d'
+          % (auto_region, evidence['support'], evidence['strand_counts'],
+             evidence['mapq_min'], evidence['mapq_median'], evidence['duplicates_excluded']))
+    if evidence['support'] < min_support:
+        print('接缝 %s 仅有 %d 条独立 read 达到 MAPQ>=%d，需要至少 %d 条'
+              % (auto_region, evidence['support'], min_mapq, min_support), file=sys.stderr)
+        print('  证据不足以宣称闭环; 请先对候选 BAM 跑 markdup, 并检查重复/低 MAPQ 读段'
+              '与竞争结构', file=sys.stderr)
         sys.exit(1)
 
     if not accept_candidate:
         print('状态: PUTATIVE_CIRCULAR/REVIEW；当前单一区间证据不能宣称最终环化。')
         print('若已人工核对全部新增接缝、重复歧义和组装图，再显式使用 --accept-candidate。')
+        sys.exit(2)
+    if order_review:
+        print('候选基因顺序/方向与参考不一致，不能接受为最终环化; 请人工核验后再决定', file=sys.stderr)
         sys.exit(2)
     print('状态: CANDIDATE_ACCEPTED（仍需独立注释与完整 provenance）')
 

@@ -18,7 +18,6 @@ from gb_fixtures import (  # noqa: E402
     ROOT, ORDER, biopython_available, build_synthetic_ref, cds_block, load_module,
     run_annot_check, write_gb,
 )
-
 REASON = "合成测试: 单基因记录, 基因集差异已逐项确认"
 
 
@@ -63,8 +62,8 @@ class NoncanonicalStartTests(unittest.TestCase):
                 self.assertIn("未匹配任何起始密码子", result.stdout)
 
     def test_real_partial_cds_codon_start_is_not_a_start_error(self):
-        # 5' partial: first complete codon sits at offset 2, so it is not a start codon
-        sequence = "GG" + "ATG" + "AAA" * 20 + "TAA"
+        # 5' partial: one base is dropped by /codon_start=2, so the first codon is GAT
+        sequence = "G" + "GAT" + "AAA" * 20 + "TAA"
         path = self.dir / "partial.gb"
         write_gb(path, sequence, [
             {"gene": "cox1", "type": "CDS", "start": 0, "end": len(sequence),
@@ -140,10 +139,11 @@ class CrossOriginAndOverlapTests(unittest.TestCase):
         return "\n".join(line for line in stdout.splitlines() if "重叠" in line)
 
     def test_long_cds_trna_overlap_defaults_to_review_not_error(self):
+        block = cds_block(102, seed=11)
         path = self.dir / "long-overlap.gb"
-        write_gb(path, "A" * 500, [
-            {"gene": "atp8", "type": "CDS", "start": 0, "end": 100, "strand": "+"},
-            {"gene": "trnQ", "type": "tRNA", "start": 90, "end": 170, "strand": "+"},
+        write_gb(path, block + "A" * 200, [
+            {"gene": "atp8", "type": "CDS", "start": 0, "end": 102, "strand": "+"},
+            {"gene": "trnQ", "type": "tRNA", "start": 92, "end": 162, "strand": "+"},
         ])
         result = run_annot_check(path, "--allow-atypical", REASON)
         self.assertNotIn("[ERROR]", result.stdout)
@@ -162,10 +162,13 @@ class CrossOriginAndOverlapTests(unittest.TestCase):
         self.assertIn("5bp", result.stdout)
 
     def test_tolerate_overlap_is_case_insensitive_and_reports_unused(self):
+        from Bio.Seq import Seq
+
+        block = str(Seq(cds_block(102, seed=12)).reverse_complement())  # minus-strand CDS
         path = self.dir / "tolerate.gb"
-        write_gb(path, "A" * 500, [
-            {"gene": "nad5", "type": "CDS", "start": 0, "end": 100, "strand": "-"},
-            {"gene": "trnH", "type": "tRNA", "start": 90, "end": 170, "strand": "-"},
+        write_gb(path, "A" * 40 + block + "A" * 160, [
+            {"gene": "nad5", "type": "CDS", "start": 40, "end": 142, "strand": "-"},
+            {"gene": "trnH", "type": "tRNA", "start": 132, "end": 202, "strand": "-"},
         ])
         result = run_annot_check(path, "--allow-atypical", REASON,
                                  "--tolerate-overlap", "ND5,trnH",
@@ -207,14 +210,23 @@ class TrnaIdentityTests(unittest.TestCase):
         self.assertEqual(self.module.canonical_gene(SimpleNamespace(qualifiers={"gene": ["trnS"]})), "trns")
 
     def test_anticodon_resolves_trna_type(self):
-        cases = {"tag": "trnl1", "taa": "trnl2", "gct": "trns1", "tga": "trns2"}
-        for anticodon, expected in cases.items():
+        cases = {"tag": ("trnL", "trnl1"), "taa": ("trnL", "trnl2"),
+                 "gct": ("trnS", "trns1"), "tga": ("trnS", "trns2")}
+        for anticodon, (bare, expected) in cases.items():
             with self.subTest(anticodon=anticodon):
                 feature = SimpleNamespace(qualifiers={
-                    "gene": ["trnL"],
-                    "anticodon": ["(pos:1..70,aa:Leu,seq:%s)" % anticodon],
+                    "gene": [bare],
+                    "anticodon": ["(pos:1..70,aa:Xaa,seq:%s)" % anticodon],
                 })
                 self.assertEqual(self.module.resolve_trna_identity(feature), expected)
+
+    def test_anticodon_inconsistent_with_bare_name_stays_undetermined(self):
+        # a bare trnL whose anticodon points at a Ser identity must not be resolved
+        feature = SimpleNamespace(qualifiers={
+            "gene": ["trnL"],
+            "anticodon": ["(pos:1..70,aa:Ser,seq:gct)"],
+        })
+        self.assertIsNone(self.module.resolve_trna_identity(feature))
 
     def test_parenthesised_gene_name_is_accepted(self):
         feature = SimpleNamespace(qualifiers={"gene": ["trnL2(UUR)"]})
@@ -248,7 +260,7 @@ class OrientationAndAliasTests(unittest.TestCase):
         path = self.dir / "revcomp.gb"
         write_gb(path, reverse, features)
         result = run_annot_check(path, "--table", "5")
-        self.assertNotIn("正链 CDS", result.stdout)
+        self.assertNotIn("正链 CDS 数量", result.stdout)
         self.assertIn("反向互补", result.stdout)
 
     def test_cross_origin_feature_helpers(self):
