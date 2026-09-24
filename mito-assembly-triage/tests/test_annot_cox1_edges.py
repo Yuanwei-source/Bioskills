@@ -317,6 +317,7 @@ class HspCollinearityTests(unittest.TestCase):
         self.assertGreater(hit["bitscore"], 0)
 
 
+@unittest.skipUnless(biopython_available(), "Biopython is not installed")
 class PartialSilentFailureRegression(unittest.TestCase):
     """The original partial-detection bug, kept as a permanent regression case.
 

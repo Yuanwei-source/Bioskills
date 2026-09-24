@@ -279,6 +279,8 @@ class ContractWordingTests(unittest.TestCase):
         self.assertIn("CIRCULAR_DECLARATION_CHECK", result.stdout + result.stderr)
 
     def test_unregistered_start_exception_carries_a_limitation(self):
+        if not biopython_available():
+            self.skipTest("Biopython is not installed")
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         directory = Path(temp.name)
