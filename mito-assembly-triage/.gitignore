@@ -1,3 +1,5 @@
 logs/
 __pycache__/
 knowledge/cases/
+# 本地送审/评审材料，不上传远程仓库
+references-review/
