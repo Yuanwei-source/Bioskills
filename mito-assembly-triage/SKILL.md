@@ -24,6 +24,15 @@ python3 tools/experience.py case-report work/case-001
 ```
 案例目录应位于工作目录或外部知识目录，不覆盖输入；`case.json`、`events.jsonl` 和 `case.md` 是同一事实链的结构化/可读表示。
 
+经验共享仍使用同一个 `experience.py`：
+```bash
+python3 tools/experience.py search-structured --query "internal_stop nad5"
+python3 tools/experience.py propose-lesson --case work/case-001 --next-test "检查 table 与 CDS 边界"
+python3 tools/experience.py export-contribution --case work/case-001 --output contribution.json --authorize
+python3 tools/experience.py sync-public --manifest https://raw.githubusercontent.com/<org>/<repo>/main/knowledge/manifest.json
+```
+贡献命令没有 `--authorize` 时拒绝生成文件；公共同步只读入隔离缓存，不能覆盖本地案例，也不会执行下载内容。
+
 ## 设计哲学
 
 - **稳定层与知识层分离**：SKILL.md 只含稳定的主流程；经验数据写入 `MITO_KNOWLEDGE_DIR`（默认位于用户 XDG 数据目录），不写入 skill 安装目录

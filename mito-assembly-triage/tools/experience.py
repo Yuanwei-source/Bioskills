@@ -10,7 +10,7 @@
   suggest-promotions                # 模式提炼: 统计重复信号/动作, 建议固化
   stats                             # 显示知识库统计
 """
-import sys, os, re, argparse, datetime, hashlib, json, pathlib
+import sys, os, re, argparse, datetime, hashlib, json, pathlib, shutil, tempfile, urllib.request
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DATA_ROOT = os.environ.get('XDG_DATA_HOME') or os.path.join(os.path.expanduser('~'), '.local', 'share')
@@ -19,12 +19,123 @@ CASES = os.path.join(KNOWLEDGE, 'cases')
 SIGNALS = os.path.join(KNOWLEDGE, 'signals.md')
 PITFALLS = os.path.join(KNOWLEDGE, 'pitfalls.md')
 STATS = os.path.join(KNOWLEDGE, 'stats.md')
+LESSON_CANDIDATES = os.path.join(KNOWLEDGE, 'lessons', 'candidates')
+LESSON_VERIFIED = os.path.join(KNOWLEDGE, 'lessons', 'verified')
+PUBLIC_KNOWLEDGE = os.path.join(KNOWLEDGE, 'public')
 
 
 def case_files():
     if not os.path.isdir(CASES):
         return []
     return sorted(fn for fn in os.listdir(CASES) if fn.endswith('.md'))
+
+def structured_case_files():
+    if not os.path.isdir(CASES): return []
+    return sorted(str(p) for p in pathlib.Path(CASES).glob('**/case.json'))
+
+def lesson_dirs():
+    os.makedirs(LESSON_CANDIDATES, exist_ok=True)
+    os.makedirs(LESSON_VERIFIED, exist_ok=True)
+
+def _json(path):
+    with open(path, encoding='utf-8') as fh: return json.load(fh)
+
+def _write_json(path, value):
+    path = pathlib.Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    with open(tmp, 'w', encoding='utf-8') as fh: json.dump(value, fh, ensure_ascii=False, indent=2); fh.write('\n')
+    os.replace(tmp, path)
+
+def _tokens(value):
+    return set(re.findall(r'[\w-]{2,}', json.dumps(value, ensure_ascii=False).lower()))
+
+def structured_search(query):
+    terms = set(query.lower().split()); results=[]
+    for path in structured_case_files():
+        try: case = _json(path)
+        except (OSError, ValueError): continue
+        words = _tokens(case)
+        score = len(terms & words)
+        if score: results.append((score, case.get('decision', {}).get('status', 'UNKNOWN'), path, case))
+    for path in pathlib.Path(LESSON_CANDIDATES).glob('*.json') if os.path.isdir(LESSON_CANDIDATES) else []:
+        try: lesson = _json(path)
+        except (OSError, ValueError): continue
+        score = len(terms & _tokens(lesson))
+        if score: results.append((score, lesson.get('validation_status', 'candidate'), str(path), lesson))
+    for score, status, path, _ in sorted(results, key=lambda x: (-x[0], x[2])):
+        print('%d\t%s\t%s' % (score, status, path))
+    if not results: print('未找到结构化经验: %s' % query)
+    return results
+
+def detect_lesson_conflicts(lesson, directory=None):
+    directory = directory or LESSON_CANDIDATES
+    conflicts=[]
+    for path in pathlib.Path(directory).glob('*.json') if os.path.isdir(directory) else []:
+        try: other = _json(path)
+        except (OSError, ValueError): continue
+        same_scope = _tokens(lesson.get('applicable_when', [])) & _tokens(other.get('applicable_when', []))
+        same_clue = _tokens(lesson.get('diagnostic_clues', [])) & _tokens(other.get('diagnostic_clues', []))
+        if same_scope and same_clue and lesson.get('suggested_next_test') != other.get('suggested_next_test'):
+            conflicts.append(str(path))
+    return conflicts
+
+def propose_lesson(args):
+    lesson_dirs(); case = _json(pathlib.Path(args.case) / 'case.json')
+    if case.get('decision', {}).get('status') == 'UNRESOLVED' and not args.allow_unresolved:
+        raise ValueError('未解决案例不能直接提炼；使用 --allow-unresolved 仅生成候选并保留限制')
+    lesson = {'lesson_id': args.lesson_id or case.get('case_id'), 'applicable_when': [case.get('issue', {}).get('type')],
+              'not_applicable_when': [], 'diagnostic_clues': [case.get('issue', {}).get('user_observation', '')],
+              'suggested_next_test': args.next_test, 'supporting_case_ids': [case.get('case_id')],
+              'counterexample_case_ids': [], 'sources': [{'case_id': case.get('case_id'), 'path': str(args.case)}],
+              'validation_status': 'candidate', 'version': '1.0.0', 'last_reviewed': None}
+    conflicts = detect_lesson_conflicts(lesson)
+    if conflicts: lesson['conflicts'] = conflicts
+    path = os.path.join(LESSON_CANDIDATES, lesson['lesson_id'] + '.json')
+    _write_json(path, lesson); print('候选经验写入: %s' % path)
+    if conflicts: print('冲突候选: %s' % ', '.join(conflicts))
+
+def export_contribution(args):
+    if not args.authorize: raise ValueError('必须显式指定 --authorize；默认不导出/上传')
+    case = _json(pathlib.Path(args.case) / 'case.json')
+    payload = json.dumps(case, ensure_ascii=False)
+    sensitive = re.compile(r'(fastq|bam|token|password|secret|api[_-]?key|/home/|/root/)', re.I)
+    if sensitive.search(payload): raise ValueError('检测到敏感路径或凭据字段，拒绝生成贡献文件')
+    contribution = {'format': 'mito-experience-contribution-1', 'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'case': case, 'review_status': 'candidate'}
+    _write_json(args.output, contribution); print('贡献文件已生成（未上传）: %s' % args.output)
+
+def _read_source(source):
+    if re.match(r'^https?://', source):
+        with urllib.request.urlopen(source, timeout=30) as response: return response.read()
+    with open(source, 'rb') as fh: return fh.read()
+
+def sync_public(args):
+    raw = _read_source(args.manifest)
+    manifest = json.loads(raw.decode('utf-8'))
+    if manifest.get('format') != 'mito-public-knowledge-1': raise ValueError('manifest 格式不兼容')
+    staging = pathlib.Path(tempfile.mkdtemp(prefix='mito-public-', dir=KNOWLEDGE))
+    destination = pathlib.Path(PUBLIC_KNOWLEDGE)
+    backup = pathlib.Path(str(destination) + '.previous')
+    moved_old = False
+    try:
+        for item in manifest.get('items', []):
+            if item.get('status') in ('revoked', 'withdrawn'): continue
+            rel = pathlib.PurePosixPath(item.get('path', ''))
+            if not rel.parts or rel.is_absolute() or '..' in rel.parts: raise ValueError('非法公共知识路径')
+            data = _read_source(item.get('url') or os.path.join(os.path.dirname(args.manifest), str(rel)))
+            if hashlib.sha256(data).hexdigest() != item.get('sha256'): raise ValueError('内容校验失败: %s' % rel)
+            target = staging.joinpath(*rel.parts); target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
+        manifest_path = staging / 'manifest.json'; manifest_path.write_bytes(raw)
+        if destination.exists():
+            if backup.exists(): shutil.rmtree(backup)
+            os.replace(destination, backup)
+            moved_old = True
+        os.replace(staging, destination)
+        print('公共知识同步完成（本地案例未覆盖，远程内容不执行）: %s' % destination)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True); raise
+    finally:
+        if moved_old and not destination.exists() and backup.exists():
+            os.replace(backup, destination)
 
 
 def ensure_cases_dir():
@@ -268,6 +379,20 @@ def main():
         suggest_promotions()
     elif cmd == 'stats':
         stats()
+    elif cmd == 'search-structured':
+        ap = argparse.ArgumentParser(); ap.add_argument('--query', required=True); structured_search(ap.parse_args(sys.argv[2:]).query)
+    elif cmd == 'propose-lesson':
+        ap = argparse.ArgumentParser(); ap.add_argument('--case', required=True); ap.add_argument('--next-test', required=True); ap.add_argument('--lesson-id'); ap.add_argument('--allow-unresolved', action='store_true')
+        try: propose_lesson(ap.parse_args(sys.argv[2:]))
+        except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
+    elif cmd == 'export-contribution':
+        ap = argparse.ArgumentParser(); ap.add_argument('--case', required=True); ap.add_argument('--output', required=True); ap.add_argument('--authorize', action='store_true')
+        try: export_contribution(ap.parse_args(sys.argv[2:]))
+        except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
+    elif cmd == 'sync-public':
+        ap = argparse.ArgumentParser(); ap.add_argument('--manifest', required=True)
+        try: sync_public(ap.parse_args(sys.argv[2:]))
+        except (ValueError, OSError, json.JSONDecodeError, urllib.error.URLError) as exc: print('✗ 公共知识未同步: %s' % exc, file=sys.stderr); sys.exit(1)
     elif cmd in ('case-init', 'case-event', 'case-validate', 'case-report'):
         ap = argparse.ArgumentParser()
         if cmd == 'case-init':
