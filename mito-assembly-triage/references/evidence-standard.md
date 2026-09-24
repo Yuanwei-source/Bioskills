@@ -37,6 +37,9 @@
 
 并且始终保持两个区分（见 §3）："有 reads 与候选一致" **不等于** "reads 足以排除其他候选结构"。
 
+落地位置：每个异常各自把 `status` / `confidence` / `reads_support` 写入 `case.json` 的 `anomalies[]`
+（schema 校验这三个枚举）；案例级 `decision` 只作汇总结论，不能代替逐异常判定。
+
 ## 3. `raw-read-supported` 的门槛与写法
 
 声称 `raw-read-supported` 必须同时给出：

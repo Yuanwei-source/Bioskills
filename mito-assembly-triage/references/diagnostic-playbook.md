@@ -62,7 +62,8 @@
 |---|---|---|
 | 假设级 | `SUPPORTED` / `REFUTED` / `UNRESOLVED` / `NOT_TESTED` | `hypotheses[]` 的 `support`/`against`/`unknown`，以及事件 `impact`（如 `H1:against`） |
 | 操作级 | `NO_CHANGE` / `ANNOTATION_CORRECTED` / `SEQUENCE_CORRECTED` / `STRUCTURE_CORRECTED` / `UNRESOLVED` | `modifications[]` 与事件记录 |
-| 案例级 | `RESOLVED` / `NO_CHANGE` / `UNRESOLVED`（**schema 强约束**） | `case.json` → `decision.status` |
+| 案例级 | `RESOLVED` / `NO_CHANGE` / `UNRESOLVED`（**schema 强约束**） | `case.json` → `decision`（仅汇总，不代替异常） |
+| 异常级（多异常并存） | 每个异常各自 `status` + `confidence` + `reads_support` | `case.json` → `anomalies[]`（schema 校验：`id`/`claim`/`status`/`confidence`，可选 `reads_support`） |
 
 案例级还要给 `decision.confidence` ∈ `high` / `moderate` / `low` / `not_assessable`（判据见 `evidence-standard.md` §2）。
 

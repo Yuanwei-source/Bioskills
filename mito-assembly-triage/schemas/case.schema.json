@@ -12,6 +12,7 @@
     "hypotheses": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "explanation", "support", "against", "unknown"]}},
     "events_file": {"type": "string"},
     "decision": {"type": "object", "required": ["status", "confidence", "rationale"], "properties": {"status": {"enum": ["RESOLVED", "NO_CHANGE", "UNRESOLVED"]}, "confidence": {"enum": ["high", "moderate", "low", "not_assessable"]}}},
+    "anomalies": {"type": "array", "items": {"type": "object", "required": ["id", "claim", "status", "confidence"], "properties": {"status": {"enum": ["RESOLVED", "NO_CHANGE", "UNRESOLVED"]}, "confidence": {"enum": ["high", "moderate", "low", "not_assessable"]}, "reads_support": {"enum": ["NOT_ASSESSED", "READS_CONSISTENT", "READS_DISCRIMINATING"]}}}},
     "modifications": {"type": "array"},
     "validation": {"type": "array"},
     "lessons_proposed": {"type": "array"}

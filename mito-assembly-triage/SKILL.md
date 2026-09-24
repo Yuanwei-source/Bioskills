@@ -34,8 +34,10 @@ description: >-
 4. **EXECUTE**：优先使用现有脚本和成熟工具；记录实际命令、版本、数据库、输入哈希、退出状态和日志。
    只有现有工具不足时才写补充程序，并为其增加测试和独立交叉验证。
 5. **UPDATE**：逐项记录结果对假设的支持、反对或无法区分。只有当下一项检查预期会改变判定、修复选择或置信度时继续。
-6. **DECIDE**：每个异常分别判为 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED`，并记录证据范围、局限和
-   `high`/`moderate`/`low`/`not_assessable` 置信度；一个样本可有多个不同状态的异常。
+6. **DECIDE**：每个异常分别判为 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED`，并各自携带证据范围、局限与
+   `high`/`moderate`/`low`/`not_assessable` 置信度。逐个异常的判定写入 `case.json` 的 `anomalies[]`
+   （schema 校验 `id`/`claim`/`status`/`confidence`，可选 `reads_support`）；`decision` 仅是案例级汇总，
+   不代替逐异常的判定。一个样本可有多个不同状态的异常。
 7. **VERIFY**：把修复建议与修复验证分开。验证标准必须匹配修改类型，不能用候选来源本身证明候选正确。
 8. **LEARN**：仅在用户允许持久化时保存结构化案例、尝试和反例。新经验先是候选，不因重复次数自动成为规则或修改本文件。
 

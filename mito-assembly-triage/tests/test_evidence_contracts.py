@@ -77,6 +77,22 @@ class CaseSchemaTests(unittest.TestCase):
         case = self._case("bad-input", inputs=[{"role": "assembly_fasta"}])
         self.assertEqual(self.validate(case), 1)
 
+    def test_per_anomaly_status_and_confidence_are_validated(self):
+        good = self._case("anomalies-ok", anomalies=[
+            {"id": "A1", "claim": "cox1 非典型起始", "status": "UNRESOLVED",
+             "confidence": "not_assessable", "reads_support": "NOT_ASSESSED"},
+            {"id": "A2", "claim": "trnS1 缺 DHU 臂属真实特征", "status": "RESOLVED",
+             "confidence": "moderate", "reads_support": "NOT_ASSESSED"},
+        ])
+        self.assertEqual(self.validate(good), 0)
+        bad_status = self._case("anomalies-bad-status", anomalies=[
+            {"id": "A1", "claim": "x", "status": "DONE", "confidence": "high"}])
+        self.assertEqual(self.validate(bad_status), 1)
+        bad_reads = self._case("anomalies-bad-reads", anomalies=[
+            {"id": "A1", "claim": "x", "status": "RESOLVED", "confidence": "high",
+             "reads_support": "raw-read-supported"}])
+        self.assertEqual(self.validate(bad_reads), 1)
+
     def test_case_init_requires_at_least_one_hypothesis(self):
         with self.assertRaises(ValueError):
             self.module.case_init(SimpleNamespace(
