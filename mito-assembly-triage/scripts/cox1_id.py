@@ -98,35 +98,45 @@ def parse_search_info(text):
             rid.group(1) if rid else None)
 
 
-def hsp_collinearity(hsps, max_span_ratio=3.0):
-    """Check whether a hit's HSPs describe ONE consistent, collinear alignment.
+def hsp_collinearity(hsps, max_span_ratio=3.0, hit_len=None, origin_margin=200):
+    """Check whether a hit's HSPs describe ONE continuous, collinear alignment.
 
-    Two HSPs can be non-overlapping on the query yet still be useless as evidence
-    of one continuous alignment: e.g. the first half hits one target position and
-    the second half hits a far-away position.  High query coverage alone must not
-    present that as one reliable alignment.
+    BLAST coordinate facts, verified with real local blastn runs (do not
+    re-derive): ``Hsp_query-from`` pairs with ``Hsp_hit-from``; and for a hit to
+    the subject's MINUS strand ``hit_from > hit_to`` while ``query_from <
+    query_to``.  Measured examples, subject 1..4000, a contiguous minus-strand
+    region split into two HSPs by an insert in the query::
 
-    BLAST coordinate convention (verified with a local blastn run, do not
-    re-derive): for an alignment to the subject's MINUS strand BLAST reports
-    ``Hsp_hit-from > Hsp_hit-to`` while ``Hsp_query-from < Hsp_query-to``.  So
-    requiring query and target to run in the same direction *within* an HSP would
-    reject every legitimate reverse-strand hit.  What matters is:
+        contiguous minus : q 1..400 -> s 1800..1401 ; q 501..900 -> s 1400..1001
+        scrambled minus  : q 1..400 -> s 1400..1001 ; q 500..900 -> s 1801..1401
+        contiguous plus  : q 1..400 -> s 1001..1400 ; q 501..900 -> s 1401..1800
 
-      1. all HSPs share one orientation signature (same subject strand) -- a mix
-         of strands for one query/hit pair is contradictory evidence;
-      2. ordered by query position, the aligned target coordinates advance
-         monotonically, using each HSP's lower coordinate (works for both
-         polarities: plus 1->601, minus 301->1201 in the blastn example);
-      3. the target span stays within ``max_span_ratio`` x the aligned bases.
-         This ratio is an ENGINEERING heuristic, not a COX1 biological standard.
+    So the test is NOT "lower target coordinate increases".  It is: order the
+    HSPs by ``query_from`` and require ``hit_from`` to advance **in the target
+    strand's own direction** -- non-decreasing on the plus strand, NON-INCREASING
+    on the minus strand.  The scrambled case above is the one that must fail.
+
+    Two separate checks, deliberately not merged:
+      1. orientation -- every HSP must share one (query, target) signature; a
+         genuine mix of subject strands is contradictory evidence;
+      2. collinearity -- the direction-aware monotonic test above, plus the
+         ``max_span_ratio`` engineering guard (an extra warning, never a
+         substitute for the direction check).
+
+    A jump that fails (2) while touching both ends of the subject is additionally
+    flagged ``cross_origin_candidate``: on a circular reference that may be a
+    legitimate origin-spanning arrangement, but it must NOT be accepted as a
+    continuous linear alignment without explicit coordinates and structural
+    evidence.
     """
     usable = [hsp for hsp in hsps
               if None not in (hsp.get('query_from'), hsp.get('query_to'),
                               hsp.get('hit_from'), hsp.get('hit_to'))]
     if len(usable) < 2:
-        return {'consistent_direction': True, 'monotonic': True,
-                'span_ratio': 1.0, 'collinear': True, 'max_span_ratio': max_span_ratio,
-                'subject_strand': '+'}
+        return {'consistent_direction': True, 'monotonic': True, 'span_ratio': 1.0,
+                'collinear': True, 'max_span_ratio': max_span_ratio,
+                'subject_strand': '+', 'cross_origin_candidate': False,
+                'paired_target_coordinates': [], 'pairing': 'query_from<->hit_from'}
     signatures = set()
     for hsp in usable:
         query_direction = '+' if hsp['query_to'] >= hsp['query_from'] else '-'
@@ -136,18 +146,27 @@ def hsp_collinearity(hsps, max_span_ratio=3.0):
         # e.g. one HSP on the subject's plus strand and another on its minus strand
         return {'consistent_direction': False, 'monotonic': False, 'span_ratio': 0.0,
                 'collinear': False, 'max_span_ratio': max_span_ratio,
-                'subject_strand': 'mixed'}
-    query_direction, target_direction = signatures.pop()
-    ordered = sorted(usable, key=lambda hsp: min(hsp['query_from'], hsp['query_to']))
-    lower_targets = [min(hsp['hit_from'], hsp['hit_to']) for hsp in ordered]
-    monotonic = all(later >= earlier for earlier, later in zip(lower_targets, lower_targets[1:]))
+                'subject_strand': 'mixed', 'cross_origin_candidate': False,
+                'paired_target_coordinates': [], 'pairing': 'query_from<->hit_from'}
+    _query_direction, target_direction = signatures.pop()
+    ordered = sorted(usable, key=lambda hsp: hsp['query_from'])
+    paired = [hsp['hit_from'] for hsp in ordered]
+    if target_direction == '+':
+        monotonic = all(later >= earlier for earlier, later in zip(paired, paired[1:]))
+    else:
+        monotonic = all(later <= earlier for earlier, later in zip(paired, paired[1:]))
     aligned = sum(abs(hsp['query_to'] - hsp['query_from']) + 1 for hsp in usable)
     coordinates = [hsp['hit_from'] for hsp in usable] + [hsp['hit_to'] for hsp in usable]
     span = max(coordinates) - min(coordinates) + 1
     ratio = (span / aligned) if aligned else 0.0
+    cross_origin = False
+    if not monotonic and hit_len:
+        cross_origin = min(coordinates) <= origin_margin and max(coordinates) >= hit_len - origin_margin
     return {'consistent_direction': True, 'monotonic': monotonic, 'span_ratio': ratio,
             'collinear': monotonic and ratio <= max_span_ratio,
-            'max_span_ratio': max_span_ratio, 'subject_strand': target_direction}
+            'max_span_ratio': max_span_ratio, 'subject_strand': target_direction,
+            'cross_origin_candidate': cross_origin,
+            'paired_target_coordinates': paired, 'pairing': 'query_from<->hit_from'}
 
 
 def parse_blast_xml(text):
@@ -169,6 +188,7 @@ def parse_blast_xml(text):
     for hit in root.iter('Hit'):
         accession = _text(hit.find('Hit_accession')) or _text(hit.find('Hit_id'))
         description = ' '.join((_text(hit.find('Hit_def'))).split())
+        hit_len = _int_text(hit.find('Hit_len'))
         intervals, hsps, identity_total, align_total, best_bits, hsp_count = [], [], 0, 0, 0.0, 0
         for hsp in hit.findall('./Hit_hsps/Hsp'):
             query_from = _int_text(hsp.find('Hsp_query-from'))
@@ -196,7 +216,7 @@ def parse_blast_xml(text):
         aligned_bases = union_length(intervals)
         spanned_bases = sum(abs(query_to - query_from) + 1 for query_from, query_to in intervals)
         redundant_bases = max(0, spanned_bases - aligned_bases)
-        collinearity = hsp_collinearity(hsps)
+        collinearity = hsp_collinearity(hsps, hit_len=hit_len)
         blockers = []
         if redundant_bases > 0:
             blockers.append('overlapping_hsps')
@@ -223,6 +243,8 @@ def parse_blast_xml(text):
             'conflicting_alignment': not collinearity['collinear'],
             'ambiguity_reasons': blockers,
             'collinearity': collinearity,
+            'hit_len': hit_len,
+            'cross_origin_candidate': collinearity['cross_origin_candidate'],
             'coverage': (aligned_bases / query_len) if query_len else 0.0,
             'bitscore': best_bits,
             'hsp_count': hsp_count,
@@ -431,6 +453,10 @@ def main():
         if hit.get('conflicting_alignment'):
             print('CONFLICTING_ALIGNMENT: %s 的 HSP 在 query/hit 方向或目标共线性上互相冲突; '
                   '不能视为一条连续可靠的对齐' % hit['accession'], file=sys.stderr)
+        if hit.get('cross_origin_candidate'):
+            print('CROSS_ORIGIN_CANDIDATE: %s 的 HSP 跳变同时触及目标两端; 若参考为环状, '
+                  '这可能是跨原点排列, 但必须用明确坐标与结构证据确认, '
+                  '不得直接按连续线性比对接受' % hit['accession'], file=sys.stderr)
     if not hits:
         print('no_match: 当前数据库与检索条件下未发现可比命中 '
               '(这只说明本次检索无候选, 不等于无近缘物种证据)', file=sys.stderr)

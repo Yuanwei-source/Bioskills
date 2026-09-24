@@ -280,24 +280,52 @@ class HspCollinearityTests(unittest.TestCase):
         self.assertIsNotNone(hit["identity"])
         self.assertAlmostEqual(hit["coverage"], 0.8, places=6)
 
-    def test_reverse_strand_multi_hsp_is_accepted(self):
-        # Coordinates taken verbatim from a local blastn run: query 1..400 ->
-        # subject 700..301 and query 451..850 -> subject 1600..1201, i.e. both
-        # HSPs on the subject's MINUS strand with hit_from > hit_to and the
-        # subject coordinates advancing as the query advances.
-        hit = self._hit("NC_MINUS", self._hsp(1, 400, 700, 301, 400, 400)
-                        + self._hsp(451, 850, 1600, 1201, 400, 400))
+    def test_contiguous_reverse_strand_hsps_are_accepted(self):
+        # Real blastn output for a CONTIGUOUS minus-strand region split by an
+        # insert in the query: query advances while the subject moves DOWN.
+        hit = self._hit("NC_MINUS", self._hsp(1, 400, 1800, 1401, 400, 400)
+                        + self._hsp(501, 900, 1400, 1001, 400, 400))
         self.assertEqual(hit["collinearity"]["subject_strand"], "-")
-        self.assertTrue(hit["collinearity"]["consistent_direction"])
+        self.assertTrue(hit["collinearity"]["monotonic"], hit["collinearity"])
         self.assertTrue(hit["collinearity"]["collinear"], hit["collinearity"])
         self.assertFalse(hit["ambiguous_alignment"], hit["ambiguity_reasons"])
         self.assertIsNotNone(hit["identity"])
+
+    def test_scrambled_reverse_strand_hsps_are_rejected(self):
+        # Same strand, but the target jumps the WRONG way for a minus-strand
+        # alignment (subject rising as the query advances) -> not one continuous
+        # alignment.  This is the data shape a previous revision wrongly accepted.
+        hit = self._hit("NC_SCRAMBLED", self._hsp(1, 400, 1400, 1001, 400, 400)
+                        + self._hsp(500, 900, 1801, 1401, 400, 400))
+        self.assertEqual(hit["collinearity"]["subject_strand"], "-")
+        self.assertFalse(hit["collinearity"]["monotonic"])
+        self.assertFalse(hit["collinearity"]["collinear"])
+        self.assertTrue(hit["conflicting_alignment"])
+        self.assertIsNone(hit["identity"])
+        self.assertIsNone(self.module.select_supported_hit([hit], min_coverage=0.8,
+                                                           query_len=1000))
+
+    def test_plus_strand_direction_violation_is_rejected(self):
+        # Both HSPs on the plus strand, but the target runs backwards
+        hit = self._hit("NC_PLUS_BACK", self._hsp(1, 400, 1401, 1800, 400, 400)
+                        + self._hsp(501, 900, 1001, 1400, 400, 400))
+        self.assertEqual(hit["collinearity"]["subject_strand"], "+")
+        self.assertFalse(hit["collinearity"]["monotonic"])
+        self.assertFalse(hit["collinearity"]["collinear"])
 
     def test_reverse_strand_single_hsp_is_accepted(self):
         hit = self._hit("NC_MINUS1", self._hsp(1, 500, 1000, 501, 495, 500))
         self.assertTrue(hit["collinearity"]["collinear"])
         self.assertFalse(hit["ambiguous_alignment"])
         self.assertIsNotNone(hit["identity"])
+
+    def test_cross_origin_jump_is_flagged_but_not_accepted(self):
+        # a wrong-way jump whose coordinates touch BOTH ends of the 15000 bp subject
+        hit = self._hit("NC_CIRC", self._hsp(1, 400, 100, 1, 400, 400)
+                        + self._hsp(501, 900, 14900, 14501, 400, 400))
+        self.assertFalse(hit["collinearity"]["collinear"])
+        self.assertTrue(hit["cross_origin_candidate"])
+        self.assertIsNone(hit["identity"])            # still not accepted as linear
 
     def test_mixed_subject_strands_are_conflicting(self):
         # one HSP on the subject plus strand, one on its minus strand
@@ -356,36 +384,51 @@ class BlastCoordinateConventionTests(unittest.TestCase):
     the comment in the source.
     """
 
-    def test_subject_minus_multi_hsp_is_collinear(self):
+    def test_both_blastn_verdicts_are_locked(self):
+        """Re-derive BOTH verdicts from real blastn output.
+
+        A contiguous minus-strand region split by an insert in the query must be
+        accepted; the same two blocks in the reverse order must be rejected.  If a
+        future BLAST release changed the coordinate convention, or the direction
+        rule regressed, this fails.
+        """
         import random
         import subprocess
         from Bio.Seq import Seq
 
         module = load_module("cox1_convention", Path("scripts") / "cox1_id.py")
-        rng = random.Random(5)
-        subject = "".join(rng.choice("ACGT") for _ in range(2000))
-        query = (str(Seq(subject[300:700]).reverse_complement()) + "A" * 50
-                 + str(Seq(subject[1200:1600]).reverse_complement()))
+        rng = random.Random(11)
+        subject = "".join(rng.choice("ACGT") for _ in range(4000))
+        noise = "".join(rng.choice("ACGT") for _ in range(100))
+        rc = lambda start, end: str(Seq(subject[start:end]).reverse_complement())
+        constructions = {
+            # contiguous minus: revcomp of the HIGH region comes first
+            "contiguous_minus": (rc(1400, 1800) + noise + rc(1000, 1400), True),
+            "scrambled_minus": (rc(1000, 1400) + noise + rc(1400, 1800), False),
+            "contiguous_plus": (subject[1000:1400] + noise + subject[1400:1800], True),
+        }
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             (directory / "subject.fa").write_text(">s\n%s\n" % subject, encoding="utf-8")
-            (directory / "query.fa").write_text(">q\n%s\n" % query, encoding="utf-8")
-            result = subprocess.run(
-                ["blastn", "-query", str(directory / "query.fa"),
-                 "-subject", str(directory / "subject.fa"), "-outfmt", "5"],
-                capture_output=True, text=True, check=True, timeout=120)
-        parsed = module.parse_blast_xml(result.stdout)
-        self.assertEqual(len(parsed["hits"]), 1)
-        hit = parsed["hits"][0]
-        self.assertGreaterEqual(hit["hsp_count"], 2)
-        # every HSP on the subject's minus strand
-        self.assertTrue(all(item["hit_from"] > item["hit_to"] for item in hit["hsps"]))
-        self.assertTrue(all(item["query_from"] < item["query_to"] for item in hit["hsps"]))
-        self.assertEqual(hit["collinearity"]["subject_strand"], "-")
-        self.assertTrue(hit["collinearity"]["collinear"], hit["collinearity"])
-        self.assertFalse(hit["conflicting_alignment"])
-        self.assertIsNotNone(hit["identity"])
-
+            for name, (query, expected_collinear) in constructions.items():
+                with self.subTest(construction=name):
+                    (directory / "query.fa").write_text(">q\n%s\n" % query, encoding="utf-8")
+                    result = subprocess.run(
+                        ["blastn", "-query", str(directory / "query.fa"),
+                         "-subject", str(directory / "subject.fa"), "-outfmt", "5"],
+                        capture_output=True, text=True, check=True, timeout=120)
+                    parsed = module.parse_blast_xml(result.stdout)
+                    self.assertEqual(len(parsed["hits"]), 1)
+                    hit = parsed["hits"][0]
+                    self.assertGreaterEqual(hit["hsp_count"], 2)
+                    self.assertEqual(hit["collinearity"]["collinear"], expected_collinear,
+                                     hit["collinearity"])
+                    if expected_collinear:
+                        self.assertFalse(hit["conflicting_alignment"])
+                        self.assertIsNotNone(hit["identity"])
+                    else:
+                        self.assertTrue(hit["conflicting_alignment"])
+                        self.assertIsNone(hit["identity"])
 
 @unittest.skipUnless(biopython_available(), "Biopython is not installed")
 class PartialSilentFailureRegression(unittest.TestCase):

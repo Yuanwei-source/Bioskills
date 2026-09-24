@@ -122,13 +122,16 @@ reads、read pairs、组装图或长读长证据。不能唯一解析时保留�
 查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。它使用 `FORMAT_TYPE=XML2` 结构化解析，
 报告每个候选的 **query coverage**（多 HSP 并集）与 identity，并把 RID 轮询与结果下载分开。
 退出码把任务状态与判读状态分开：`0` 得判读 / `1` insufficient 或 no_match（分析结论）/ `2` 拒绝执行 /
-`3` 网络或结果格式故障。多 HSP 的指标只有同时满足**不重叠**与**目标共线**（全部 HSP 同一目标链、按 query 排序后目标坐标单调推进、目标跨度不超过比对长度的 3 倍）才回总；
-其中 **`max_span_ratio=3.0` 是工程启发式，不是 COX1 生物学标准**。
-同一 hit 的 HSP 若混处目标正负链，则属矛盾证据。
-回总失败时记 `overlapping_hsps` 或 `non_collinear_hsps` + `CONFLICTING_ALIGNMENT`。
+`3` 网络或结果格式故障。多 HSP 的指标只有同时满足**不重叠**与**目标共线**才回总，两个检查分开做：
+① 全部 HSP 必须同一目标链（真正的正负链混合属矛盾证据）；
+② 按 `query_from` 排序后，`hit_from` 必须**沿目标链方向单调推进**（正链递增、**负链递减**）；
+其中 **`max_span_ratio=3.0`（目标跨度 ≤ 3 倍比对长度）是额外的工程预警，不是 COX1 生物学标准，也不能代替方向检查**。
+坐标约定经本地真实 `blastn` 实测锁定：连续负链 `q1..400→s1800..1401`、`q501..900→s1400..1001`（应**接受**）；
+同两段但顺序倒置 `q1..400→s1400..1001`、`q500..900→s1801..1401`（应**拒绝**）。
+回总失败时记 `overlapping_hsps` 或 `non_collinear_hsps` + `CONFLICTING_ALIGNMENT`；若跳变同时触及目标两端，
+另记 `CROSS_ORIGIN_CANDIDATE` —— 环状参考下可能是跨原点排列，但**必须**有明确坐标与结构证据，不得直接按连续线性比对接受。
 两种情形都**不参与自动择优**，但 `AMBIGUOUS_ALIGNMENT` 的含义是“**多 HSP 指标无法可靠汇总**”，
-**不是**“该 hit 不是有效候选”；原始 HSP / 逐 HSP identity / bitscore / 坐标均保留，供人工核对。
-最优 accession 不等于已完成物种鉴定。
+**不是**“该 hit 不是有效候选”；原始 HSP / 逐 HSP identity / bitscore / 坐标均保留。最优 accession 不等于已完成物种鉴定。
 
 超过 5 分钟的任务使用现有 `scripts/run_bg.sh` 和 `scripts/check_bg.sh`，必须检查真实退出状态，
 不能把仍在运行、超时或失败的任务描述为完成。
