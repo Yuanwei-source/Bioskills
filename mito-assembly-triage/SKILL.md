@@ -85,6 +85,7 @@ FASTA、同源性、翻译、RNA 结构和比较基因组证据可以支持候�
 
 `annot_check.py` 退出码：`0` 无发现 / `1` 有错误（含参数错误）/ `2` 仅待核查。
 **退出码 2 不等于通过**：每条待核查项必须在案例中逐条入账（被降级项 + 支持证据 + 判定人）。
+`--require-circular` 打印 `CIRCULAR_DECLARATION_CHECK`，只校验 GB 的拓扑声明，不等于物理闭环。
 
 内部终止、模糊碱基、基因缺失、重复、反向块、控制区 soft-clip 或低覆盖都只是异常信号。
 至少比较密码表、边界/阅读框、测序或组装错误、真实生物学变异、NUMT 和结构重复等相容解释。
@@ -121,7 +122,8 @@ reads、read pairs、组装图或长读长证据。不能唯一解析时保留�
 查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。它使用 `FORMAT_TYPE=XML2` 结构化解析，
 报告每个候选的 **query coverage**（多 HSP 并集）与 identity，并把 RID 轮询与结果下载分开。
 退出码把任务状态与判读状态分开：`0` 得判读 / `1` insufficient 或 no_match（分析结论）/ `2` 拒绝执行 /
-`3` 网络或结果格式故障。
+`3` 网络或结果格式故障。多条 HSP 的 query 区间重叠时记 `AMBIGUOUS_ALIGNMENT`，只保留非冗余覆盖率与逐 HSP identity，
+**不汇总为看似精确的单一 identity**；最优 accession 不等于已完成物种鉴定。
 
 超过 5 分钟的任务使用现有 `scripts/run_bg.sh` 和 `scripts/check_bg.sh`，必须检查真实退出状态，
 不能把仍在运行、超时或失败的任务描述为完成。

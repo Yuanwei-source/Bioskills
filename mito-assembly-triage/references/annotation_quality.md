@@ -35,9 +35,10 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
    代码按 `/codon_start` 定位读码框，并支持 `join()` 分段位置。
 2. 逐条记录：起始密码子、终止密码子（完整 / 不完整 `T`/`TA`）、内部终止数、同源蛋白覆盖度、边界证据。
 3. **内部终止必须解释**，排查顺序：密码表选错 → 边界/阅读框错误 → 碱基错误（测序或组装）→ 真实生物学例外。
-   - `/transl_except` **不是存在即豁免**：代码解析其 `pos`/`aa`，只有真正对应到那个内部终止密码子时才记
-     `TRANSL_EXCEPT_MATCHED` 并扣除该项；声明位置对不上、或该 CDS 本就没有内部终止时记
-     `TRANSL_EXCEPT_UNEXPLAINED`，未解释的内部终止仍是 ERROR。
+   - `/transl_except` **不是存在即豁免**：代码解析其 `pos`/`aa`，且要求 `pos` 范围**恰好是一个密码子 (3 nt)**；
+     只有它真正对应到那个内部终止密码子时才记 `TRANSL_EXCEPT_MATCHED` 并扣除该项。因此**一条声明不能吸收两个内部终止**。
+     声明位置对不上（`TRANSL_EXCEPT_UNEXPLAINED`）或该 CDS 本就没有内部终止时，声明不解释任何异常，
+     未解释的内部终止仍是 ERROR。
    - `/transl_table` 逐条与 `--table` 比对，不一致记 `TABLE_CONFLICT`（代码按 `--table` 翻译）。
    - 不允许只改结论文字。
 4. **非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不再被无条件判错：
@@ -47,8 +48,10 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
      未引用已审计记录时额外输出 `EXCEPTION_NOT_REGISTERED`，**不得**把它当成已验证结论。
    - **不得**为了让检查通过而伪造 5' 端缺失、随意改 `/codon_start` 或改碱基。
 5. **partial 来自 GenBank location，不来自 `/codon_start`**：
-   - `<`/`>` 标记决定 5'/3' partial（代码按链方向解释，`feature_partial()`）；`<1..N` → `PARTIAL_CDS_5P`（不检查起始密码子）；
-     `N..>M` → `PARTIAL_CDS_3P`（**不要求**终止密码子）；
+   - 代码直接读 Biopython 的 `BeforePosition`/`AfterPosition` **位置对象**（不解析 location 字符串），
+     按链方向解释生物学的 5'/3' 端；**负链的 5' 端在高坐标**，跨原点 `join()` 的各段按转录顺序排列；
+   - `<1..N` → `PARTIAL_CDS_5P`（不检查起始密码子）；`N..>M` → `PARTIAL_CDS_3P`（**不要求**终止密码子）；
+     两端同时 partial 时两者都记；
    - `location` 标注为**完整**却设 `/codon_start=2` → `CODON_START_CONFLICT`（注释自相矛盾），需先确认 5' 端是否真的缺失；
    - 这是与“非典型起始密码子”**不同**的问题，不要混为一谈。
 6. **不完整终止（`T`/`TA`）**：只有在末端确实是 `T` 或 `TA` 前缀时才算；与转录后多聚腺苷酸化相容，
@@ -111,7 +114,7 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 
 | 检查项 | 触发条件 | 默认等级 |
 |---|---|---|
-| 环状拓扑 | `--require-circular` 且 topology ≠ circular | ERROR |
+| 环状拓扑 | `--require-circular` 且 topology ≠ circular | ERROR（并打印 `CIRCULAR_DECLARATION_CHECK`：只校验声明，不等于物理闭环） |
 | 基因数量 | CDS≠13 / tRNA≠22 / rRNA≠2 | ERROR（`--allow-atypical "<理由>"` → REVIEW） |
 | 基因身份 | 缺失 / 非标准名 / 重复（`nad*`↔`nd*`、`cob`↔`cytb`、`coi/ii/iii`↔`cox1/2/3`、`12S/16S`↔`rrnS/rrnL` 已归一） | ERROR（`--allow-atypical` → REVIEW） |
 | tRNA 类型 | 裸名 `trnL`/`trnS` 或反密码子与裸名不一致 | REVIEW（`UNDETERMINED_TRNA`） |
@@ -141,8 +144,14 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 ## 9. 允许的类群例外（按类群文献确认，不可外推）
 
 例外不是"加一个开关"：代码侧用 `--tolerate-start "基因:密码子"` 选择，
-**生物学理由放在已审计记录** `--exception-registry <json>` 中（每条含 `gene`/`codon`/`taxon`/`source`/`rationale`），
-未登记时会输出 `EXCEPTION_NOT_REGISTERED`。
+**生物学理由放在已审计记录** `--exception-registry <json>` 中（每条含 `gene`/`codon`/`taxon`/`source`/`rationale`）。
+登记检查是逐项匹配：
+
+- 未引用任何 registry → `EXCEPTION_NOT_REGISTERED`（仍是 REVIEW，可用但不得当作已验证结论）；
+- 记录缺 `taxon`/`source`/`rationale` → `EXCEPTION_RECORD_INCOMPLETE`；
+- 提供了 `--taxon` 且与记录的 `taxon` 不一致 → `EXCEPTION_TAXON_MISMATCH`。
+
+以上三种情形**都只维持 REVIEW**，不会把例外升级为已验证。
 
 | 类群 | 已报告的特殊情况 | 对判据的意义 |
 |---|---|---|
