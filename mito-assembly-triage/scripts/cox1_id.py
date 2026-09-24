@@ -98,6 +98,53 @@ def parse_search_info(text):
             rid.group(1) if rid else None)
 
 
+def hsp_collinearity(hsps, max_span_ratio=3.0):
+    """Check whether a hit's HSPs describe ONE consistent, collinear alignment.
+
+    Two HSPs can be non-overlapping on the query yet still be useless as evidence
+    of one continuous alignment: e.g. the first half hits one target position and
+    the second half hits a far-away, opposite-strand position.  High query
+    coverage alone must not present that as one reliable alignment.
+
+    Rules (no HSP reconstruction):
+      - each HSP must have query and target in the same direction;
+      - all HSPs must share one direction;
+      - in query order, target coordinates must advance monotonically;
+      - the target span must not exceed ``max_span_ratio`` x the aligned bases
+        (a large span with little alignment means scattered, not one gene).
+    """
+    usable = [hsp for hsp in hsps
+              if None not in (hsp.get('query_from'), hsp.get('query_to'),
+                              hsp.get('hit_from'), hsp.get('hit_to'))]
+    if len(usable) < 2:
+        return {'consistent_direction': True, 'monotonic': True,
+                'span_ratio': 1.0, 'collinear': True, 'max_span_ratio': max_span_ratio}
+    directions = set()
+    for hsp in usable:
+        query_direction = 1 if hsp['query_to'] >= hsp['query_from'] else -1
+        target_direction = 1 if hsp['hit_to'] >= hsp['hit_from'] else -1
+        if query_direction != target_direction:
+            return {'consistent_direction': False, 'monotonic': False, 'span_ratio': 0.0,
+                    'collinear': False, 'max_span_ratio': max_span_ratio}
+        directions.add(target_direction)
+    consistent = len(directions) == 1
+    if not consistent:
+        return {'consistent_direction': False, 'monotonic': False, 'span_ratio': 0.0,
+                'collinear': False, 'max_span_ratio': max_span_ratio}
+    direction = directions.pop()
+    ordered = sorted(usable, key=lambda hsp: min(hsp['query_from'], hsp['query_to']))
+    targets = [min(hsp['hit_from'], hsp['hit_to']) if direction > 0
+               else max(hsp['hit_from'], hsp['hit_to']) for hsp in ordered]
+    monotonic = all(later >= earlier for earlier, later in zip(targets, targets[1:]))
+    aligned = sum(abs(hsp['query_to'] - hsp['query_from']) + 1 for hsp in usable)
+    coordinates = [hsp['hit_from'] for hsp in usable] + [hsp['hit_to'] for hsp in usable]
+    span = max(coordinates) - min(coordinates) + 1
+    ratio = (span / aligned) if aligned else 0.0
+    return {'consistent_direction': True, 'monotonic': monotonic, 'span_ratio': ratio,
+            'collinear': monotonic and ratio <= max_span_ratio,
+            'max_span_ratio': max_span_ratio}
+
+
 def parse_blast_xml(text):
     """Parse an NCBI BLAST XML2 response into per-hit union-coverage records.
 
@@ -137,27 +184,40 @@ def parse_blast_xml(text):
             identity_total += identity
             align_total += align_len
             best_bits = max(best_bits, bits)
-        # Non-redundant query coverage (overlapping HSPs are counted once);
-        # a composite identity is only aggregated when no HSP overlaps another,
-        # otherwise the same bases would be weighted twice.
+        # Non-redundant query coverage (overlapping HSPs are counted once).  A
+        # composite identity is only aggregated when the HSPs neither overlap nor
+        # conflict: otherwise the same bases would be weighted twice, or two
+        # unrelated target positions would be presented as one alignment.
         aligned_bases = union_length(intervals)
         spanned_bases = sum(abs(query_to - query_from) + 1 for query_from, query_to in intervals)
         redundant_bases = max(0, spanned_bases - aligned_bases)
-        ambiguous = redundant_bases > 0
+        collinearity = hsp_collinearity(hsps)
+        blockers = []
+        if redundant_bases > 0:
+            blockers.append('overlapping_hsps')
+        if not collinearity['collinear']:
+            blockers.append('non_collinear_hsps')
+        aggregate = not blockers
         per_hsp = [item['identity_pct'] for item in hsps]
         hits.append({
             'accession': accession,
             'description': description,
-            'identity': None if ambiguous else ((identity_total / align_total * 100)
-                                                if align_total else 0.0),
-            'identity_method': ('not_aggregated: HSP query ranges overlap (%d redundant bases) '
-                                '-> 不汇总为单一 identity' % redundant_bases) if ambiguous
-                               else 'aligned-length-weighted over non-overlapping HSPs',
+            'identity': ((identity_total / align_total * 100) if align_total else 0.0)
+                        if aggregate else None,
+            'identity_method': 'aligned-length-weighted over non-overlapping collinear HSPs'
+                               if aggregate
+                               else 'not_aggregated: %s -> 不汇总为单一 identity'
+                                    % ', '.join(blockers),
             'identity_range': (min(per_hsp), max(per_hsp)) if per_hsp else None,
             'aligned_bases': aligned_bases,
             'spanned_bases': spanned_bases,
             'redundant_bases': redundant_bases,
-            'ambiguous_alignment': ambiguous,
+            # metrics could not be reliably aggregated -- NOT a statement that the
+            # hit is an invalid candidate
+            'ambiguous_alignment': bool(blockers),
+            'conflicting_alignment': not collinearity['collinear'],
+            'ambiguity_reasons': blockers,
+            'collinearity': collinearity,
             'coverage': (aligned_bases / query_len) if query_len else 0.0,
             'bitscore': best_bits,
             'hsp_count': hsp_count,
@@ -356,12 +416,16 @@ def main():
         identity_text = ('%.1f%%' % identity) if identity is not None else '未汇总'
         print('%-40s %8s %7.0f%% %6d'
               % (hit['description'][:40], identity_text, hit['coverage'] * 100, hit['hsp_count']))
-    ambiguous_hits = [hit for hit in hits if hit.get('ambiguous_alignment')]
+    ambiguous_hits = [hit for hit in hits if hit.get('ambiguity_reasons')]
     for hit in ambiguous_hits[:3]:
-        print('AMBIGUOUS_ALIGNMENT: %s 的 HSP query 区间重叠 %d bp, 不汇总为单一 identity; '
-              '逐 HSP identity 范围=%s; 原始 HSP 已保留'
-              % (hit['accession'], hit['redundant_bases'], hit.get('identity_range')),
-              file=sys.stderr)
+        print('AMBIGUOUS_ALIGNMENT: %s 的**多 HSP 指标无法可靠汇总** (原因: %s; redundant=%dbp, '
+              'target span/aligned=%.1f) —— 这不等于该 hit 不是有效候选; '
+              '未汇总指标不参与自动择优, 原始 HSP / 逐 HSP identity / bitscore / 坐标均已保留'
+              % (hit['accession'], ','.join(hit['ambiguity_reasons']), hit['redundant_bases'],
+                 hit['collinearity']['span_ratio']), file=sys.stderr)
+        if hit.get('conflicting_alignment'):
+            print('CONFLICTING_ALIGNMENT: %s 的 HSP 在 query/hit 方向或目标共线性上互相冲突; '
+                  '不能视为一条连续可靠的对齐' % hit['accession'], file=sys.stderr)
     if not hits:
         print('no_match: 当前数据库与检索条件下未发现可比命中 '
               '(这只说明本次检索无候选, 不等于无近缘物种证据)', file=sys.stderr)
@@ -372,7 +436,11 @@ def main():
     best = select_supported_hit(hits, min_identity=MIN_IDENTITY,
                                 min_coverage=MIN_QUERY_COVERAGE, query_len=query_len)
     if best is None:
-        print('insufficient: 没有唯一、达到 %.0f%% identity 且 query coverage >= %.0f%% 的命中'
+        if ambiguous_hits:
+            print('METRICS_NOT_AGGREGATED: 存在 %d 个候选 accession, 但其多 HSP 指标无法可靠汇总; '
+                  '这**不等于**这些 hit 不是有效候选 —— 请人工核对原始 HSP 后判断'
+                  % len({hit['accession'] for hit in ambiguous_hits}), file=sys.stderr)
+        print('insufficient: 没有唯一、达到 %.0f%% identity 且 query coverage >= %.0f%% 的可自动汇总命中'
               % (MIN_IDENTITY, MIN_QUERY_COVERAGE * 100), file=sys.stderr)
         sys.exit(1)
     verdict = interpret(best['identity'], best['coverage'])

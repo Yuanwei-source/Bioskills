@@ -249,6 +249,149 @@ class ExceptionRegistryTests(unittest.TestCase):
         self.assertNotIn("EXCEPTION_RECORD_INCOMPLETE", result.stdout)
 
 
+class HspCollinearityTests(unittest.TestCase):
+    """Non-overlapping HSPs must still be collinear on the target to be summari­sable."""
+
+    def setUp(self):
+        self.module = load_module("cox1_collinear", Path("scripts") / "cox1_id.py")
+
+    @staticmethod
+    def _hsp(query_from, query_to, hit_from, hit_to, identity, align_len, bitscore=500):
+        return ("<Hsp><Hsp_bit-score>%d</Hsp_bit-score>"
+                "<Hsp_query-from>%d</Hsp_query-from><Hsp_query-to>%d</Hsp_query-to>"
+                "<Hsp_hit-from>%d</Hsp_hit-from><Hsp_hit-to>%d</Hsp_hit-to>"
+                "<Hsp_identity>%d</Hsp_identity><Hsp_align-len>%d</Hsp_align-len></Hsp>"
+                % (bitscore, query_from, query_to, hit_from, hit_to, identity, align_len))
+
+    def _hit(self, accession, hsps, query_len=1000):
+        xml = ("<?xml version=\"1.0\"?><BlastOutput><BlastOutput_db>nt</BlastOutput_db>"
+               "<BlastOutput_iterations><Iteration><Iteration_query-len>%d</Iteration_query-len>"
+               "<Iteration_hits><Hit><Hit_accession>%s</Hit_accession><Hit_def>species</Hit_def>"
+               "<Hit_len>15000</Hit_len><Hit_hsps>%s</Hit_hsps></Hit>"
+               "</Iteration_hits></Iteration></BlastOutput_iterations></BlastOutput>"
+               % (query_len, accession, hsps))
+        return self.module.parse_blast_xml(xml)["hits"][0]
+
+    def test_collinear_non_overlapping_hsps_are_aggregated(self):
+        hit = self._hit("NC_A", self._hsp(1, 400, 1, 400, 400, 400)
+                        + self._hsp(601, 1000, 500, 899, 380, 400))
+        self.assertTrue(hit["collinearity"]["collinear"])
+        self.assertFalse(hit["ambiguous_alignment"])
+        self.assertIsNotNone(hit["identity"])
+        self.assertAlmostEqual(hit["coverage"], 0.8, places=6)
+
+    def test_scattered_hsps_are_not_treated_as_one_alignment(self):
+        # query coverage is high, but the two halves hit far-apart target positions
+        hit = self._hit("NC_B", self._hsp(1, 400, 1, 400, 400, 400)
+                        + self._hsp(601, 1000, 9000, 9399, 390, 400))
+        self.assertFalse(hit["collinearity"]["collinear"])
+        self.assertTrue(hit["ambiguous_alignment"])
+        self.assertTrue(hit["conflicting_alignment"])
+        self.assertIn("non_collinear_hsps", hit["ambiguity_reasons"])
+        self.assertIsNone(hit["identity"])
+        # high coverage must not make it auto-selectable
+        self.assertIsNone(self.module.select_supported_hit([hit], min_coverage=0.8,
+                                                           query_len=1000))
+
+    def test_opposite_target_direction_is_conflicting(self):
+        hit = self._hit("NC_C", self._hsp(1, 400, 1, 400, 400, 400)
+                        + self._hsp(601, 1000, 899, 500, 390, 400))
+        self.assertFalse(hit["collinearity"]["consistent_direction"])
+        self.assertTrue(hit["conflicting_alignment"])
+        self.assertIsNone(hit["identity"])
+
+    def test_exact_duplicate_hsp_is_overlap_not_conflict(self):
+        hsp = self._hsp(1, 500, 1, 500, 495, 500)
+        hit = self._hit("NC_D", hsp + hsp)
+        self.assertTrue(hit["ambiguous_alignment"])          # not aggregated (conservative)
+        self.assertFalse(hit["conflicting_alignment"])        # a duplicate is not a contradiction
+        self.assertEqual(hit["ambiguity_reasons"], ["overlapping_hsps"])
+        self.assertEqual(hit["redundant_bases"], 500)
+
+    def test_blocked_hit_keeps_its_raw_evidence(self):
+        hit = self._hit("NC_E", self._hsp(1, 400, 1, 400, 400, 400)
+                        + self._hsp(601, 1000, 9000, 9399, 390, 400))
+        self.assertEqual(len(hit["hsps"]), 2)
+        self.assertEqual(hit["hsps"][1]["hit_from"], 9000)
+        self.assertIsNotNone(hit["identity_range"])
+        self.assertGreater(hit["bitscore"], 0)
+
+
+class PartialSilentFailureRegression(unittest.TestCase):
+    """The original partial-detection bug, kept as a permanent regression case.
+
+    The first implementation parsed ``str(location)`` with a regex written against
+    the GenBank FILE syntax (``<1..100``).  Biopython's ``str()`` emits
+    ``[<0:100](+)`` (colon, 0-based), so the regex matched nothing and
+    ``feature_partial()`` returned ``(False, False)`` for every feature: the check
+    ran, printed nothing, and silently turned every partial CDS into a complete
+    one.  Guards kept in place:
+      1. the position objects are authoritative (the string cannot cause this);
+      2. the string fallback accepts BOTH syntaxes;
+      3. a marker-free location must never invent partiality.
+    """
+
+    def setUp(self):
+        self.module = load_module("annot_partial_regression", Path("scripts") / "annot_check.py")
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+
+    def test_real_genbank_round_trip_detects_both_ends(self):
+        from Bio import SeqIO
+        path = self.dir / "partial.gb"
+        write_gb_raw(path, "A" * 400, [
+            {"location": "<1..100", "type": "CDS", "gene": "p5"},
+            {"location": "200..>300", "type": "CDS", "gene": "p3"},
+            {"location": "complement(<250..>350)", "type": "CDS", "gene": "both_rc"},
+        ])
+        record = SeqIO.read(path, "genbank")
+        by_gene = {f.qualifiers["gene"][0]: f for f in record.features if f.type == "CDS"}
+        self.assertEqual(self.module.feature_partial(by_gene["p5"]), (True, False))
+        self.assertEqual(self.module.feature_partial(by_gene["p3"]), (False, True))
+        self.assertEqual(self.module.feature_partial(by_gene["both_rc"]), (True, True))
+
+    def test_fallback_accepts_both_print_and_file_syntax(self):
+        class FakeLocation:
+            def __init__(self, text, strand=1):
+                self.parts = [SimpleNamespace(start=0, end=100)]   # no position objects
+                self.strand = strand
+                self._text = text
+
+            def __str__(self):
+                return self._text
+
+        for text, expected in (("[<0:100](+)", (True, False)),   # Biopython print form (colon)
+                               ("<1..100", (True, False)),        # GenBank file form (dots)
+                               ("[<0:>100](+)", (True, True)),    # both ends
+                               ("200..>300", (False, True))):
+            with self.subTest(text=text):
+                feature = SimpleNamespace(location=FakeLocation(text))
+                self.assertEqual(self.module.feature_partial(feature), expected)
+
+    def test_fallback_does_not_invent_partiality(self):
+        class FakeLocation:
+            def __init__(self, text):
+                self.parts = [SimpleNamespace(start=0, end=100)]
+                self.strand = 1
+                self._text = text
+
+            def __str__(self):
+                return self._text
+
+        feature = SimpleNamespace(location=FakeLocation("[0:100](+)"))
+        self.assertEqual(self.module.feature_partial(feature), (False, False))
+
+    def test_partiality_is_visible_in_the_report(self):
+        sequence = "TTT" + "AAA" * 20 + "TAA"
+        path = self.dir / "visible.gb"
+        write_gb_raw(path, sequence + "A" * 40, [
+            {"location": "<1..%d" % len(sequence), "type": "CDS", "gene": "cox1"},
+        ])
+        result = run_annot_check(path, "--allow-atypical", REASON)
+        self.assertIn("PARTIAL_CDS_5P", result.stdout)
+
+
 class BlastIdentityAggregationTests(unittest.TestCase):
     def setUp(self):
         self.module = load_module("cox1_agg", Path("scripts") / "cox1_id.py")
