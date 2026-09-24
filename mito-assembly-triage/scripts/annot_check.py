@@ -12,7 +12,8 @@
   1. 基因完整性: 13 CDS + 22 tRNA + 2 rRNA (典型后生动物预期, 见 (a))
      (CDS 同义命名归一: nad* == nd*, cob == cytb, coi/coii/coiii == cox1/cox2/cox3)
      裸名 trnL / trnS 不自动归一到 trnL1/trnS1, 记为 UNDETERMINED_TRNA
-  2. CDS 翻译: 内部终止 / 起始密码子 / 终止密码子 (含真实 partial CDS 的 /codon_start)
+  2. CDS 翻译: 内部终止 / 起始密码子 / 终止密码子
+     partial 由 GenBank location 的 < / > (Biopython 位置对象) 判定, 不由 /codon_start 决定;
      非典型起始密码子报 NONCANONICAL_START_REVIEW, 由 --tolerate-start 按基因+密码子显式确认
   3. tRNA: 数量, 长度 (60-75bp 预警; <50bp 且无 note 报错), 反密码子, 类型判定
   4. rRNA: 数量, 长度区间 (工程预警; 按归一后身份 rrns/rrnl 选择区间)
@@ -197,12 +198,57 @@ def _partial_from_location_string(feature):
     return (first[2] == '>', last[0] == '<')
 
 
-def feature_partial(feature):
-    """(five_prime_partial, three_prime_partial) of a feature.
+def _object_partial(parts, strand):
+    """Partiality from Biopython position objects, or None when they carry none."""
+    try:
+        from Bio.SeqFeature import AfterPosition, BeforePosition
+    except ImportError:
+        return None
+    if not any(isinstance(part.start, (BeforePosition, AfterPosition))
+               or isinstance(part.end, (BeforePosition, AfterPosition)) for part in parts):
+        return None                      # no fuzzy information in the objects at all
+    first, last = parts[0], parts[-1]
+    if strand >= 0:
+        return (isinstance(first.start, BeforePosition),
+                isinstance(last.end, AfterPosition))
+    return (isinstance(first.end, AfterPosition),
+            isinstance(last.start, BeforePosition))
 
-    Primary source: Biopython's position objects.  The GenBank parser stores
-    ``<``/``>`` as ``BeforePosition``/``AfterPosition`` (not as text), so we read
-    the objects and never depend on the location string.
+
+def feature_partial_detail(feature):
+    """Partiality with its provenance.
+
+    The position objects are **authoritative**.  The location string is only
+    consulted when the parts carry no fuzzy position information at all
+    (hand-built locations).  When both are available and disagree, the object
+    result wins *and* the conflict is reported -- it is never silently resolved
+    in favour of the string, because that would silently change a "complete" CDS
+    into a "partial" one (or the reverse).
+
+    Returns {'five', 'three', 'source' in ('position_objects', 'location_string',
+    'none'), 'conflict', 'string_result'}.
+    """
+    try:
+        parts = list(feature.location.parts)
+    except (AttributeError, TypeError):
+        return {'five': False, 'three': False, 'source': 'none', 'conflict': False,
+                'string_result': (False, False)}
+    string_result = _partial_from_location_string(feature)
+    if not parts:
+        return {'five': string_result[0], 'three': string_result[1], 'source': 'location_string',
+                'conflict': False, 'string_result': string_result}
+    object_result = _object_partial(parts, feature.location.strand or 0)
+    if object_result is None:
+        return {'five': string_result[0], 'three': string_result[1],
+                'source': 'location_string', 'conflict': False, 'string_result': string_result}
+    return {'five': object_result[0], 'three': object_result[1],
+            'source': 'position_objects',
+            'conflict': string_result != object_result,
+            'string_result': string_result}
+
+
+def feature_partial(feature):
+    """(five_prime_partial, three_prime_partial); position objects win.
 
     ``<``/``>`` are positional (lower/higher coordinate); the strand decides which
     biological end they refer to, and a minus-strand gene's 5' end is the *high*
@@ -214,27 +260,8 @@ def feature_partial(feature):
       minus : 5' <= AfterPosition  on the first part's end,
               3' <= BeforePosition on the last part's start
     """
-    try:
-        parts = list(feature.location.parts)
-    except (AttributeError, TypeError):
-        return (False, False)
-    if not parts:
-        return (False, False)
-    try:
-        from Bio.SeqFeature import AfterPosition, BeforePosition
-    except ImportError:
-        return _partial_from_location_string(feature)
-    strand = feature.location.strand or 0
-    first, last = parts[0], parts[-1]
-    if strand >= 0:
-        five = isinstance(first.start, BeforePosition)
-        three = isinstance(last.end, AfterPosition)
-    else:
-        five = isinstance(first.end, AfterPosition)
-        three = isinstance(last.start, BeforePosition)
-    if five or three:
-        return (five, three)
-    return _partial_from_location_string(feature)
+    detail = feature_partial_detail(feature)
+    return (detail['five'], detail['three'])
 
 
 def parse_transl_except(feature):
@@ -405,7 +432,13 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         length = feature_length(feature)
         sequence = feature.extract(gb.seq)
 
-        five_p, three_p = feature_partial(feature)
+        partial_detail = feature_partial_detail(feature)
+        five_p, three_p = partial_detail['five'], partial_detail['three']
+        if partial_detail['conflict']:
+            findings.review(
+                'PARTIAL_SOURCE_CONFLICT: %s 的位置对象与 location 字符串不一致 '
+                '(位置对象=%s, 字符串=%s); 以位置对象为准, 请核对注释来源'
+                % (display, (five_p, three_p), partial_detail['string_result']))
         declared_table = str(feature.qualifiers.get('transl_table', [''])[0])
         if declared_table and declared_table.strip() and declared_table.strip() != str(tbl.id):
             findings.review('TABLE_CONFLICT: %s 声明 /transl_table=%s 与 --table %d 不一致; '

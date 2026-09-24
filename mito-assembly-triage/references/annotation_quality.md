@@ -32,7 +32,8 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 ## 2. CDS
 
 1. 用类群确认的 `transl_table` 重译每条 CDS，核对链方向与跨环（跨原点）坐标。
-   代码按 `/codon_start` 定位读码框，并支持 `join()` 分段位置。
+   代码按 `/codon_start` 偏移读码框并支持 `join()` 分段位置，但**不**从 `/codon_start` 推断 partial
+   （partial 只看 location，见下条）。
 2. 逐条记录：起始密码子、终止密码子（完整 / 不完整 `T`/`TA`）、内部终止数、同源蛋白覆盖度、边界证据。
 3. **内部终止必须解释**，排查顺序：密码表选错 → 边界/阅读框错误 → 碱基错误（测序或组装）→ 真实生物学例外。
    - `/transl_except` **不是存在即豁免**：代码解析其 `pos`/`aa`，且要求 `pos` 范围**恰好是一个密码子 (3 nt)**；
@@ -50,6 +51,8 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 5. **partial 来自 GenBank location，不来自 `/codon_start`**：
    - 代码直接读 Biopython 的 `BeforePosition`/`AfterPosition` **位置对象**（不解析 location 字符串），
      按链方向解释生物学的 5'/3' 端；**负链的 5' 端在高坐标**，跨原点 `join()` 的各段按转录顺序排列；
+     位置对象**始终优先于**字符串兜底（仅当 parts 完全不带 fuzzy 信息时才用字符串），
+     两者矛盾时以对象为准**并报** `PARTIAL_SOURCE_CONFLICT`，不静默取值；
    - `<1..N` → `PARTIAL_CDS_5P`（不检查起始密码子）；`N..>M` → `PARTIAL_CDS_3P`（**不要求**终止密码子）；
      两端同时 partial 时两者都记；
    - `location` 标注为**完整**却设 `/codon_start=2` → `CODON_START_CONFLICT`（注释自相矛盾），需先确认 5' 端是否真的缺失；

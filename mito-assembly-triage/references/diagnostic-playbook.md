@@ -81,7 +81,9 @@
 
 - 修复必须通过**修复前定义的**验收检查（否则等于事后找理由）；
 - 区分三类修改所需证据：注释校正 / 单碱基修改 / 结构连接；
-- 修改后的 FASTA 与注释**分别保存**，原件不动；`annot_check.py --require-circular` 作为注释侧验收（见 SKILL.md G9）。
+- 修改后的 FASTA 与注释**分别保存**，原件不动；`annot_check.py` 的退出码 `0`
+  （或退出码 `2` 且每条待核查项已逐条入账）作为注释侧验收；`--require-circular` 只做
+  `CIRCULAR_DECLARATION_CHECK`，**不**构成物理环化证据。
 
 ## LEARN
 

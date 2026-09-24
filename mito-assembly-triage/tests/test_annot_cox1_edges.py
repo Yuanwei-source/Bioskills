@@ -38,6 +38,35 @@ class PartialPositionObjectTests(unittest.TestCase):
         self.CompoundLocation = CompoundLocation
         self.SeqFeature = SeqFeature
 
+    def test_object_result_is_authoritative_and_conflict_is_reported(self):
+        class FakeLocation:
+            def __init__(self, parts, strand):
+                self.parts = parts
+                self.strand = strand
+
+            def __str__(self):
+                return "[0:100](+)"          # string says "complete"
+
+        feature = SimpleNamespace(location=FakeLocation(
+            [SimpleNamespace(start=self.Before(0), end=self.Exact(100))], 1))
+        detail = self.module.feature_partial_detail(feature)
+        self.assertEqual(detail["source"], "position_objects")
+        self.assertEqual((detail["five"], detail["three"]), (True, False))
+        self.assertTrue(detail["conflict"])
+        self.assertEqual(detail["string_result"], (False, False))
+        # the object result wins: never silently downgraded to "complete"
+        self.assertEqual(self.module.feature_partial(feature), (True, False))
+
+    def test_no_conflict_when_objects_and_string_agree(self):
+        location = self.CompoundLocation([
+            self.FeatureLocation(self.Exact(0), self.After(10), strand=-1),
+            self.FeatureLocation(self.Before(749), self.Exact(780), strand=-1),
+        ])
+        detail = self.module.feature_partial_detail(self._feature(location))
+        self.assertEqual(detail["source"], "position_objects")
+        self.assertFalse(detail["conflict"])
+        self.assertEqual((detail["five"], detail["three"]), (True, True))
+
     def _feature(self, location):
         return self.SeqFeature(location, type="CDS", qualifiers={"gene": ["x"]})
 

@@ -19,6 +19,17 @@
 | 环形图 | `bash scripts/run_circular_map.sh <final.gb> <out.png> --title "..."` | GB **必须声明 `topology=circular`**，否则脚本直接退出；需 `PLOT_PY`（BioPython + matplotlib） | 论文级正负链双环基因图 | 不影响序列/注释正确性 | 写 300dpi PNG + SVG |
 | NCBI 提交预检 | `table2asn`（外部工具） | 需自行提供 template；**不在本 skill 的环境自检范围内** | 提交前的本地格式/内部终止等预检 | 通过预检 ≠ 成果已被 NCBI 接受 | 人工执行，不进 `check_env.sh` |
 
+## 退出码接口约定（合并后不要误读）
+
+| 现象 | **不是** | 正确读法 |
+|---|---|---|
+| `annot_check.py` 退出码 `2` | ❌ 注释完全通过 | ✅ 无 ERROR，但**存在待核查项**；每条须逐条入账；只有 `0` 才是"无发现" |
+| `cox1_id.py` 退出码 `3` | ❌ 没有找到相似序列 | ✅ 网络或结果格式**故障**；必须与 `1`（insufficient / no_match，分析结论）严格区分 |
+| 后台任务 "子进程正常退出" | ❌ 结果已通过科学验收 | ✅ 只表示命令执行成功；科学验收由相应的证据标准另行判定 |
+
+任何脚本、CI 或 AI 指令都不得把上表左列当成右列。`baseline_report.md` 是 v1 历史审计快照，
+描述的是当时行为，不作为现行接口依据。
+
 ## 使用原则
 
 1. **工具优先**：优先专业工具（MITOS2 / MitoFinder / GetOrganelle / metaSPAdes / bwa / minimap2 / samtools），
