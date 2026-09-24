@@ -68,12 +68,8 @@ class CdSStartAndPartialTests(unittest.TestCase):
         sequence = "TTT" + "AAA" * 20 + "TAA"
         path = self.dir / "p5.gb"
         write_gb_raw(path, sequence + "A" * 50, [
-            {"location": "1..%d" % len(sequence), "type": "CDS", "gene": "cox1"},
+            {"location": "<1..%d" % len(sequence), "type": "CDS", "gene": "cox1"},
         ])
-        # make the location 5' partial without changing the sequence
-        text = path.read_text(encoding="utf-8").replace("     1..%d" % len(sequence),
-                                                        "     <1..%d" % len(sequence))
-        path.write_text(text, encoding="utf-8")
         result = run_annot_check(path, "--allow-atypical", REASON)
         self.assertNotIn("[ERROR]", result.stdout)
         self.assertIn("PARTIAL_CDS_5P", result.stdout)
@@ -165,7 +161,7 @@ class GeneOrderCycleTests(unittest.TestCase):
         self.module = load_module("annot_cycle", Path("scripts") / "annot_check.py")
 
     def _cycle(self, genes):
-        return [(name, strand) for name, _kind, strand in genes]
+        return [(name, strand) for name, _kind, _length, strand in genes]
 
     def test_cycle_helpers_treat_rotation_and_reverse_as_equivalent(self):
         base = self._cycle(ORDER)

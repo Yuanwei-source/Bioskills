@@ -46,6 +46,7 @@
 """
 import sys
 import re
+import json
 from collections import Counter
 
 EXPECTED_CDS = {'atp6', 'atp8', 'cox1', 'cox2', 'cox3', 'cytb', 'nd1', 'nd2', 'nd3', 'nd4', 'nd4l', 'nd5', 'nd6'}
@@ -61,9 +62,22 @@ ANTICODON_IDENTITY = {'tag': 'trnl1', 'taa': 'trnl2', 'gct': 'trns1', 'tga': 'tr
 TRNA_LENGTH_RANGE = (60, 75)
 TRNA_HARD_MIN = 50
 RRNA_LENGTH_RANGE = {'rrnl': (1100, 1500), 'rrns': (600, 850)}
+#: 身份未确定的 rRNA 名称: 不能归为 rrnS/rrnL, 也不套用任何长度区间
+UNDETERMINED_RRNA_KEYS = {'rrna'}
 OVERLAP_REVIEW_THRESHOLD = 8
 CDS_LENGTH_TOLERANCE_PCT = 20
 EXPECTED_PLUS_STRAND_CDS = 9
+
+#: /product 里的三字母氨基酸 -> 单字母 (用于 tRNA-Leu 这类写法)
+AMINO_ACID_3_TO_1 = {
+    'ala': 'a', 'arg': 'r', 'asn': 'n', 'asp': 'd', 'cys': 'c', 'gln': 'q',
+    'glu': 'e', 'gly': 'g', 'his': 'h', 'ile': 'i', 'leu': 'l', 'lys': 'k',
+    'met': 'm', 'phe': 'f', 'pro': 'p', 'ser': 's', 'thr': 't', 'trp': 'w',
+    'tyr': 'y', 'val': 'v',
+}
+#: GenBank location 里的分段与 fuzzy 标记
+#: Biopython 打印为 "[<0:100](+)" 而原始文件是 "<1..100", 两种写法都要认
+LOCATION_PART_RE = re.compile(r'([<>]?)(\d+)\s*(?:\.\.|:)\s*([<>]?)(\d+)')
 
 
 # --------------------------------------------------------------------------- names
@@ -82,7 +96,7 @@ def _canonical_key(text):
         return 'rrns'
     if re.fullmatch(r'nad[1-6]l?', key):                 # nad* (新写法) == nd*
         return 'nd' + key[3:]
-    if key in ('cob', 'cytb', 'cytb2'):
+    if key in ('cob', 'cytb', 'cytb2', 'cytochromeb'):
         return 'cytb'
     if key in ('coi', 'cox1', 'cox1p'):
         return 'cox1'
@@ -90,6 +104,25 @@ def _canonical_key(text):
         return 'cox2'
     if key in ('coiii', 'cox3'):
         return 'cox3'
+    # ---- /product 自然语言名 (NCBI 常见写法) ----
+    match = re.fullmatch(r'nadh?dehydrogenasesubunit(\d+)(l?)', key)
+    if match:
+        return 'nd' + match.group(1) + match.group(2)
+    match = re.fullmatch(r'cytochromecoxidasesubunit(i{1,3}|\d)', key)
+    if match:
+        return 'cox' + {'i': '1', 'ii': '2', 'iii': '3'}.get(match.group(1), match.group(1))
+    match = re.fullmatch(r'atp(?:ase)?synthase[a-z0-9]*?subunit(\d+)', key)
+    if match:
+        return 'atp' + match.group(1)
+    match = re.fullmatch(r'(1[26])sribosomalrna', key)
+    if match:
+        return 'rrnl' if match.group(1) == '16' else 'rrns'
+    match = re.fullmatch(r'trna([a-z]{3})', key)
+    if match and match.group(1) in AMINO_ACID_3_TO_1:
+        # tRNA-Leu -> trnl (裸名): 类型 (CUN/UUR) 仍需反密码子/结构证据
+        return 'trn' + AMINO_ACID_3_TO_1[match.group(1)]
+    if key in ('rrna', 'ribosomalrna'):
+        return 'rrna'
     return key                                            # trnl / trns stay bare
 
 
@@ -147,6 +180,99 @@ def feature_span(feature):
     return min(start for start, _ in segments) + 1, max(end for _, end in segments)
 
 
+def feature_partial(feature):
+    """(five_prime_partial, three_prime_partial) read from the location markers.
+
+    GenBank marks partiality with ``<``/``>`` in the location.  Biopython keeps
+    those markers when reading (they survive in ``str(location)``) but cannot
+    express them when writing, so fixtures must be built with raw locations.
+
+    ``<``/``>`` are positional (lower/higher coordinate); after applying the
+    strand they tell which biological end is missing:
+      plus  : 5' partial <= '<' on the first part,  3' partial <= '>' on the last
+      minus : 5' partial <= '>' on the first part,  3' partial <= '<' on the last
+    """
+    parts = LOCATION_PART_RE.findall(str(feature.location))
+    if not parts:
+        return (False, False)
+    first, last = parts[0], parts[-1]
+    if (feature.location.strand or 0) >= 0:
+        return (first[0] == '<', last[2] == '>')
+    return (first[2] == '>', last[0] == '<')
+
+
+def parse_transl_except(feature):
+    """[(pos_start, pos_end, aa)] parsed from /transl_except entries."""
+    entries = []
+    for value in feature.qualifiers.get('transl_except', []) or []:
+        for start, end, amino_acid in re.findall(
+                r'pos:(\d+)\.\.(\d+),\s*aa:([A-Za-z]+)', str(value)):
+            entries.append((int(start), int(end), amino_acid))
+    return entries
+
+
+def cds_codon_index(feature, position, codon_start=1):
+    """Codon index (0-based, after /codon_start) of a 1-based record position."""
+    parts = feature.location.parts
+    if len(parts) != 1:
+        return None
+    low, high = int(parts[0].start), int(parts[0].end)
+    if (feature.location.strand or 0) >= 0:
+        offset = (position - 1) - low
+    else:
+        offset = high - position
+    offset -= (codon_start - 1)
+    return offset // 3 if offset >= 0 else None
+
+
+def terminal_is_complete(last3, remainder, valid_stops):
+    return remainder == 0 and last3 in valid_stops
+
+
+def oriented_gene_cycle(features):
+    """[(canonical_name, strand)] in coordinate order."""
+    ordered = sorted(features, key=lambda item: feature_segments(item)[0][0])
+    return [(canonical_gene(feature), '+' if (feature.location.strand or 0) > 0 else '-')
+            for feature in ordered]
+
+
+def _reverse_cycle(cycle):
+    return [(name, '-' if strand == '+' else '+') for name, strand in reversed(cycle)]
+
+
+def _induced_pairs(cycle, shared):
+    """Cyclic adjacency pairs over the genes present on both sides."""
+    nodes = [node for node in cycle if node[0] in shared]
+    if len(nodes) < 2:
+        return set()
+    return {(nodes[index], nodes[(index + 1) % len(nodes)]) for index in range(len(nodes))}
+
+
+def cycles_equivalent(cycle_a, cycle_b):
+    """Equal up to cyclic rotation and full reverse complement (representation changes)."""
+    names_a = {name for name, _ in cycle_a}
+    names_b = {name for name, _ in cycle_b}
+    if len(cycle_a) != len(cycle_b) or names_a != names_b:
+        return False
+    pairs_a = _induced_pairs(cycle_a, names_a)
+    return (pairs_a == _induced_pairs(cycle_b, names_a)
+            or pairs_a == _induced_pairs(_reverse_cycle(cycle_b), names_a))
+
+
+def adjacency_diff(cycle_a, cycle_b):
+    """Adjacency pairs differing between two arrangements (rotation/RC tolerant).
+
+    An empty result means the shared genes keep the same cyclic arrangement;
+    gene-set loss or gain is reported separately and does not show up here.
+    """
+    shared = {name for name, _ in cycle_a} & {name for name, _ in cycle_b}
+    reference = _induced_pairs(cycle_a, shared)
+    forward = _induced_pairs(cycle_b, shared)
+    if reference == forward or reference == _induced_pairs(_reverse_cycle(cycle_b), shared):
+        return []
+    return sorted(reference.symmetric_difference(forward))
+
+
 # ---------------------------------------------------------------------- findings
 class Findings:
     """Three-level finding collector.  Errors block, reviews need accounting."""
@@ -171,13 +297,24 @@ def identity_findings(findings, cds, trnas, rnas, atypical_reason):
     sink = findings.review if atypical_reason else findings.error
     tag = ('待核查(非典型类群: %s)' % atypical_reason) if atypical_reason else 'ERROR'
 
-    for label, features, expected in (('CDS', cds, EXPECTED_CDS),
-                                      ('rRNA', rnas, EXPECTED_RRNA)):
+    for label, features, expected, undetermined_key in (('CDS', cds, EXPECTED_CDS, None),
+                                                        ('rRNA', rnas, EXPECTED_RRNA, 'rrna')):
         names = [canonical_gene(feature) for feature in features]
         counts = Counter(names)
-        missing = sorted(expected - set(names))
-        extra = sorted(set(names) - expected)
+        missing = set(expected - set(names))
+        extra = set(names) - expected
         duplicates = sorted(name for name, count in counts.items() if count > 1)
+        if undetermined_key and counts.get(undetermined_key):
+            # 名称未确定 -> 无法判定该类是否缺失, 也不套用具体区间
+            for member in expected:
+                missing.discard(member)
+            extra.discard(undetermined_key)
+            findings.review(
+                'UNDETERMINED_RRNA: %d 个 rRNA 名称未确定 (?%s?), 无法判定 %s 是否缺失, '
+                '也不套用任何长度区间 —— 需同源/结构/邻域证据'
+                % (counts[undetermined_key], undetermined_key, '/'.join(sorted(expected))))
+        missing = sorted(missing)
+        extra = sorted(extra)
         if missing:
             sink('%s %s 缺少基因身份: %s' % (tag, label, ', '.join(missing)))
         if extra:
@@ -218,7 +355,7 @@ def identity_findings(findings, cds, trnas, rnas, atypical_reason):
         findings.info('tRNA 身份完整且无重复 (22 个)')
 
 
-def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions):
+def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions, registry=None):
     valid_starts = set(tbl.start_codons)
     valid_stops = set(tbl.stop_codons)
     print('\n[2] CDS 翻译验证 (密码表 %d):' % tbl.id)
@@ -231,6 +368,12 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         length = feature_length(feature)
         sequence = feature.extract(gb.seq)
 
+        five_p, three_p = feature_partial(feature)
+        declared_table = str(feature.qualifiers.get('transl_table', [''])[0])
+        if declared_table and declared_table.strip() and declared_table.strip() != str(tbl.id):
+            findings.review('TABLE_CONFLICT: %s 声明 /transl_table=%s 与 --table %d 不一致; '
+                            '本检查按 --table %d 翻译'
+                            % (display, declared_table, tbl.id, tbl.id))
         try:
             codon_start = int(str(feature.qualifiers.get('codon_start', ['1'])[0]))
         except ValueError:
@@ -238,13 +381,37 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         if codon_start not in (1, 2, 3):
             findings.error('INVALID_CDS: %s 的 /codon_start=%d 非法 (只能是 1/2/3)' % (display, codon_start))
             codon_start = 1
-        partial_5p = codon_start != 1
+        if codon_start != 1 and not five_p:
+            # 完整标注的 CDS 与 /codon_start 矛盾: 是真 5' 缺失, 还是注释不一致?
+            findings.review("CODON_START_CONFLICT: %s 的 location 标注为完整, 却设 /codon_start=%d; "
+                            "注释自相矛盾, 需先确认 5' 端是否真的缺失" % (display, codon_start))
         coding = sequence[codon_start - 1:]
         remainder = len(coding) % 3
         complete = coding[:len(coding) - remainder]
         protein = str(complete.translate(table=tbl)) if len(complete) else ''
         start_codon = str(coding[:3]).upper()
         last3 = str(coding[-3:]).upper() if len(coding) >= 3 else ''
+
+        # /transl_except 必须解释“具体哪个内部终止”, 而不是只要存在就全免
+        exceptions = parse_transl_except(feature)
+        stop_codons = [index for index, amino_acid in enumerate(protein) if amino_acid == '*']
+        if terminal_is_complete(last3, remainder, valid_stops) and protein.endswith('*'):
+            stop_codons = stop_codons[:-1]
+        explained = set()
+        for position_start, position_end, amino_acid in exceptions:
+            index = cds_codon_index(feature, position_start, codon_start)
+            if index is not None and index in stop_codons:
+                explained.add(index)
+                findings.info('TRANSL_EXCEPT_MATCHED: %s 位置 %s..%s 的 %s 解释了密码子 %d 的内部终止'
+                              % (display, position_start, position_end, amino_acid, index + 1))
+            else:
+                findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明的 /transl_except '
+                                '(pos:%s..%s, aa:%s) 未对应任何内部终止密码子'
+                                % (display, position_start, position_end, amino_acid))
+        if exceptions and not stop_codons:
+            findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明了 /transl_except, '
+                            '但该 CDS 没有内部终止密码子, 声明无对应异常' % display)
+        unexplained_stops = [index for index in stop_codons if index not in explained]
 
         if remainder == 0 and last3 in valid_stops:
             terminal = ('complete', last3)
@@ -257,17 +424,27 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
 
         internal = protein.count('*') - (1 if terminal[0] == 'complete' else 0)
 
-        if partial_5p:
-            findings.info("PARTIAL_CDS_5P: %s 5' 端不完整 (/codon_start=%d); 不检查起始密码子"
-                          % (display, codon_start))
+        if five_p:
+            findings.info("PARTIAL_CDS_5P: %s 5' 端不完整 (location 标记); 不检查起始密码子" % display)
         elif start_codon not in valid_starts:
             key = (canonical, start_codon)
             if key in start_exceptions:
                 used_start_exceptions.add(key)
-                findings.review(
-                    'NONCANONICAL_START_REVIEW: %s 起始密码子 %s 不在密码表 %d 的合法起始集合内, '
-                    '已按 --tolerate-start 声明为类群已知例外; 仍需保留证据等级与不确定性'
-                    % (display, start_codon, tbl.id))
+                record = (registry or {}).get(key)
+                if record:
+                    findings.review(
+                        'NONCANONICAL_START_REVIEW: %s 起始密码子 %s 按已审计例外记录接受; '
+                        'taxon=%s source=%s rationale=%s'
+                        % (display, start_codon, record.get('taxon'), record.get('source'),
+                           record.get('rationale')))
+                else:
+                    findings.review(
+                        'NONCANONICAL_START_REVIEW: %s 起始密码子 %s 不在密码表 %d 的合法起始集合内, '
+                        '已按 --tolerate-start 接受' % (display, start_codon, tbl.id))
+                    findings.review(
+                        'EXCEPTION_NOT_REGISTERED: %s:%s 未引用已审计例外记录 '
+                        '(--exception-registry), 不得作为已验证结论; 请在案例中记录 '
+                        'taxon/source/rationale' % (canonical, start_codon))
             else:
                 findings.error(
                     'INVALID_CDS: %s 起始密码子 %s 不在密码表 %d 的合法起始集合内 '
@@ -275,7 +452,9 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
                     '逐条确认并附文献/同源证据'
                     % (display, start_codon, tbl.id, canonical, start_codon))
 
-        if terminal[0] == 'incomplete':
+        if three_p:
+            findings.info("PARTIAL_CDS_3P: %s 3' 端不完整 (location 标记); 不要求终止密码子" % display)
+        elif terminal[0] == 'incomplete':
             findings.review(
                 '%s 终止密码子不完整 (T/TA 前缀: %s); 与转录后多聚腺苷酸化相容, '
                 '但需转录本或近缘全长同源证据; note 属自述, 须交叉核验' % (display, terminal[1]))
@@ -284,21 +463,17 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
                 'INVALID_CDS: %s 末端 %s 既非合法终止密码子, 也不是 T/TA 前缀; '
                 'note 不能豁免, 需重核读码框与边界' % (display, terminal[1]))
 
-        if internal > 0:
-            if 'transl_except' in feature.qualifiers:
-                findings.review(
-                    '%s 有 %d 个内部终止密码子, 但声明了 /transl_except; 记 REVIEW, 需独立证据'
-                    % (display, internal))
-            else:
-                findings.error('%s 有 %d 个内部终止密码子' % (display, internal))
+        if unexplained_stops:
+            findings.error('%s 有 %d 个内部终止密码子 (未被 /transl_except 解释)'
+                           % (display, len(unexplained_stops)))
 
-        flag = 'OK' if not (internal or terminal[0] == 'nonstop') else 'CHECK'
+        flag = 'OK' if not (unexplained_stops or terminal[0] == 'nonstop') else 'CHECK'
         location = 'join(%s)' % ','.join('%d-%d' % (s + 1, e) for s, e in segments) \
             if len(segments) > 1 else '%d-%d' % (low, high)
         print('  %-8s %-12s %s %4dbp %4daa  起始=%s 终止=%s%s %s' % (
             display[:8], location, strand, length, len(protein), start_codon or '-', terminal[1],
             ' (不完整)' if terminal[0] == 'incomplete' else
-            (" (5' partial)" if partial_5p else ''), flag))
+            (" (5' partial)" if five_p else (" (3' partial)" if three_p else '')), flag))
 
 
 def trna_findings(findings, trnas):
@@ -341,11 +516,19 @@ def rrna_findings(findings, rnas):
         identity = canonical_gene(feature)
         low, high = feature_span(feature)
         length = feature_length(feature)
-        low_bound, high_bound = RRNA_LENGTH_RANGE.get(identity, RRNA_LENGTH_RANGE['rrns'])
+        if identity not in RRNA_LENGTH_RANGE:
+            # 身份未确定: 不能套用 rrnS/rrnL 的区间
+            findings.info('UNDETERMINED_RRNA: %s 身份未确定 (%s), 跳过长度区间判定'
+                          % (display, identity))
+            print('  %-10s [%5d..%5d] %4dbp (身份未确定, 跳过区间) INFO'
+                  % (display[:10], low, high, length))
+            continue
+        low_bound, high_bound = RRNA_LENGTH_RANGE[identity]
         if not (low_bound <= length <= high_bound):
             findings.review('rRNA %s 长度 %d 超出范围 %d-%d (身份=%s; 只触发检查, 不把参考边界当真值)'
                             % (display, length, low_bound, high_bound, identity))
-            print('  %-10s [%5d..%5d] %4dbp (预警 %d-%d) WARN' % (display[:10], low, high, length, low_bound, high_bound))
+            print('  %-10s [%5d..%5d] %4dbp (预警 %d-%d) WARN'
+                  % (display[:10], low, high, length, low_bound, high_bound))
         else:
             print('  %-10s [%5d..%5d] %4dbp OK' % (display[:10], low, high, length))
 
@@ -355,6 +538,7 @@ def overlap_findings(findings, features, tolerate_pairs, used_tolerate, severity
     print('\n[5] 重叠检查 (逐对记录; >%dbp 触发详细审查):' % OVERLAP_REVIEW_THRESHOLD)
     entries = [(feature, feature_gene(feature), canonical_gene(feature), feature.type,
                 feature_segments(feature)) for feature in features]
+    name_counts = Counter(entry[2] for entry in entries)
     long_overlaps = 0
     for index, (feature_a, display_a, canon_a, type_a, segments_a) in enumerate(entries):
         for feature_b, display_b, canon_b, type_b, segments_b in entries[index + 1:]:
@@ -374,6 +558,11 @@ def overlap_findings(findings, features, tolerate_pairs, used_tolerate, severity
             long_overlaps += 1
             if pair in tolerate_pairs:
                 used_tolerate.add(pair)
+                if any(name_counts.get(name, 0) > 1 for name in pair):
+                    findings.review(
+                        'TOLERATE_OVERLAP_AMBIGUOUS: --tolerate-overlap "%s" 涉及的基因身份在记录中出现多次, '
+                        '无法定位到具体 feature/坐标对; 请改用坐标形式并逐条审核'
+                        % ','.join(sorted(pair)))
                 findings.review('OVERLAP_ACCEPTED: %s(%s) <-> %s(%s) 重叠 %dbp (%s); '
                                 '已人工审核并保留该注释 —— 不代表已证明该重叠具有功能真实性'
                                 % (display_a, type_a, display_b, type_b, overlap, types))
@@ -408,22 +597,29 @@ def strand_findings(findings, cds, expected_plus=EXPECTED_PLUS_STRAND_CDS):
 
 
 def reference_findings(findings, cds, ref, tolerance=CDS_LENGTH_TOLERANCE_PCT):
-    print('\n[7] 参考对比 (按归一后基因身份):')
+    print('\n[7] 参考对比 (按归一后基因身份; 顺序按环状邻接比较):')
     ref_cds = {}
     for feature in sorted(ref.features, key=lambda item: feature_segments(item)[0][0]):
         if feature.type == 'CDS':
             ref_cds.setdefault(canonical_gene(feature), feature)
-    order_query = [canonical_gene(feature) for feature in cds]
-    order_ref = [canonical_gene(feature) for feature in
-                 sorted((f for f in ref.features if f.type == 'CDS'),
-                        key=lambda item: feature_segments(item)[0][0])]
-    shared = [name for name in order_query if name in order_ref]
-    if shared == order_ref:
-        print('  基因顺序匹配(CDS): 一致')
+    query_cycle = oriented_gene_cycle(cds)
+    ref_cycle = oriented_gene_cycle([f for f in ref.features if f.type == 'CDS'])
+    query_names = {name for name, _ in query_cycle}
+    ref_names = {name for name, _ in ref_cycle}
+    missing = sorted(ref_names - query_names)
+    extra = sorted(query_names - ref_names)
+    if missing or extra:
+        findings.review('GENE_SET_DIFF: 与参考相比 缺失=%s 多余=%s '
+                        '(基因集差异与顺序差异分开报告)'
+                        % (missing or '无', extra or '无'))
+    differences = adjacency_diff(ref_cycle, query_cycle)
+    if differences:
+        findings.review('ARRANGEMENT_DIFF: 共有基因的环状邻接关系与参考不同 (%d 处): %s'
+                        % (len(differences), differences[:6]))
+        print('  邻接关系: 不同 (差异 %d 处)' % len(differences))
     else:
-        print('  基因顺序匹配(CDS): 不同! 查询=%s' % '>'.join(shared))
-        findings.review('CDS 基因顺序与参考不同: %s vs %s (顺序差异为 REVIEW, 不自动失败)'
-                        % ('>'.join(shared), '>'.join(order_ref)))
+        print('  邻接关系一致 (已归一环状旋转、起点与整链反向互补; 共享基因 %d 个)'
+              % len(query_names & ref_names))
     compared = 0
     for feature in sorted(cds, key=lambda item: feature_segments(item)[0][0]):
         identity = canonical_gene(feature)
@@ -443,13 +639,33 @@ def reference_findings(findings, cds, ref, tolerance=CDS_LENGTH_TOLERANCE_PCT):
 
 
 # -------------------------------------------------------------------------- main
+def load_exception_registry(path):
+    """Audited non-canonical start exceptions: (gene, codon) -> taxon/source/rationale.
+
+    The CLI flag only *selects* an entry; the biological justification lives in the
+    registry so that accepting an exception is not the same as proving it.
+    """
+    try:
+        with open(path, encoding='utf-8') as handle:
+            data = json.load(handle)
+    except (OSError, ValueError) as exc:
+        print('ERROR: 无法读取例外记录 %s: %s' % (path, exc))
+        sys.exit(1)
+    registry = {}
+    for item in data.get('exceptions', []):
+        key = (_canonical_key(item.get('gene', '')), str(item.get('codon', '')).upper())
+        registry[key] = {'taxon': item.get('taxon'), 'source': item.get('source'),
+                         'rationale': item.get('rationale')}
+    return registry
+
+
 def parse_arguments(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(__doc__)
         sys.exit(0)
     options = {'fn': argv[0], 'table': 5, 'ref': None, 'require_circular': False,
                'tolerate_overlap': [], 'tolerate_start': [], 'overlap_severity': 'warn',
-               'allow_atypical': None}
+               'allow_atypical': None, 'exception_registry': None}
     index = 1
 
     def need(flag):
@@ -482,10 +698,15 @@ def parse_arguments(argv):
             options['overlap_severity'] = value
         elif token == '--allow-atypical':
             options['allow_atypical'] = need(token)
+        elif token == '--exception-registry':
+            options['exception_registry'] = need(token)
         else:
             print('ERROR: 未知参数 %s' % token)
             sys.exit(1)
         index += 1
+    if options['require_circular']:
+        print('REQUIRE_CIRCULAR_DECLARATION_ONLY: --require-circular 只校验 GenBank 的 topology 声明, '
+              '不等于物理环化证据; 环化证据必须来自接缝 reads / 组装图')
     return options
 
 
@@ -548,8 +769,11 @@ def main():
             print('ERROR: --tolerate-start 需要 "基因:密码子" 形式, 收到 %s' % entry); sys.exit(1)
         start_exceptions.add((_canonical_key(gene), codon.strip().upper()))
     used_start_exceptions = set()
+    registry = load_exception_registry(options['exception_registry']) \
+        if options['exception_registry'] else {}
 
-    cds_findings(findings, genbank, cds, tbl, start_exceptions, used_start_exceptions)
+    cds_findings(findings, genbank, cds, tbl, start_exceptions, used_start_exceptions,
+                 registry=registry)
     for gene, codon in sorted(start_exceptions - used_start_exceptions):
         findings.review('未匹配任何起始密码子: --tolerate-start "%s:%s" (配置未生效)' % (gene, codon))
 
