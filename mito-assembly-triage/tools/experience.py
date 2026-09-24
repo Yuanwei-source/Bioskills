@@ -23,7 +23,10 @@ LESSON_CANDIDATES = os.path.join(KNOWLEDGE, 'lessons', 'candidates')
 LESSON_VERIFIED = os.path.join(KNOWLEDGE, 'lessons', 'verified')
 PUBLIC_KNOWLEDGE = os.path.join(KNOWLEDGE, 'public')
 MAX_PUBLIC_ITEM_BYTES = 2 * 1024 * 1024
-LESSON_STATUSES = {'candidate', 'verified', 'rejected', 'deprecated'}
+LESSON_STATUSES = {'candidate', 'verified', 'rejected', 'deprecated', 'withdrawn', 'superseded'}
+# candidate 以外的状态都是终态/审核结论; 只有 verified 可进入公共同步
+LESSON_REVIEW_STATUSES = LESSON_STATUSES - {'candidate'}
+LESSON_RETIRED_STATUSES = {'rejected', 'deprecated', 'withdrawn', 'superseded', 'revoked'}
 SAFE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
 
 
@@ -79,7 +82,7 @@ def structured_search(query):
             if path.name == 'manifest.json': continue
             try: lesson = _json(path)
             except (OSError, ValueError): continue
-            if lesson.get('validation_status') in ('rejected', 'deprecated', 'revoked', 'withdrawn'): continue
+            if lesson.get('validation_status') in LESSON_RETIRED_STATUSES: continue
             score = len(terms & _tokens(lesson))
             if score:
                 item = dict(lesson); item['knowledge_source'] = source
@@ -126,7 +129,7 @@ def propose_lesson(args):
 
 def review_lesson(args):
     safe_identifier(args.lesson_id, 'lesson_id')
-    if args.status not in ('verified', 'rejected', 'deprecated'): raise ValueError('非法经验状态')
+    if args.status not in LESSON_REVIEW_STATUSES: raise ValueError('非法经验状态')
     source = pathlib.Path(LESSON_CANDIDATES) / (args.lesson_id + '.json')
     if not source.exists(): source = pathlib.Path(LESSON_VERIFIED) / (args.lesson_id + '.json')
     if not source.exists(): raise ValueError('找不到 lesson: %s' % args.lesson_id)
@@ -196,7 +199,7 @@ def sync_public(args):
     try:
         seen = set()
         for item in manifest.get('items', []):
-            if item.get('status') in ('revoked', 'withdrawn'): continue
+            if item.get('status') in LESSON_RETIRED_STATUSES: continue
             rel = pathlib.PurePosixPath(item.get('path', ''))
             if not rel.parts or rel.is_absolute() or '..' in rel.parts: raise ValueError('非法公共知识路径')
             if str(rel) in seen: raise ValueError('manifest 包含重复路径: %s' % rel)

@@ -9,7 +9,7 @@ description: 线粒体基因组组装质检、诊断与修复流水线。用于�
 
 本 Skill 按需处理用户报告的单个异常，不默认重组装或运行全部工具。诊断循环为：
 `INTAKE → HYPOTHESIZE → CHOOSE_TEST → EXECUTE → UPDATE → DECIDE → VERIFY → LEARN`。
-先读取 `references/diagnostic-playbook.md` 和 `references/evidence-standard.md`，再按异常选择 V1 脚本；工具目录见 `references/tool-catalog.md`，经验边界见 `references/learning-policy.md`。
+先读取 `references/diagnostic-playbook.md` 和 `references/evidence-standard.md`，再按异常选择 V1 脚本；注释硬阈值与重叠分级见 `references/annotation_quality.md`，顺序与坐标约定见 `references/standard_gene_order.md`，工具目录见 `references/tool-catalog.md`，环境见 `references/tool_check.md`，经验边界见 `references/learning-policy.md`。
 
 每个异常只能判为 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED`，另记录 `high/moderate/low/not_assessable` 置信等级。没有 reads 时不得报告 raw-read-supported；参考和单软件结果不能代替样本证据。
 
@@ -172,9 +172,9 @@ python3 scripts/blast_genes.py <ref.gb> <contig.fna> [--out out.txt]
 
 ### ④ 物种鉴定（COX1 条形码）
 ```bash
-python3 scripts/cox1_id.py <contig.fna> --allow-public-upload [--coords 1,2]   # 默认自动找 COX1
+python3 scripts/cox1_id.py <contig.fna> --allow-public-upload --coords <start>,<end>   # 必须先本地定位 COX1 再给坐标
 ```
-该命令会把选定片段上传到公共 NCBI；仅在确认数据可公开后使用。该命令会将选定片段上传到公共 NCBI；仅在确认数据可公开后执行。结果解读：
+该命令会把选定片段上传到公共 NCBI；仅在确认数据可公开后执行。查询片段需 400–5000 bp，脚本**不会**自动识别 COX1（固定 DNA 模式不能证明基因身份）。结果解读：
 - COX1 结果必须同时报告 identity、alignment coverage、多个近似命中和数据库版本；固定序列模式不能定位 COX1，也不自动下确定物种结论。
 - 拿到近缘种后回到 Step② 换参考重新比对
 
@@ -257,7 +257,7 @@ bash scripts/run_circular_map.sh <final.gb> <out.png> --title "<物种> mitochon
 | G6 | 修复验证 | 样本 reads 支持每个修改位点；参考比对仅作辅助 | 换修复路线 |
 | G7 | 注释翻译 | 13 CDS 无内部终止，氨基酸长度接近参考 | 精修边界 |
 | G8 | 环化 | 每个新增接缝均有独立 reads/pair/组装图证据，端部重叠已去冗余 | 输出 PUTATIVE/UNRESOLVED，不强制环化 |
-| G9 | 注释质检 | `annot_check.py <gb> --require-circular` 全检通过（基因身份/翻译/起止/tRNA/rRNA/重叠/链分布）；真实例外需显式确认 | 修复坐标/确认重叠 |
+| G9 | 注释质检 | `annot_check.py <gb> --require-circular` 全检通过（基因身份/翻译/起止/tRNA/rRNA/重叠/链分布，判据见 `references/annotation_quality.md`）；真实例外需显式确认（`--tolerate-overlap` / `--allow-atypical`） | 修复坐标/确认重叠 |
 | G10 | NCBI 预检 | 可选：table2asn 本地验证无内部终止等（NCBI organelle 提交前必做） | 按报错修复 |
 
 > 全部通过后执行结束仪式；任何 gate 失败都应在案例的 actions 中记录处置方式（这正是知识进化的原料）。
