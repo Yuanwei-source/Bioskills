@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mito-assembly-triage V2 case",
+  "type": "object",
+  "required": ["schema_version", "case_id", "inputs", "issue", "hypotheses", "decision", "events_file"],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "case_id": {"type": "string", "minLength": 1},
+    "taxon": {"type": "object"},
+    "inputs": {"type": "array", "items": {"type": "object", "required": ["role", "path", "sha256"]}},
+    "issue": {"type": "object", "required": ["type"]},
+    "hypotheses": {"type": "array", "items": {"type": "object", "required": ["id", "explanation", "support", "against", "unknown"]}},
+    "events_file": {"type": "string"},
+    "decision": {"type": "object", "required": ["status", "confidence", "rationale"], "properties": {"status": {"enum": ["RESOLVED", "NO_CHANGE", "UNRESOLVED"]}, "confidence": {"enum": ["high", "moderate", "low", "not_assessable"]}}},
+    "modifications": {"type": "array"},
+    "validation": {"type": "array"},
+    "lessons_proposed": {"type": "array"}
+  }
+}

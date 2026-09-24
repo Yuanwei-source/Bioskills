@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mito-assembly-triage V2 lesson",
+  "type": "object",
+  "required": ["lesson_id", "applicable_when", "not_applicable_when", "diagnostic_clues", "suggested_next_test", "supporting_case_ids", "counterexample_case_ids", "sources", "validation_status", "version", "last_reviewed"],
+  "properties": {
+    "lesson_id": {"type": "string"},
+    "validation_status": {"enum": ["candidate", "verified", "rejected", "deprecated"]},
+    "version": {"type": "string"},
+    "supporting_case_ids": {"type": "array"},
+    "counterexample_case_ids": {"type": "array"}
+  }
+}

@@ -5,6 +5,25 @@ description: 线粒体基因组组装质检、诊断与修复流水线。用于�
 
 # 线粒体组装诊断与修复流水线（进化式）
 
+## V2 动态诊断入口
+
+本 Skill 按需处理用户报告的单个异常，不默认重组装或运行全部工具。诊断循环为：
+`INTAKE → HYPOTHESIZE → CHOOSE_TEST → EXECUTE → UPDATE → DECIDE → VERIFY → LEARN`。
+先读取 `references/diagnostic-playbook.md` 和 `references/evidence-standard.md`，再按异常选择 V1 脚本；工具目录见 `references/tool-catalog.md`，经验边界见 `references/learning-policy.md`。
+
+每个异常只能判为 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED`，另记录 `high/moderate/low/not_assessable` 置信等级。没有 reads 时不得报告 raw-read-supported；参考和单软件结果不能代替样本证据。
+
+结构化案例可用：
+```bash
+python3 scripts/v2_case.py init work/case-001 --issue internal_stop \
+  --observation 'nad5 出现内部 stop' --input assembly_fasta assembly.fasta
+python3 scripts/v2_case.py event work/case-001 --action annot_check \
+  --result 'table 5 下仍有内部 stop' --impact H1:against
+python3 scripts/v2_case.py validate work/case-001
+python3 scripts/v2_case.py report work/case-001
+```
+案例目录应位于工作目录或外部知识目录，不覆盖输入；`case.json`、`events.jsonl` 和 `case.md` 是同一事实链的结构化/可读表示。
+
 ## 设计哲学
 
 - **稳定层与知识层分离**：SKILL.md 只含稳定的主流程；经验数据写入 `MITO_KNOWLEDGE_DIR`（默认位于用户 XDG 数据目录），不写入 skill 安装目录
