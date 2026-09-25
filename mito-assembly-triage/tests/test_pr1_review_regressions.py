@@ -340,11 +340,13 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         self.dir = Path(temp.name)
 
     def _run(self, name, sequence, transl_except, location="1..%d", registry=None,
-             taxon="Lepidoptera"):
+             taxon="Lepidoptera", gene="cox1"):
         path = self.dir / name
         if "%d" in location:
             location = location % len(sequence)
-        spec = {"location": location, "type": "CDS", "gene": "cox1"}
+        spec = {"location": location, "type": "CDS"}
+        if gene:
+            spec["gene"] = gene
         if transl_except is not None:
             spec["transl_except"] = transl_except
         write_gb_raw(path, sequence + "A" * 40, [spec])
@@ -377,6 +379,17 @@ class TranslExceptExactCodonTests(unittest.TestCase):
                            registry=[_transl_record()], taxon=None)
         self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
         self.assertIn("--taxon", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_cds_without_a_gene_identity_is_never_validated(self):
+        # the record itself is valid, but a CDS whose /gene and /product both
+        # canonicalise to '' must not have gene-keyed evidence applied to it
+        result = self._run("unnamed.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)",
+                           registry=[_transl_record()], gene=None)
+        self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertIn("gene", result.stdout)
         self.assertNotIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
 
@@ -951,21 +964,53 @@ class TranslExceptRegistryFormatTests(unittest.TestCase):
     def test_duplicate_site_records_are_rejected(self):
         self.assertEqual(self._load(self._record(), self._record()), 1)
 
-    def test_distinct_sites_are_kept(self):
+    def _load_ok(self, *entries):
         path = self.dir / "ok.json"
-        path.write_text(json.dumps({"exceptions": [self._record(),
-                                                   self._record(pos="19..21")]}),
+        path.write_text(json.dumps({"exceptions": list(entries)}, ensure_ascii=False),
                         encoding="utf-8")
-        registry = self.module.load_exception_registry(str(path))
+        return self.module.load_exception_registry(str(path))
+
+    def test_distinct_sites_are_kept(self):
+        registry = self._load_ok(self._record(), self._record(pos="19..21"))
         self.assertEqual(len(registry["transl_except"][("cox1", "TAA", "trp")]), 2)
+
+    def test_same_site_for_different_taxa_is_kept(self):
+        # P2-1: the runtime SELECTS on taxon, so the duplicate identity must not
+        # collapse records that differ only by taxon
+        registry = self._load_ok(self._record(taxon="Lepidoptera"),
+                                 self._record(taxon="Diptera"))
+        self.assertEqual(len(registry["transl_except"][("cox1", "TAA", "trp")]), 2)
+
+    def test_same_site_for_different_tables_is_kept(self):
+        registry = self._load_ok(self._record(transl_table=5), self._record(transl_table=2))
+        self.assertEqual(len(registry["transl_except"][("cox1", "TAA", "trp")]), 2)
+
+    def test_same_site_same_taxon_same_table_is_rejected(self):
+        self.assertEqual(self._load(self._record(), self._record()), 1)
+
+    def test_empty_or_punctuation_gene_selector_is_rejected(self):
+        # The bug: an empty selector matches an empty selector, so a CDS with no
+        # /gene or /product would have gene-keyed evidence applied to it.
+        for gene in ("", "?", "---", "   ", "(CUN)"):
+            with self.subTest(gene=gene):
+                self.assertEqual(self._load(self._record(gene=gene)), 1)
+
+    def test_empty_amino_acid_selector_is_rejected(self):
+        self.assertEqual(self._load(self._record(amino_acid="")), 1)
+
+    def test_invalid_codon_selector_is_rejected(self):
+        for codon in ("", "TA", "TAXA", "TXX"):
+            with self.subTest(codon=codon):
+                self.assertEqual(self._load(self._record(codon=codon)), 1)
+
+    def test_invalid_amino_acid_token_is_rejected(self):
+        self.assertEqual(self._load(self._record(amino_acid="Zzz")), 1)
 
     def test_gene_wide_scope_record_is_kept(self):
         record = self._record()
         record.pop("pos")
         record["scope"] = "gene_wide"
-        path = self.dir / "wide.json"
-        path.write_text(json.dumps({"exceptions": [record]}), encoding="utf-8")
-        registry = self.module.load_exception_registry(str(path))
+        registry = self._load_ok(record)
         self.assertEqual(registry["transl_except"][("cox1", "TAA", "trp")][0]["site"],
                          ("gene_wide", None))
 

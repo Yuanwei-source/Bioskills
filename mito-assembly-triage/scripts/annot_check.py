@@ -752,9 +752,17 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
             findings.info('TRANSL_EXCEPT_MATCHED: %s 位置 %s 精确对应密码子 %d 的内部终止 %s '
                           '(位置/读框事实, 单独的 MATCHED 不等于已接受)'
                           % (display, position_text, index + 1, actual_codon))
-            records = transl_registry.get((canonical, actual_codon, amino_acid.strip().lower()))
-            record, note = _transl_except_evidence(records, tbl, expected_taxon,
-                                                   index + 1, entry['positions'])
+            if not canonical:
+                # defence in depth: an unidentified CDS must never have a
+                # gene-keyed record applied to it (see the loader's empty-selector
+                # rejection)
+                record, note = None, (' (该 CDS 缺少可识别的 gene 身份 (/gene 与 /product 归一化后'
+                                      '仍为空), registry 证据无法绑定到基因)')
+            else:
+                records = transl_registry.get((canonical, actual_codon,
+                                               amino_acid.strip().lower()))
+                record, note = _transl_except_evidence(records, tbl, expected_taxon,
+                                                       index + 1, entry['positions'])
             if record is None:
                 findings.review(
                     'TRANSL_EXCEPT_DECLARED_UNVERIFIED: %s 的 /transl_except %s 声明密码子 %d 的'
@@ -1075,19 +1083,46 @@ def load_exception_registry(path):
                 sys.exit(1)
         gene = _canonical_key(item.get('gene', ''))
         codon = str(item.get('codon', '')).upper()
-        amino_acid = item.get('amino_acid')
-        if amino_acid:
+        # Classify by KEY PRESENCE, not truthiness: an explicit amino_acid of "" is a
+        # malformed transl_except record, not a start-codon record.
+        has_amino_acid = item.get('amino_acid') is not None
+        if has_amino_acid:
+            amino_acid = item.get('amino_acid')
+            # An empty selector matches an empty selector: a CDS without /gene or
+            # /product canonicalises to '' too, so an empty gene name would bind
+            # "evidence" to no gene identity at all and clear the stop ERROR.
+            if not gene:
+                print('ERROR: 例外记录 %s 的 exceptions[%d].gene 归一化后为空 (%r); '
+                      'transl_except 证据必须绑定一个可识别的基因身份'
+                      % (path, index, item.get('gene')))
+                sys.exit(1)
+            if not re.fullmatch(r'[ACGTURYKMSWBDHVN]{3}', codon):
+                print('ERROR: 例外记录 %s 的 exceptions[%d].codon 必须是三个 IUPAC 碱基, '
+                      '实际为 %r' % (path, index, item.get('codon')))
+                sys.exit(1)
+            amino_key = str(amino_acid).strip().lower()
+            if amino_key not in TRANSL_EXCEPT_AA_TOKENS:
+                print('ERROR: 例外记录 %s 的 exceptions[%d].amino_acid 不是合法的例外氨基酸 '
+                      'token, 实际为 %r' % (path, index, amino_acid))
+                sys.exit(1)
             record = {'taxon': item.get('taxon'), 'source': item.get('source'),
                       'rationale': item.get('rationale'),
                       'transl_table': item.get('transl_table'),
                       'site': _registry_site(item, path, index), 'pos': item.get('pos')}
-            key = (gene, codon, str(amino_acid).strip().lower())
+            key = (gene, codon, amino_key)
             bucket = registry['transl_except'].setdefault(key, [])
-            if any(existing['site'] == record['site'] for existing in bucket):
+            # The duplicate identity must include EVERY axis the runtime uses to
+            # SELECT a record, otherwise a shared registry cannot hold the same
+            # homologous site for several taxa or genetic codes.
+            identity = (record['site'], str(record.get('taxon') or '').strip().lower(),
+                        record.get('transl_table'))
+            if any(existing['identity'] == identity for existing in bucket):
                 print('ERROR: 例外记录 %s 的 exceptions[%d] 与已有记录重复 '
-                      '(同一 gene/codon/amino_acid/位点): %s/%s/%s -> 重复 key 会被静默覆盖, '
-                      '因此按格式错误处理' % (path, index, gene, codon, amino_acid))
+                      '(同一 gene/codon/amino_acid/位点/taxon/transl_table): %s/%s/%s %s '
+                      '-> 重复 key 会被静默覆盖, 因此按格式错误处理'
+                      % (path, index, gene, codon, amino_acid, identity))
                 sys.exit(1)
+            record['identity'] = identity
             bucket.append(record)
         else:
             registry['start'][(gene, codon)] = {

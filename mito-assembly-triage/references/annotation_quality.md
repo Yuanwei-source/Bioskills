@@ -178,9 +178,17 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 - 记录缺 `taxon`/`source`/`rationale` → `EXCEPTION_RECORD_INCOMPLETE`；
 - 提供了 `--taxon` 且与记录的 `taxon` 不一致 → `EXCEPTION_TAXON_MISMATCH`；
 - **未提供 `--taxon`** → `EXCEPTION_TAXON_UNVERIFIED`：记录存在但无法确认其类群适用于本样本；
-- 证据字段类型错误（数组/对象/整数冒充字符串）→ **加载时受控失败**（退出码 1），不做部分生效。
+- 证据字段类型错误（数组/对象/整数冒充字符串）→ **加载时受控失败**（退出码 1），不做部分生效；
+- **selector 归一化后为空**（`gene` 为 `""`/`"?"`/纯标点/`"(CUN)"`，或 `codon`/`amino_acid` 为空）→ 加载失败：
+  空 selector 会与另一个空 selector（如缺 `/gene`/`/product` 的 CDS 归一化为 `""`）精确匹配，
+  等于把证据绑到“没有任何基因身份”上；`transl_except` 记录的 `codon` 必须是三个 IUPAC 碱基，
+  `amino_acid` 必须是合法例外 token；
+- **同位点、不同 `taxon` 或不同 `transl_table` 的多条记录可以共存**（运行时按 `--taxon`/`--table` 选择）；
+  只有 selector 完全相同（gene/codon/amino_acid/位点/taxon/transl_table 全等）的才判为重复并拒绝。
 
-以上三种情形**都只维持 REVIEW**，不会把例外升级为已验证。
+**未引用 registry / 记录缺字段 / taxon 不符 / 未提供 `--taxon` 这四种情形都只维持 REVIEW**，
+不会把例外升级为已验证；**字段类型错误、selector 归一化后为空、位点未绑定属于格式非法，
+导致 registry 加载失败并退出 1**，不进入 REVIEW 也不做部分生效。
 
 | 类群 | 已报告的特殊情况 | 对判据的意义 |
 |---|---|---|
