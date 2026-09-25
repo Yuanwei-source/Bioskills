@@ -87,7 +87,8 @@ FASTA、同源性、翻译、RNA 结构和比较基因组证据可以支持候�
 （b）**位点绑定**：给 `codon_index` 或 `pos` 之一，或**显式** `scope="gene_wide"`（不绑定位点的记录在加载时受控失败）；
 （c）`transl_table` 为正整数且等于 `--table`，`source`/`rationale` 为非空字符串（类型错误在加载时受控失败）。
 三者均满足才记 `TRANSL_EXCEPT_VALIDATED`（并输出 `scope=`）。registry 的 **selector 归一化后不得为空**：
-`gene` 为空/`"?"`/纯标点（如缺 `/gene`/`/product` 的 CDS）在**加载时**受控失败，`codon` 须为三个 IUPAC 碱基、
+`gene` 为空/`"?"`/纯标点（如缺 `/gene`/`/product` 的 CDS）或 `gene`/`codon`/`amino_acid` 键存在但为 `null` 时，
+均在**加载时**受控失败（记录类型按键是否存在判定，`amino_acid: null` 不得降格为 start 记录）；`codon` 须为三个 IUPAC 碱基、
 `amino_acid` 须为合法例外 token；同位点但不同 `taxon`/`transl_table` 的记录**可共存**（运行时按 `--taxon`/`--table`
 选择），只有 selector 全等的才判重复。**不引入全局密码子→氨基酸重编码表**：任意合法 token
 （如 `TAA -> Gln`）即使位置匹配也只记 `TRANSL_EXCEPT_DECLARED_UNVERIFIED`（REVIEW），**内部终止继续作为 ERROR**。

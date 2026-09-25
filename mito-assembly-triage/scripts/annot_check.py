@@ -1081,11 +1081,20 @@ def load_exception_registry(path):
                 print('ERROR: 例外记录 %s 的 exceptions[%d].%s 必须是正整数, 实际为 %r'
                       % (path, index, key, value))
                 sys.exit(1)
+        # Selectors must not be null: the PRESENCE of the key is what makes a record
+        # a transl_except record, so "amino_acid": null is a malformed transl_except
+        # record, not a start-codon record.
+        for key in ('gene', 'codon', 'amino_acid'):
+            if key in item and item[key] is None:
+                print('ERROR: 例外记录 %s 的 exceptions[%d].%s 键存在但为 null; selector 必须给出'
+                      '有效值 (键存在即表示这是 transl_except 记录, 不得降格为 start 记录)'
+                      % (path, index, key))
+                sys.exit(1)
         gene = _canonical_key(item.get('gene', ''))
         codon = str(item.get('codon', '')).upper()
-        # Classify by KEY PRESENCE, not truthiness: an explicit amino_acid of "" is a
-        # malformed transl_except record, not a start-codon record.
-        has_amino_acid = item.get('amino_acid') is not None
+        # Classify by KEY PRESENCE, not truthiness: an explicit amino_acid of "" or
+        # null is a malformed transl_except record, not a start-codon record.
+        has_amino_acid = 'amino_acid' in item
         if has_amino_acid:
             amino_acid = item.get('amino_acid')
             # An empty selector matches an empty selector: a CDS without /gene or

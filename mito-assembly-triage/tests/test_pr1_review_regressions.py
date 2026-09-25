@@ -998,6 +998,26 @@ class TranslExceptRegistryFormatTests(unittest.TestCase):
     def test_empty_amino_acid_selector_is_rejected(self):
         self.assertEqual(self._load(self._record(amino_acid="")), 1)
 
+    def test_explicit_null_amino_acid_is_a_malformed_transl_except_record(self):
+        # P2-1: the KEY PRESENCE is what classifies a record; null must not silently
+        # downgrade a malformed transl_except record into a start-codon record
+        self.assertEqual(self._load(self._record(amino_acid=None)), 1)
+
+    def test_explicit_null_gene_or_codon_is_rejected(self):
+        for field in ("gene", "codon"):
+            with self.subTest(field=field):
+                self.assertEqual(self._load(self._record(**{field: None})), 1)
+
+    def test_selector_classification_three_way(self):
+        # absent key -> start record; "" -> malformed transl_except; null -> malformed
+        start = {"gene": "cox1", "codon": "CGA", "taxon": "Lepidoptera",
+                 "source": "DOI", "rationale": "r"}
+        registry = self._load_ok(start)
+        self.assertIn(("cox1", "CGA"), registry["start"])
+        self.assertEqual(registry["transl_except"], {})
+        self.assertEqual(self._load(self._record(amino_acid="")), 1)
+        self.assertEqual(self._load(self._record(amino_acid=None)), 1)
+
     def test_invalid_codon_selector_is_rejected(self):
         for codon in ("", "TA", "TAXA", "TXX"):
             with self.subTest(codon=codon):

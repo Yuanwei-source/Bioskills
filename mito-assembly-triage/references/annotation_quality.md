@@ -179,10 +179,12 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 - 提供了 `--taxon` 且与记录的 `taxon` 不一致 → `EXCEPTION_TAXON_MISMATCH`；
 - **未提供 `--taxon`** → `EXCEPTION_TAXON_UNVERIFIED`：记录存在但无法确认其类群适用于本样本；
 - 证据字段类型错误（数组/对象/整数冒充字符串）→ **加载时受控失败**（退出码 1），不做部分生效；
-- **selector 归一化后为空**（`gene` 为 `""`/`"?"`/纯标点/`"(CUN)"`，或 `codon`/`amino_acid` 为空）→ 加载失败：
+- **selector 归一化后为空或显式为 `null`** → 加载失败：`gene` 为 `""`/`"?"`/纯标点/`"(CUN)"`、
+  `codon`/`amino_acid` 为空字符串，或 `gene`/`codon`/`amino_acid` 键**存在但值为 `null`**；
   空 selector 会与另一个空 selector（如缺 `/gene`/`/product` 的 CDS 归一化为 `""`）精确匹配，
-  等于把证据绑到“没有任何基因身份”上；`transl_except` 记录的 `codon` 必须是三个 IUPAC 碱基，
-  `amino_acid` 必须是合法例外 token；
+  等于把证据绑到“没有任何基因身份”上。记录类型按**键是否存在**判定（而非真值）：`amino_acid` 键一旦出现就是
+  `transl_except` 记录，`""` 或 `null` 均为格式错误，**不得降格为 start 记录**；
+  `transl_except` 的 `codon` 必须是三个 IUPAC 碱基，`amino_acid` 必须是合法例外 token；
 - **同位点、不同 `taxon` 或不同 `transl_table` 的多条记录可以共存**（运行时按 `--taxon`/`--table` 选择）；
   只有 selector 完全相同（gene/codon/amino_acid/位点/taxon/transl_table 全等）的才判为重复并拒绝。
 
