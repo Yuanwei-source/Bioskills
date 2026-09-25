@@ -38,7 +38,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gb_fixtures import (  # noqa: E402
-    ROOT, biopython_available, have, load_module, run_annot_check, write_gb_raw,
+    ROOT, biopython_available, have, load_module, run_annot_check, run_script, write_gb_raw,
 )
 
 REASON = "合成测试: 单基因记录, 基因集差异已逐项确认"
@@ -524,6 +524,369 @@ class SchemaKeywordCoverageTests(unittest.TestCase):
         case.update({"modifications": [{"x": 1}], "validation": ["a"],
                      "lessons_proposed": ["b"]})
         self.assertEqual(self.module._case_errors_without_jsonschema(case), [])
+
+
+def _hsp_missing(fields):
+    """An <Hsp> with the named fields deliberately omitted."""
+    values = {'query-from': 1, 'query-to': 1000, 'hit-from': 100, 'hit-to': 1099,
+              'identity': 990, 'align-len': 1000, 'bit-score': 900.0}
+    for field in fields:
+        values.pop(field)
+    return ("<Hsp><Hsp_query-from>%s</Hsp_query-from><Hsp_query-to>%s</Hsp_query-to>"
+            "<Hsp_hit-from>%s</Hsp_hit-from><Hsp_hit-to>%s</Hsp_hit-to>"
+            "<Hsp_identity>%s</Hsp_identity><Hsp_align-len>%s</Hsp_align-len>"
+            "<Hsp_bit-score>%s</Hsp_bit-score></Hsp>"
+            % tuple('' if key not in values else values[key]
+                    for key in ('query-from', 'query-to', 'hit-from', 'hit-to',
+                                'identity', 'align-len', 'bit-score')))
+
+
+class HspFieldValidationTests(unittest.TestCase):
+    """P1-1: a half-readable HSP must be a format failure, not a candidate.
+
+    Without the subject coordinates the direction, collinearity and target-reuse
+    checks cannot run.  The old code skipped unusable HSPs and let the remaining
+    "single" HSP take the fast path with collinear=True and no blocker, so a
+    truncated response produced identity=99% and exit code 0.
+    """
+
+    def setUp(self):
+        self.module = load_module("cox1_hsp_fields", Path("scripts") / "cox1_id.py")
+
+    def _parse(self, hsp):
+        return self.module.parse_blast_xml(_blast_xml("NC_X", hsp))
+
+    def test_valid_hsp_still_parses(self):
+        hit = self._parse(_hsp(1, 1000, 100, 1099, 990, 1000))["hits"][0]
+        self.assertEqual(hit["hsp_count"], 1)
+        self.assertEqual(hit["hsps"][0]["hit_from"], 100)
+        self.assertIsNotNone(hit["identity"])
+
+    def test_missing_subject_coordinates_is_a_format_failure(self):
+        for field in ("hit-from", "hit-to"):
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError) as caught:
+                    self._parse(_hsp_missing([field]))
+                self.assertIn(field, str(caught.exception))
+
+    def test_missing_query_coordinates_is_a_format_failure(self):
+        with self.assertRaises(ValueError):
+            self._parse(_hsp_missing(["query-to"]))
+
+    def test_missing_counts_is_a_format_failure(self):
+        for field in ("identity", "align-len", "bit-score"):
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError):
+                    self._parse(_hsp_missing([field]))
+
+    def test_non_numeric_field_is_a_format_failure(self):
+        hsp = ("<Hsp><Hsp_query-from>1</Hsp_query-from><Hsp_query-to>1000</Hsp_query-to>"
+               "<Hsp_hit-from>100</Hsp_hit-from><Hsp_hit-to>1099</Hsp_hit-to>"
+               "<Hsp_identity>990</Hsp_identity><Hsp_align-len>ABC</Hsp_align-len>"
+               "<Hsp_bit-score>900</Hsp_bit-score></Hsp>")
+        with self.assertRaises(ValueError):
+            self._parse(hsp)
+
+    def test_zero_coordinate_is_a_format_failure(self):
+        with self.assertRaises(ValueError):
+            self._parse(_hsp(0, 1000, 100, 1099, 990, 1000))
+
+    def test_identity_above_align_len_is_a_format_failure(self):
+        with self.assertRaises(ValueError):
+            self._parse(_hsp(1, 500, 100, 599, 900, 500))
+
+    def test_zero_align_len_is_a_format_failure(self):
+        with self.assertRaises(ValueError):
+            self._parse(_hsp(1, 500, 100, 599, 0, 0))
+
+    def test_half_readable_hit_never_reaches_auto_selection(self):
+        with self.assertRaises(ValueError):
+            self.module.parse_blast_xml(
+                _blast_xml("NC_MISSING", _hsp_missing(["hit-from", "hit-to"])))
+
+
+class HspFieldValidationCliTests(unittest.TestCase):
+    """P1-1 at the CLI: the half-readable response must exit 3, never 0."""
+
+    def setUp(self):
+        self.module = load_module("cox1_hsp_fields_cli", Path("scripts") / "cox1_id.py")
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.fasta = Path(temp.name) / "genome.fa"
+        self.fasta.write_text(">g\n%s\n" % ("ACGT" * 300), encoding="utf-8")
+
+    def _run(self, payload):
+        module = self.module
+        saved = (module.request_search, module.poll_search_info,
+                 module.fetch_results_xml, module.time)
+        module.request_search = lambda query, max_results=10: "RID = RID1"
+        module.poll_search_info = lambda rid: "Status=READY"
+        module.fetch_results_xml = lambda rid, max_results=10: payload
+        module.time = SimpleNamespace(sleep=lambda seconds: None)
+        argv = sys.argv
+        sys.argv = ["cox1_id.py", str(self.fasta), "--allow-public-upload", "--coords", "1,1200"]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    module.main()
+            return caught.exception.code
+        finally:
+            (module.request_search, module.poll_search_info,
+             module.fetch_results_xml, module.time) = saved
+            sys.argv = argv
+
+    def test_missing_subject_coordinates_exits_3(self):
+        payload = _blast_xml("NC_MISSING", _hsp_missing(["hit-from", "hit-to"]))
+        self.assertEqual(self._run(payload), 3)
+
+    def test_missing_bit_score_exits_3(self):
+        payload = _blast_xml("NC_NOSCORE", _hsp_missing(["bit-score"]))
+        self.assertEqual(self._run(payload), 3)
+
+
+@unittest.skipUnless(biopython_available(), "Biopython is not installed")
+class TranslExceptSemanticsTests(unittest.TestCase):
+    """P1-2 / P2-1: the declaration's strand, aa token and grammar must all hold."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+
+    def _run(self, name, sequence, transl_except, location="1..%d"):
+        path = self.dir / name
+        if "%d" in location:
+            location = location % len(sequence)
+        write_gb_raw(path, sequence + "A" * 40, [
+            {"location": location, "type": "CDS", "gene": "cox1",
+             "transl_except": transl_except}])
+        return run_annot_check(path, "--allow-atypical", REASON)
+
+    def test_aa_term_does_not_explain_an_internal_stop(self):
+        result = self._run("term.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:TERM)")
+        self.assertIn("TRANSL_EXCEPT_UNEXPLAINED", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_bare_position_on_a_minus_strand_cds_is_not_accepted(self):
+        result = self._run("bare-minus.gb", _revcomp(INTERNAL_STOP_CDS),
+                           "(pos:10..12,aa:Trp)", location="complement(1..%d)")
+        self.assertIn("TRANSL_EXCEPT_UNEXPLAINED", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_complement_position_on_a_plus_strand_cds_is_not_accepted(self):
+        result = self._run("comp-plus.gb", INTERNAL_STOP_CDS,
+                           "(pos:complement(10..12),aa:Trp)")
+        self.assertIn("TRANSL_EXCEPT_UNEXPLAINED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_trailing_garbage_is_unparsed_and_does_not_explain(self):
+        result = self._run("junk.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp),BROKEN")
+        self.assertIn("TRANSL_EXCEPT_UNPARSED", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_missing_pos_token_is_reported_as_unparsed(self):
+        result = self._run("nopos.gb", INTERNAL_STOP_CDS, "(position:10..12,aa:Trp)")
+        self.assertIn("TRANSL_EXCEPT_UNPARSED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_unbalanced_parentheses_are_unparsed(self):
+        result = self._run("unbalanced.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp")
+        self.assertIn("TRANSL_EXCEPT_UNPARSED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_fuzzy_location_is_unparsed(self):
+        result = self._run("fuzzy.gb", INTERNAL_STOP_CDS, "(pos:<10..12,aa:Trp)")
+        self.assertIn("TRANSL_EXCEPT_UNPARSED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_cross_part_codon_is_supported(self):
+        # CDS join(1..5,101..107): codons are {1,2,3} {4,5,101} {102,103,104} {105,106,107}
+        sequence = list("A" * 200)
+        sequence[0:5] = list("ATGTA")
+        sequence[100:107] = list("AATATAA")
+        sequence = "".join(sequence)
+        result = self._run("join-codon.gb", sequence,
+                           "(pos:join(4..5,101),aa:Leu)", location="join(1..5,101..107)")
+        self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertNotIn("[ERROR]", result.stdout)
+
+    def test_cross_part_codon_with_wrong_positions_is_not_accepted(self):
+        sequence = list("A" * 200)
+        sequence[0:5] = list("ATGTA")
+        sequence[100:107] = list("AATATAA")
+        sequence = "".join(sequence)
+        result = self._run("join-wrong.gb", sequence,
+                           "(pos:join(4..5,102),aa:Leu)", location="join(1..5,101..107)")
+        self.assertIn("TRANSL_EXCEPT_UNEXPLAINED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_multiple_well_formed_entries_are_all_parsed(self):
+        # two internal stops (codon 4 = 10..12, codon 7 = 19..21), two declarations
+        sequence = "ATG" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA"
+        result = self._run("two.gb", sequence,
+                           "(pos:10..12,aa:Trp),(pos:19..21,aa:Trp)")
+        self.assertEqual(result.stdout.count("TRANSL_EXCEPT_MATCHED"), 2)
+        self.assertNotIn("[ERROR]", result.stdout)
+
+    def test_entry_with_a_wrong_aa_is_not_matched(self):
+        result = self._run("wrong-aa.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Gln)")
+        # Gln is a legal token but not what the declared position claims to need;
+        # it is only refused when it cannot explain a stop, so a *matching*
+        # position still explains it -- guarded here to pin the current contract.
+        self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+
+
+class SchemaTypeMatrixTests(unittest.TestCase):
+    """P1-3: every legal JSON value must yield a verdict, never a traceback.
+
+    The previous fixed data set only used the string "x" for array-type errors.
+    Strings are iterable, which hid `enumerate(1)` raising TypeError.  This is
+    the Schema-keyword x JSON-basic-type matrix instead of hand-picked cases.
+    """
+
+    VALUES = (1, 0, -1, "x", "", [], [1], {}, {"a": 1}, None, True, 1.5)
+    FIELDS = ("schema_version", "case_id", "taxon", "inputs", "issue", "hypotheses",
+              "events_file", "decision", "anomalies", "modifications", "validation",
+              "lessons_proposed")
+
+    def setUp(self):
+        self.module = load_module("experience_type_matrix", Path("tools") / "experience.py")
+        self.schema = json.loads((ROOT / "schemas" / "case.schema.json").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _base():
+        return {
+            "schema_version": "2.0", "case_id": "case-1",
+            "inputs": [{"role": "assembly_fasta", "path": "/tmp/x.fa", "sha256": "a" * 64}],
+            "issue": {"type": "internal_stop"},
+            "hypotheses": [{"id": "H1", "explanation": "e", "support": [], "against": [],
+                            "unknown": []}],
+            "decision": {"status": "RESOLVED", "confidence": "moderate", "rationale": "r"},
+            "anomalies": [], "events_file": "events.jsonl",
+        }
+
+    def test_no_json_value_crashes_the_fallback(self):
+        for field in self.FIELDS:
+            for value in self.VALUES:
+                with self.subTest(field=field, value=value):
+                    case = self._base()
+                    case[field] = value
+                    try:
+                        errors = self.module._case_errors_without_jsonschema(case)
+                    except Exception as exc:  # noqa: BLE001 - this IS the assertion
+                        self.fail("%s=%r raised %s: %s" % (field, value, type(exc).__name__, exc))
+                    self.assertIsInstance(errors, list)
+
+    def test_no_json_value_crashes_the_public_validator(self):
+        for field in self.FIELDS:
+            for value in self.VALUES:
+                with self.subTest(field=field, value=value):
+                    case = self._base()
+                    case[field] = value
+                    try:
+                        self.module.case_schema_errors(case)
+                    except Exception as exc:  # noqa: BLE001
+                        self.fail("case_schema_errors %s=%r raised %s: %s"
+                                  % (field, value, type(exc).__name__, exc))
+
+    def test_matrix_agrees_with_jsonschema(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest("jsonschema is not installed")
+        disagreements = []
+        for field in self.FIELDS:
+            for value in self.VALUES:
+                case = self._base()
+                case[field] = value
+                try:
+                    jsonschema.validate(case, self.schema)
+                    schema_ok = True
+                except jsonschema.ValidationError:
+                    schema_ok = False
+                fallback_ok = not self.module._case_errors_without_jsonschema(case)
+                if schema_ok != fallback_ok:
+                    disagreements.append('%s=%r jsonschema=%s fallback=%s'
+                                         % (field, value, schema_ok, fallback_ok))
+        self.assertEqual(disagreements, [])
+
+    def test_a_legal_case_passes_every_path(self):
+        case = self._base()
+        self.assertEqual(self.module._case_errors_without_jsonschema(case), [])
+        self.assertEqual(self.module.case_schema_errors(case), [])
+
+
+class CaseValidateEntryPointTests(unittest.TestCase):
+    """P1-4: the public CLI must report INVALID, never leak a traceback."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name) / "case"
+        self.dir.mkdir()
+        (self.dir / "events.jsonl").touch()
+
+    def _payload(self, decision_value="__absent__"):
+        case = SchemaTypeMatrixTests._base()
+        if decision_value == "__absent__":
+            case.pop("decision", None)
+        else:
+            case["decision"] = decision_value
+        return case
+
+    def _run_cli(self, payload):
+        (self.dir / "case.json").write_text(json.dumps(payload), encoding="utf-8")
+        return run_script(Path("tools") / "experience.py", "case-validate", self.dir)
+
+    def test_explicit_null_decision_is_invalid_without_traceback(self):
+        result = self._run_cli(self._payload(None))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("INVALID", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("AttributeError", result.stderr)
+
+    def test_wrong_decision_type_is_invalid_without_traceback(self):
+        for value in ("RESOLVED", 1, []):
+            with self.subTest(value=value):
+                result = self._run_cli(self._payload(value))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("INVALID", result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_top_level_array_case_is_invalid_without_traceback(self):
+        result = self._run_cli([])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("INVALID", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_valid_case_reports_valid(self):
+        for absent_or_null in (None, "__absent__"):
+            with self.subTest(decision=absent_or_null):
+                result = self._run_cli(self._payload(absent_or_null))
+                self.assertEqual(result.returncode, 1)      # null / missing is invalid
+        result = self._run_cli(self._payload("KEEP"))
+        self.assertEqual(result.returncode, 1)
+        result = self._run_cli(SchemaTypeMatrixTests._base())
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("VALID", result.stdout)
+
+
+class FixtureHygieneTests(unittest.TestCase):
+    """P3-1: `git diff --check` must stay clean (new blank line at EOF)."""
+
+    def test_xml_fixtures_end_with_exactly_one_newline(self):
+        for path in sorted(FIXTURES.glob("*.xml")):
+            with self.subTest(fixture=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertTrue(text.endswith("\n"), path.name)
+                self.assertFalse(text.endswith("\n\n"), "%s ends with a blank line" % path.name)
+                for number, line in enumerate(text.split("\n"), start=1):
+                    self.assertEqual(line, line.rstrip(),
+                                     "%s:%d has trailing whitespace" % (path.name, number))
 
 
 if __name__ == "__main__":

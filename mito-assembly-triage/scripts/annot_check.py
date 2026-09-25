@@ -264,36 +264,144 @@ def feature_partial(feature):
     return (detail['five'], detail['three'])
 
 
-VALID_TRANSL_EXCEPT_AA = frozenset(name.lower() for name in (
+# /transl_except token whitelist: standard three-letter codes plus the INSDC
+# special tokens.  TERM is a legal TOKEN but it means "translation stops here",
+# so it can never explain an internal stop as a readable codon.
+TRANSL_EXCEPT_AA_TOKENS = frozenset(name.lower() for name in (
     'Ala', 'Arg', 'Asn', 'Asp', 'Cys', 'Gln', 'Glu', 'Gly', 'His', 'Ile', 'Leu',
     'Lys', 'Met', 'Phe', 'Pro', 'Pyl', 'Sec', 'Ser', 'Thr', 'Trp', 'Tyr', 'Val',
-    'OTHER', 'TERM', 'fMet'))
+    'OTHER', 'fMet', 'TERM'))
+TRANSL_EXCEPT_TERMINATION_TOKENS = frozenset(('term',))
 
-_TRANSL_EXCEPT_RE = re.compile(
-    r'pos:\s*(complement\()?\s*(\d+)\s*\.\.\s*(\d+)\s*\)?\s*,\s*aa:\s*([A-Za-z]+)')
+
+def _split_location_list(text):
+    """Split on commas that are not nested inside parentheses."""
+    pieces, depth, current = [], 0, []
+    for char in text:
+        if char == '(':
+            depth += 1
+        elif char == ')':
+            depth -= 1
+        elif char == ',' and depth == 0:
+            pieces.append(''.join(current))
+            current = []
+            continue
+        current.append(char)
+    pieces.append(''.join(current))
+    return [piece.strip() for piece in pieces]
+
+
+def _location_positions(text):
+    """(1-based genomic positions, is_complement) for a location, else None.
+
+    Grammar kept deliberately small: ``a``, ``a..b``, ``complement(...)`` and
+    ``join(...)``/``order(...)``.  Anything else -- fuzzy markers, ``^``, bare
+    text -- returns None so the caller reports the qualifier as unparsed rather
+    than silently accepting one substring of it.
+    """
+    text = text.strip()
+    if not text:
+        return None
+    if text.startswith('complement(') and text.endswith(')'):
+        inner = _location_positions(text[len('complement('):-1])
+        return None if inner is None else (inner[0], not inner[1])
+    for keyword in ('join(', 'order('):
+        if text.startswith(keyword) and text.endswith(')'):
+            positions, complemented = [], False
+            for piece in _split_location_list(text[len(keyword):-1]):
+                parsed = _location_positions(piece)
+                if parsed is None:
+                    return None
+                positions.extend(parsed[0])
+                complemented = complemented or parsed[1]
+            return (positions, complemented) if positions else None
+    if re.fullmatch(r'\d+', text):
+        return ([int(text)], False)
+    match = re.fullmatch(r'(\d+)\s*\.\.\s*(\d+)', text)
+    if match:
+        start, end = int(match.group(1)), int(match.group(2))
+        return (list(range(start, end + 1)), False) if start <= end else None
+    return None
+
+
+def _parse_transl_except_entry(text):
+    """(positions, complemented, amino_acid) from one '(pos:...,aa:...)' chunk."""
+    text = text.strip()
+    if not (text.startswith('(') and text.endswith(')')):
+        return None
+    pieces = _split_location_list(text[1:-1])
+    if len(pieces) != 2 or not pieces[0].startswith('pos:'):
+        return None
+    match = re.fullmatch(r'aa:\s*([A-Za-z]+)', pieces[1])
+    if match is None:
+        return None
+    parsed = _location_positions(pieces[0][len('pos:'):])
+    if parsed is None:
+        return None
+    return (parsed[0], parsed[1], match.group(1))
 
 
 def parse_transl_except(feature):
     """Parsed /transl_except entries plus a count of unreadable ones.
 
-    Returns ``(entries, unparsed)``; each entry is a dict with start/end (1-based
-    genomic), amino_acid, complemented and valid_aa.  ``pos:complement(a..b)`` is
-    accepted because that is the standard spelling on a minus-strand CDS.  A
-    qualifier that is present but cannot be parsed is *counted*, never silently
-    dropped.
+    Each qualifier must be consumed **completely**: one or more ``(pos:...,aa:...)``
+    chunks separated by commas.  A qualifier that does not match this grammar in
+    full -- trailing text, a missing ``pos:`` token, an unsupported location form --
+    is counted in ``unparsed``, never silently dropped and never partially
+    accepted.  ``entry['explains_stop']`` separates "legal aa token" (TERM is one)
+    from "can stand in for a stop codon" (TERM cannot).
     """
     entries = []
     unparsed = 0
     for value in feature.qualifiers.get('transl_except', []) or []:
-        text = str(value)
-        found = list(_TRANSL_EXCEPT_RE.finditer(text))
-        unparsed += max(0, text.count('pos:') - len(found))
-        for match in found:
-            amino_acid = match.group(4)
-            entries.append({'start': int(match.group(2)), 'end': int(match.group(3)),
-                            'amino_acid': amino_acid,
-                            'complemented': bool(match.group(1)),
-                            'valid_aa': amino_acid.strip().lower() in VALID_TRANSL_EXCEPT_AA})
+        pending = str(value).strip()
+        if not pending:
+            unparsed += 1
+            continue
+        local, broken = [], 0
+        while pending:
+            if not pending.startswith('('):
+                broken += 1
+                break
+            depth, close = 0, -1
+            for index, char in enumerate(pending):
+                if char == '(':
+                    depth += 1
+                elif char == ')':
+                    depth -= 1
+                    if depth == 0:
+                        close = index
+                        break
+            if close < 0:
+                broken += 1
+                break
+            chunk, rest = pending[:close + 1], pending[close + 1:].lstrip()
+            parsed = _parse_transl_except_entry(chunk)
+            if parsed is None:
+                broken += 1
+            else:
+                positions, complemented, amino_acid = parsed
+                token = amino_acid.strip().lower()
+                local.append({
+                    'text': chunk.strip(), 'positions': positions,
+                    'complemented': complemented, 'amino_acid': amino_acid,
+                    'valid_token': token in TRANSL_EXCEPT_AA_TOKENS,
+                    'explains_stop': (token in TRANSL_EXCEPT_AA_TOKENS
+                                      and token not in TRANSL_EXCEPT_TERMINATION_TOKENS),
+                })
+            if not rest:
+                break
+            if not rest.startswith(','):
+                broken += 1
+                break
+            pending = rest[1:].lstrip()
+        if broken:
+            # A partially readable qualifier is NOT partially trusted: salvaging the
+            # well-formed prefix would let trailing corruption carry an exception
+            # into the analysis.  The whole qualifier is rejected instead.
+            unparsed += 1
+            continue
+        entries.extend(local)
     return entries, unparsed
 
 
@@ -506,19 +614,25 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         if terminal_is_complete(last3, remainder, valid_stops) and protein.endswith('*'):
             stop_codons = stop_codons[:-1]
         codon_positions = cds_codon_positions(feature, codon_start)
+        minus_strand = (feature.location.strand or 0) < 0
         explained = set()
         for entry in exceptions:
-            position_start, position_end = entry['start'], entry['end']
             amino_acid = entry['amino_acid']
-            position_text = ('complement(%d..%d)' if entry['complemented'] else '%d..%d') \
-                % (position_start, position_end)
-            span = position_end - position_start + 1
-            if not entry['valid_aa']:
+            position_text = entry['text']
+            if not entry['valid_token']:
                 index, reason = None, ' (aa:%s 不是合法的例外氨基酸)' % amino_acid
-            elif span != 3:
-                index, reason = None, ' (pos 范围 %d nt, 不是单个密码子)' % span
+            elif not entry['explains_stop']:
+                index, reason = None, (' (aa:TERM 表示终止, 不能被当作可继续翻译的氨基酸'
+                                       '来解释内部终止)')
+            elif entry['complemented'] != minus_strand:
+                index, reason = None, (' (pos 的链方向与 CDS 不一致: %s链 CDS 需要 pos:%s)'
+                                       % ('负' if minus_strand else '正',
+                                          'complement(a..b)' if minus_strand else 'a..b'))
+            elif len(entry['positions']) != 3:
+                index, reason = None, \
+                    ' (pos 范围 %d nt, 不是单个密码子)' % len(entry['positions'])
             else:
-                wanted = set(range(position_start, position_end + 1))
+                wanted = set(entry['positions'])
                 index = next((number for number, codon in enumerate(codon_positions)
                               if codon and set(codon) == wanted), None)
                 reason = ('' if index is not None else
@@ -529,11 +643,11 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
                               % (display, position_text, amino_acid, index + 1))
             else:
                 findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明的 /transl_except '
-                                '(pos:%s, aa:%s) 未对应任何内部终止密码子%s'
-                                % (display, position_text, amino_acid, reason))
+                                '%s 未对应任何内部终止密码子%s'
+                                % (display, position_text, reason))
         if unparsed:
-            findings.review('TRANSL_EXCEPT_UNPARSED: %s 的 /transl_except 有 %d 条无法解析 '
-                            '(仅支持 pos:a..b / pos:complement(a..b) 配 aa:三字母代码); '
+            findings.review('TRANSL_EXCEPT_UNPARSED: %s 的 /transl_except 有 %d 条无法完整解析 '
+                            '(要求 (pos:a..b|pos:complement(a..b)|pos:join(...), aa:三字母代码)); '
                             '未能采纳的例外不构成豁免' % (display, unparsed))
         if exceptions and not stop_codons:
             findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明了 /transl_except, '

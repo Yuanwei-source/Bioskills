@@ -2,6 +2,7 @@
 import importlib.util
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -104,7 +105,7 @@ class ExternalUploadTests(unittest.TestCase):
     def test_cox1_requires_explicit_public_upload_opt_in(self):
         missing = Path(tempfile.gettempdir()) / "mito-cox1-missing.fasta"
         result = subprocess.run(
-            ["python3", str(ROOT / "scripts" / "cox1_id.py"), str(missing), "--coords", "1,4"],
+            [sys.executable, str(ROOT / "scripts" / "cox1_id.py"), str(missing), "--coords", "1,4"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -268,7 +269,7 @@ class SequenceStatsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             fasta = Path(td) / "multi.fa"
             fasta.write_text(">a\nAAAAN\n>b\nGGGGR\n", encoding="utf-8")
-            result = subprocess.run(["python3", str(ROOT / "scripts" / "seq_stats.py"), str(fasta), "--window", "4"], capture_output=True, text=True)
+            result = subprocess.run([sys.executable, str(ROOT / "scripts" / "seq_stats.py"), str(fasta), "--window", "4"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
         self.assertIn("a:4 为 N", result.stdout)
         self.assertIn("b:4 为 R", result.stdout)
@@ -334,7 +335,7 @@ class AnnotationQualityTests(unittest.TestCase):
             record.features = features
             SeqIO.write(record, path, "genbank")
             result = subprocess.run(
-                ["python3", str(ROOT / "scripts" / "annot_check.py"), str(path)],
+                [sys.executable, str(ROOT / "scripts" / "annot_check.py"), str(path)],
                 capture_output=True,
                 text=True,
                 timeout=10,

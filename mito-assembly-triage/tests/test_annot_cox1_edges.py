@@ -147,8 +147,10 @@ class TranslExceptReadingFrameTests(unittest.TestCase):
         stored = self._revcomp(coding)
         path = self.dir / "minus-match.gb"
         write_gb_raw(path, stored + "A" * 40, [
+            # a minus-strand CDS requires the standard complement() spelling:
+            # a bare pos:10..12 denotes the plus strand and is rejected (P1-2)
             {"location": "complement(1..%d)" % len(coding), "type": "CDS", "gene": "cox1",
-             "transl_except": "(pos:10..12,aa:Trp)"},
+             "transl_except": "(pos:complement(10..12),aa:Trp)"},
         ])
         result = run_annot_check(path, "--allow-atypical", REASON)
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)

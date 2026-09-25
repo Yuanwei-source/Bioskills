@@ -121,8 +121,9 @@ reads、read pairs、组装图或长读长证据。不能唯一解析时保留�
 `python3 scripts/cox1_id.py <genome.fasta> --allow-public-upload --coords <start>,<end> [--output-json results.json]`；
 查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。它请求 `FORMAT_TYPE=XML2`，并**同时**能读
 XML2（`-outfmt 16`）与旧版 XML（`-outfmt 5`）两种方言；`FORMAT_OBJECT=SearchInfo` 按 NCBI 实际返回的
-QBlast 文本（`RID =` / `Status=`）解析，XML 形式也兼容。无法识别的响应/结果一律按**格式故障**处理，
-不得当作“没有候选”。它报告每个候选的 **query coverage**（多 HSP 并集）与 identity，并把 RID 轮询与结果下载分开。
+QBlast 文本（`RID =` / `Status=`）解析，XML 形式也兼容。**每个 `<Hsp>` 的 query/hit 坐标、identity、align-len、
+bit-score 都必须存在且数值合法**：缺任一必需字段时整份结果按**格式故障**（退出码 3）处理 ——
+缺少 subject 坐标就无法做方向/共线性/目标重用检查，不能靠“只剩单个 HSP”绕过验证。它报告每个候选的 **query coverage**（多 HSP 并集）与 identity，并把 RID 轮询与结果下载分开。
 退出码把任务状态与判读状态分开：`0` 得判读 / `1` insufficient 或 no_match（分析结论）/ `2` 拒绝执行 /
 `3` 网络或结果格式故障。多 HSP 的指标只有同时满足**不重叠**与**目标共线**才回总，检查分开做：
 ① 全部 HSP 必须同一目标链（真正的正负链混合属矛盾证据）；

@@ -130,10 +130,6 @@ def _int_value(element, *names):
     return _int_text(_child(element, *names))
 
 
-def _float_value(element, *names):
-    return _float_text(_child(element, *names))
-
-
 def _find_all(element, name):
     """All descendants (self excluded) whose local name is exactly ``name``."""
     return [item for item in element.iter()
@@ -283,6 +279,52 @@ def hsp_collinearity(hsps, max_span_ratio=3.0, hit_len=None, origin_margin=200):
             'paired_target_coordinates': paired, 'pairing': 'query_from<->hit_from'}
 
 
+_HSP_FIELDS = (
+    ('query-from', ('Hsp_query-from', 'query-from'), int),
+    ('query-to', ('Hsp_query-to', 'query-to'), int),
+    ('hit-from', ('Hsp_hit-from', 'hit-from'), int),
+    ('hit-to', ('Hsp_hit-to', 'hit-to'), int),
+    ('align-len', ('Hsp_align-len', 'align-len'), int),
+    ('identity', ('Hsp_identity', 'identity'), int),
+    ('bit-score', ('Hsp_bit-score', 'bit-score'), float),
+)
+
+
+def _hsp_numbers(hsp):
+    """Validated numeric fields of one ``<Hsp>``; ValueError on any gap.
+
+    All of these are required to decide whether the HSPs describe one alignment.
+    Without the subject coordinates the direction, collinearity and target-reuse
+    checks cannot run at all, so a half-readable hit must NOT fall through to the
+    "single unverifiable HSP" fast path and become an auto-selectable candidate.
+    """
+    numbers, missing, invalid = {}, [], []
+    for label, names, caster in _HSP_FIELDS:
+        text = _value(hsp, *names)
+        if text == '':
+            missing.append(label)
+            continue
+        try:
+            numbers[label] = caster(text)
+        except ValueError:
+            invalid.append('%s=%r' % (label, text))
+    if missing or invalid:
+        raise ValueError('BLAST XML 的 <Hsp> 字段不完整: %s%s%s'
+                         % ('缺少 ' + ', '.join(missing) if missing else '',
+                            '; ' if missing and invalid else '',
+                            '非法 ' + ', '.join(invalid) if invalid else ''))
+    if min(numbers['query-from'], numbers['query-to'],
+           numbers['hit-from'], numbers['hit-to']) < 1:
+        raise ValueError('BLAST XML 的 <Hsp> 坐标必须 >= 1: %r' % numbers)
+    if numbers['align-len'] <= 0:
+        raise ValueError('BLAST XML 的 <Hsp> align-len 必须 > 0: %r' % numbers)
+    if not 0 <= numbers['identity'] <= numbers['align-len']:
+        raise ValueError('BLAST XML 的 <Hsp> identity 必须在 0..align-len 之间: %r' % numbers)
+    if numbers['bit-score'] < 0:
+        raise ValueError('BLAST XML 的 <Hsp> bit-score 不能为负: %r' % numbers)
+    return numbers
+
+
 def parse_blast_xml(text):
     """Parse an NCBI BLAST XML response into per-hit union-coverage records.
 
@@ -332,24 +374,17 @@ def parse_blast_xml(text):
         hit_len = _int_value(hit, 'Hit_len', 'len')
         intervals, hsps, identity_total, align_total, best_bits, hsp_count = [], [], 0, 0, 0.0, 0
         for hsp in _find_all(hit, 'Hsp'):
-            query_from = _int_value(hsp, 'Hsp_query-from', 'query-from')
-            query_to = _int_value(hsp, 'Hsp_query-to', 'query-to')
-            align_len = _int_value(hsp, 'Hsp_align-len', 'align-len') or 0
-            identity = _int_value(hsp, 'Hsp_identity', 'identity') or 0
-            bits = _float_value(hsp, 'Hsp_bit-score', 'bit-score') or 0.0
-            if query_from is None or query_to is None:
-                continue
+            numbers = _hsp_numbers(hsp)
             hsp_count += 1
-            intervals.append((query_from, query_to))
-            hsps.append({'query_from': query_from, 'query_to': query_to,
-                         'hit_from': _int_value(hsp, 'Hsp_hit-from', 'hit-from'),
-                         'hit_to': _int_value(hsp, 'Hsp_hit-to', 'hit-to'),
-                         'identity': identity, 'align_len': align_len,
-                         'identity_pct': (identity / align_len * 100) if align_len else 0.0,
-                         'bitscore': bits})
-            identity_total += identity
-            align_total += align_len
-            best_bits = max(best_bits, bits)
+            intervals.append((numbers['query-from'], numbers['query-to']))
+            hsps.append({'query_from': numbers['query-from'], 'query_to': numbers['query-to'],
+                         'hit_from': numbers['hit-from'], 'hit_to': numbers['hit-to'],
+                         'identity': numbers['identity'], 'align_len': numbers['align-len'],
+                         'identity_pct': numbers['identity'] / numbers['align-len'] * 100,
+                         'bitscore': numbers['bit-score']})
+            identity_total += numbers['identity']
+            align_total += numbers['align-len']
+            best_bits = max(best_bits, numbers['bit-score'])
         # Non-redundant query coverage (overlapping HSPs are counted once).  A
         # composite identity is only aggregated when the HSPs neither overlap
         # (query OR target side) nor conflict: otherwise the same bases would be
