@@ -82,8 +82,11 @@ FASTA、同源性、翻译、RNA 结构和比较基因组证据可以支持候�
 **`/transl_except` 分语法与证据两层**：声明的位置集合必须**恰好**是某个真实内部终止密码子（含读框、链方向、
 跨 `join()` 边界的密码子；负链必须写 `pos:complement(a..b)`），整个 qualifier 必须被完整消费，`aa` 不得是 `TERM`
 —— 通过只记 `TRANSL_EXCEPT_MATCHED`（位置事实），**MATCHED 不等于已接受**。接受还需 `--exception-registry` 中键为
-`gene + codon + amino_acid` 且带 `transl_table`/`taxon`/`source`/`rationale` 的条目（`transl_table` 与 `--table`、
-`taxon` 与 `--taxon` 均需一致），才记 `TRANSL_EXCEPT_VALIDATED`。**不引入全局密码子→氨基酸重编码表**：任意合法 token
+`gene + codon + amino_acid` 的条目，且必须同时满足三个 fail-closed 约束：
+（a）**显式给 `--taxon`** 且与记录 `taxon` 一致（未给 `--taxon` 时不得升为已验证）；
+（b）**位点绑定**：给 `codon_index` 或 `pos` 之一，或**显式** `scope="gene_wide"`（不绑定位点的记录在加载时受控失败）；
+（c）`transl_table` 为正整数且等于 `--table`，`source`/`rationale` 为非空字符串（类型错误在加载时受控失败）。
+三者均满足才记 `TRANSL_EXCEPT_VALIDATED`（并输出 `scope=`）。**不引入全局密码子→氨基酸重编码表**：任意合法 token
 （如 `TAA -> Gln`）即使位置匹配也只记 `TRANSL_EXCEPT_DECLARED_UNVERIFIED`（REVIEW），**内部终止继续作为 ERROR**。
 语法无法完整解析记 `TRANSL_EXCEPT_UNPARSED`（整条作废）；未解释的内部终止始终是错误。
 

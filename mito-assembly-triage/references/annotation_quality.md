@@ -46,13 +46,24 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
      正链不得写 `complement`）；位置集合必须**恰好**等于某个真实内部终止密码子。通过只记
      `TRANSL_EXCEPT_MATCHED`（位置/读框事实），**MATCHED 本身不等于已接受**。
      **② 生物学层**：语法匹配后还必须有审计证据才能接受。证据来自 `--exception-registry` 的
-     `transl_except` 条目，键为 `gene + codon + amino_acid`，且必须同时给出 `transl_table`、`taxon`、
-     `source`、`rationale`；`transl_table` 须与本次 `--table` 一致，`taxon` 须与 `--taxon` 一致（若给出）。
-     满足才记 `TRANSL_EXCEPT_VALIDATED` 并扣除该项。
+     `transl_except` 条目，键为 `gene + codon + amino_acid`，且必须满足三个 fail-closed 约束：
+     （a）**样本绑定**：必须显式给出 `--taxon` 并与记录 `taxon` 一致 —— 未提供 `--taxon` 时无法把记录绑定到本样本，
+     **不得**升为已验证；
+     （b）**位点绑定**：记录必须说明它覆盖**哪个** stop —— 给 `codon_index`（CDS 转录顺序上的 1-based 密码子序号）
+     或 `pos`（该密码子的基因组位置，如 `10..12`）之一；只有**显式** `scope="gene_wide"` 的记录才允许复用多个位点。
+     不绑定位点的记录在**加载时**受控失败（否则一条记录会静默变成基因范围的重编码规则）；
+     （c）**字段完整且类型正确**：`transl_table`（正整数，须等于 `--table`）、`source`、`rationale` 必须为非空字符串；
+     数组/对象/整数等错误 JSON 类型在**加载时**受控失败（`str(value)` 非空不等于已审计）。
+     三者均满足才记 `TRANSL_EXCEPT_VALIDATED`（并输出 `scope=`）并扣除该项。
      **不引入全局密码子→氨基酸重编码表**：密码子含义随类群与密码表变化，把“合法 INSDC token”当成
      “已验证例外”会把类群特异的例外伪装成普遍规律。因此 `TAA -> Gln` 这类任意声明即使位置匹配，
      也只能得到 `TRANSL_EXCEPT_DECLARED_UNVERIFIED`（REVIEW），**内部终止仍保留 ERROR**。
-     **③ 结果层**：因此**一条声明不能吸收两个内部终止**；未验证、未解释的内部终止仍是 ERROR。
+     **③ 结果层**：因此**一条声明不能吸收两个内部终止**；一条未绑定该位点的记录也不能验证别处的同类 stop；
+     未验证、未解释的内部终止仍是 ERROR。
+     registry 的最小 transl_except 记录：
+     `{"gene":"cox1","codon":"TAA","amino_acid":"Trp","pos":"10..12",`
+     `"transl_table":5,"taxon":"Lepidoptera","source":"DOI ...","rationale":"..."}`
+     （或用 `"codon_index":4`，或 `"scope":"gene_wide"` 且不给位点）。
    - `/transl_table` 逐条与 `--table` 比对，不一致记 `TABLE_CONFLICT`（代码按 `--table` 翻译）。
    - 不允许只改结论文字。
 4. **非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不再被无条件判错：
@@ -165,7 +176,9 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 
 - 未引用任何 registry → `EXCEPTION_NOT_REGISTERED`（仍是 REVIEW，可用但不得当作已验证结论）；
 - 记录缺 `taxon`/`source`/`rationale` → `EXCEPTION_RECORD_INCOMPLETE`；
-- 提供了 `--taxon` 且与记录的 `taxon` 不一致 → `EXCEPTION_TAXON_MISMATCH`。
+- 提供了 `--taxon` 且与记录的 `taxon` 不一致 → `EXCEPTION_TAXON_MISMATCH`；
+- **未提供 `--taxon`** → `EXCEPTION_TAXON_UNVERIFIED`：记录存在但无法确认其类群适用于本样本；
+- 证据字段类型错误（数组/对象/整数冒充字符串）→ **加载时受控失败**（退出码 1），不做部分生效。
 
 以上三种情形**都只维持 REVIEW**，不会把例外升级为已验证。
 

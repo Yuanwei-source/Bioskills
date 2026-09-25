@@ -148,7 +148,7 @@ class TranslExceptReadingFrameTests(unittest.TestCase):
         path.write_text(json.dumps({"exceptions": [
             {"gene": "cox1", "codon": "TAA", "amino_acid": "Trp", "transl_table": 5,
              "taxon": "Lepidoptera", "source": "DOI 10.1000/example",
-             "rationale": "documented"}]}), encoding="utf-8")
+             "rationale": "documented", "pos": "10..12"}]}), encoding="utf-8")
         return str(path)
 
     def test_minus_strand_exception_is_matched_at_the_correct_codon(self):
@@ -162,7 +162,8 @@ class TranslExceptReadingFrameTests(unittest.TestCase):
              "transl_except": "(pos:complement(10..12),aa:Trp)"},
         ])
         result = run_annot_check(path, "--allow-atypical", REASON,
-                                 "--exception-registry", self._registry())
+                                 "--exception-registry", self._registry(),
+                                 "--taxon", "Lepidoptera")
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
         self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
@@ -188,7 +189,8 @@ class TranslExceptReadingFrameTests(unittest.TestCase):
              "transl_except": "(pos:10..12,aa:Trp)"},
         ])
         result = run_annot_check(path, "--allow-atypical", REASON,
-                                 "--exception-registry", self._registry("two-stops.json"))
+                                 "--exception-registry", self._registry("two-stops.json"),
+                                 "--taxon", "Lepidoptera")
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
         self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)

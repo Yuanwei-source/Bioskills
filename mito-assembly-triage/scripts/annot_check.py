@@ -577,30 +577,92 @@ def identity_findings(findings, cds, trnas, rnas, atypical_reason):
         findings.info('tRNA 身份完整且无重复 (22 个)')
 
 
-def _transl_except_evidence(registry, gene, codon, amino_acid, table, expected_taxon):
-    """(record, note) for a declared stop-codon exception; record None = not accepted.
+def _registry_site(item, path, index):
+    """('index', n) | ('positions', frozenset) | ('gene_wide', None) for one record.
 
-    The layering is deliberate and is the whole point of this function: matching a
-    position and reading frame is a SYNTAX fact, while accepting an exception is a
-    BIOLOGICAL claim.  Codon meaning depends on the taxon and the genetic code, so
-    no global codon->amino-acid table is consulted here -- the evidence has to be
-    supplied per case, with taxon, genetic code and a citable source.
+    A /transl_except record must say WHICH stop it covers.  Without that binding a
+    single record silently becomes a gene-wide reassignment rule and clears every
+    matching stop in the CDS.  Reusing a record across sites is only allowed when
+    the broader scope is declared explicitly and audited.
     """
-    record = (registry or {}).get((gene, str(codon).upper(), amino_acid.strip().lower()))
-    if record is None:
-        return None, ' (未登记该 gene/codon/aa 组合)'
-    incomplete = [name for name in ('taxon', 'source', 'rationale', 'transl_table')
-                  if not str(record.get(name) or '').strip()]
-    if incomplete:
-        return None, ' (记录缺少 %s)' % '/'.join(incomplete)
-    if str(record['transl_table']).strip() != str(table.id):
-        return None, ' (记录 transl_table=%s 与本次 --table %s 不一致)' % (
-            record['transl_table'], table.id)
-    if expected_taxon and str(record['taxon']).strip().lower() \
-            != str(expected_taxon).strip().lower():
-        return None, ' (记录 taxon=%s 与本次 --taxon %s 不一致)' % (
-            record['taxon'], expected_taxon)
-    return record, ''
+    scope = item.get('scope')
+    has_index = item.get('codon_index') is not None
+    has_pos = item.get('pos') is not None
+    if scope is not None:
+        if scope.strip() != 'gene_wide' or has_index or has_pos:
+            print('ERROR: 例外记录 %s 的 exceptions[%d].scope 只支持 "gene_wide", '
+                  '且不得与 codon_index/pos 同时出现' % (path, index))
+            sys.exit(1)
+        return ('gene_wide', None)
+    if has_index and has_pos:
+        print('ERROR: 例外记录 %s 的 exceptions[%d] 只能给 codon_index 或 pos 之一'
+              % (path, index))
+        sys.exit(1)
+    if has_index:
+        return ('index', int(item['codon_index']))
+    if has_pos:
+        parsed = _location_positions(item['pos'])
+        if parsed is None or parsed[2]:
+            print('ERROR: 例外记录 %s 的 exceptions[%d].pos 无法解析或链方向混杂: %r'
+                  % (path, index, item['pos']))
+            sys.exit(1)
+        return ('positions', frozenset(parsed[0]))
+    print('ERROR: 例外记录 %s 的 exceptions[%d] 缺少位点绑定: 必须给 codon_index 或 pos, '
+          '或显式 scope="gene_wide"; 不绑定位点的记录不得用来验证任意 stop'
+          % (path, index))
+    sys.exit(1)
+
+
+def _transl_except_evidence(records, table, expected_taxon, codon_index, positions):
+    """(record, scope_text) for a declared stop-codon exception; record None = rejected.
+
+    Layered on purpose: matching a position and reading frame is a SYNTAX fact while
+    accepting an exception is a BIOLOGICAL claim.  Codon meaning depends on the
+    taxon and the genetic code, so no global codon->amino-acid table is consulted.
+    Acceptance is fail-closed on three axes:
+
+    * sample binding -- an explicit ``--taxon`` must be given and must match the
+      record; a record whose taxon cannot be tied to this sample proves nothing;
+    * site binding   -- the record must cover THIS stop (codon index or exact
+      genomic positions).  Only an explicit ``scope="gene_wide"`` record may serve
+      more than one site;
+    * completeness   -- taxon/source/rationale/transl_table present and consistent.
+    """
+    if not records:
+        return None, ' (\u672a\u767b\u8bb0\u8be5 gene/codon/aa \u7ec4\u5408)'
+    if not expected_taxon:
+        return None, (' (\u672a\u63d0\u4f9b --taxon: registry \u7684 taxon \u65e0\u6cd5\u7ed1\u5b9a\u5230\u672c\u6837\u672c, '
+                      '\u65e0\u7c7b\u7fa4\u524d\u63d0\u7684\u8bb0\u5f55\u4e0d\u5f97\u4f5c\u4e3a\u5df2\u9a8c\u8bc1\u4f8b\u5916)')
+    wanted = frozenset(positions)
+    notes = []
+    for record in records:
+        kind, value = record['site']
+        if kind == 'index' and value != codon_index:
+            notes.append('\u4f4d\u70b9 codon_index=%s \u4e0d\u5339\u914d (\u672c\u5bc6\u7801\u5b50\u4e3a %s)'
+                         % (value, codon_index))
+            continue
+        if kind == 'positions' and value != wanted:
+            notes.append('\u4f4d\u70b9 pos=%s \u4e0d\u5339\u914d' % record.get('pos'))
+            continue
+        scope_text = 'gene_wide' if kind == 'gene_wide' else str(
+            record.get('pos') or ('codon_index=%s' % value))
+        incomplete = [name for name in ('taxon', 'source', 'rationale')
+                      if not str(record.get(name) or '').strip()]
+        if record.get('transl_table') is None:
+            incomplete.append('transl_table')
+        if incomplete:
+            notes.append('\u8bb0\u5f55\u7f3a\u5c11 %s' % '/'.join(incomplete))
+            continue
+        if int(record['transl_table']) != int(table.id):
+            notes.append('\u8bb0\u5f55 transl_table=%s \u4e0e\u672c\u6b21 --table %s \u4e0d\u4e00\u81f4'
+                         % (record['transl_table'], table.id))
+            continue
+        if str(record['taxon']).strip().lower() != str(expected_taxon).strip().lower():
+            notes.append('\u8bb0\u5f55 taxon=%s \u4e0e\u672c\u6b21 --taxon %s \u4e0d\u4e00\u81f4'
+                         % (record['taxon'], expected_taxon))
+            continue
+        return record, scope_text
+    return None, ' (%s)' % '; '.join(notes)
 
 
 def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions,
@@ -690,21 +752,23 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
             findings.info('TRANSL_EXCEPT_MATCHED: %s 位置 %s 精确对应密码子 %d 的内部终止 %s '
                           '(位置/读框事实, 单独的 MATCHED 不等于已接受)'
                           % (display, position_text, index + 1, actual_codon))
-            record, note = _transl_except_evidence(transl_registry, canonical, actual_codon,
-                                                   amino_acid, tbl, expected_taxon)
+            records = transl_registry.get((canonical, actual_codon, amino_acid.strip().lower()))
+            record, note = _transl_except_evidence(records, tbl, expected_taxon,
+                                                   index + 1, entry['positions'])
             if record is None:
                 findings.review(
                     'TRANSL_EXCEPT_DECLARED_UNVERIFIED: %s 的 /transl_except %s 声明密码子 %d 的'
-                    ' %s 由 %s 替代, 但缺少已审计证据%s; 该内部终止仍按 ERROR 处理 '
-                    '(请用 --exception-registry 记录 gene/codon/amino_acid/transl_table/'
-                    'taxon/source/rationale)'
+                    ' %s 由 %s 替代, 但缺少适用于本样本与本位点的已审计证据%s; '
+                    '该内部终止仍按 ERROR 处理 (请用 --exception-registry 记录 gene/codon/'
+                    'amino_acid + 位点绑定 (codon_index 或 pos, 或显式 scope="gene_wide") + '
+                    'transl_table/taxon/source/rationale, 并用 --taxon 给出本样本类群)'
                     % (display, position_text, index + 1, actual_codon, amino_acid, note))
             else:
                 explained.add(index)
                 findings.info(
                     'TRANSL_EXCEPT_VALIDATED: %s 密码子 %d 的内部终止 %s->%s 已按审计记录接受 '
-                    '(taxon=%s transl_table=%s source=%s rationale=%s)'
-                    % (display, index + 1, actual_codon, amino_acid, record.get('taxon'),
+                    '(scope=%s taxon=%s transl_table=%s source=%s rationale=%s)'
+                    % (display, index + 1, actual_codon, amino_acid, note, record.get('taxon'),
                        record.get('transl_table'), record.get('source'), record.get('rationale')))
         if unparsed:
             findings.review('TRANSL_EXCEPT_UNPARSED: %s 的 /transl_except 有 %d 条无法完整解析 '
@@ -751,6 +815,13 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
                             'EXCEPTION_TAXON_MISMATCH: %s:%s 的记录 taxon=%s 与本次 --taxon %s '
                             '不一致; 该例外只能维持 REVIEW'
                             % (canonical, start_codon, record.get('taxon'), expected_taxon))
+                    if not expected_taxon:
+                        # same fail-closed rule as /transl_except: a taxon that cannot be
+                        # tied to this sample must not be presented as audited evidence
+                        findings.review(
+                            'EXCEPTION_TAXON_UNVERIFIED: %s:%s 引用了已审计记录, 但未提供 '
+                            '--taxon, 无法确认该记录的类群适用于本样本'
+                            % (canonical, start_codon))
                 else:
                     findings.review(
                         'NONCANONICAL_START_REVIEW: %s 起始密码子 %s 不在密码表 %d 的合法起始集合内, '
@@ -985,13 +1056,39 @@ def load_exception_registry(path):
             print('ERROR: 例外记录 %s 的 exceptions[%d] 必须是对象, 实际为 %s'
                   % (path, index, type(item).__name__))
             sys.exit(1)
+        # Evidence fields describe taxon/source/rationale: an array, object or number
+        # there would be stringified into a non-empty "audited" value, so the type is
+        # validated at LOAD time and a malformed registry never applies partially.
+        for key in ('gene', 'codon', 'amino_acid', 'taxon', 'source', 'rationale',
+                    'pos', 'scope'):
+            value = item.get(key)
+            if value is not None and not isinstance(value, str):
+                print('ERROR: 例外记录 %s 的 exceptions[%d].%s 必须是字符串, 实际为 %s'
+                      % (path, index, key, type(value).__name__))
+                sys.exit(1)
+        for key in ('transl_table', 'codon_index'):
+            value = item.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int)
+                                      or value < 1):
+                print('ERROR: 例外记录 %s 的 exceptions[%d].%s 必须是正整数, 实际为 %r'
+                      % (path, index, key, value))
+                sys.exit(1)
         gene = _canonical_key(item.get('gene', ''))
         codon = str(item.get('codon', '')).upper()
         amino_acid = item.get('amino_acid')
         if amino_acid:
-            registry['transl_except'][(gene, codon, str(amino_acid).strip().lower())] = {
-                'taxon': item.get('taxon'), 'source': item.get('source'),
-                'rationale': item.get('rationale'), 'transl_table': item.get('transl_table')}
+            record = {'taxon': item.get('taxon'), 'source': item.get('source'),
+                      'rationale': item.get('rationale'),
+                      'transl_table': item.get('transl_table'),
+                      'site': _registry_site(item, path, index), 'pos': item.get('pos')}
+            key = (gene, codon, str(amino_acid).strip().lower())
+            bucket = registry['transl_except'].setdefault(key, [])
+            if any(existing['site'] == record['site'] for existing in bucket):
+                print('ERROR: 例外记录 %s 的 exceptions[%d] 与已有记录重复 '
+                      '(同一 gene/codon/amino_acid/位点): %s/%s/%s -> 重复 key 会被静默覆盖, '
+                      '因此按格式错误处理' % (path, index, gene, codon, amino_acid))
+                sys.exit(1)
+            bucket.append(record)
         else:
             registry['start'][(gene, codon)] = {
                 'taxon': item.get('taxon'), 'source': item.get('source'),

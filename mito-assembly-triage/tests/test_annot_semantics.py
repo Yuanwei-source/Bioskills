@@ -131,13 +131,14 @@ class TranslExceptTests(unittest.TestCase):
         path.write_text(json.dumps({"exceptions": [
             {"gene": "cox1", "codon": "TAA", "amino_acid": "Trp", "transl_table": 5,
              "taxon": "Lepidoptera", "source": "DOI 10.1000/example",
-             "rationale": "documented"}]}), encoding="utf-8")
+             "rationale": "documented", "pos": "10..12"}]}), encoding="utf-8")
         return str(path)
 
     def test_matching_exception_with_evidence_explains_the_internal_stop(self):
         result = run_annot_check(self._gb("match.gb", "(pos:10..12,aa:Trp)"),
                                  "--allow-atypical", REASON,
-                                 "--exception-registry", self._registry())
+                                 "--exception-registry", self._registry(),
+                                 "--taxon", "Lepidoptera")
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
         self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)

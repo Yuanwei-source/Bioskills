@@ -339,7 +339,8 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.dir = Path(temp.name)
 
-    def _run(self, name, sequence, transl_except, location="1..%d", registry=None):
+    def _run(self, name, sequence, transl_except, location="1..%d", registry=None,
+             taxon="Lepidoptera"):
         path = self.dir / name
         if "%d" in location:
             location = location % len(sequence)
@@ -349,7 +350,9 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         write_gb_raw(path, sequence + "A" * 40, [spec])
         extra = []
         if registry:
-            extra = ["--exception-registry", _write_registry(self.dir, name, *registry)]
+            extra += ["--exception-registry", _write_registry(self.dir, name, *registry)]
+        if taxon:
+            extra += ["--taxon", taxon]
         return run_annot_check(path, "--allow-atypical", REASON, *extra)
 
     def test_exact_codon_with_evidence_is_validated(self):
@@ -365,6 +368,15 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         result = self._run("ok-bare.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)")
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
         self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_missing_taxon_flag_keeps_the_stop_as_error(self):
+        # P1-1: a record whose taxon cannot be tied to this sample proves nothing
+        result = self._run("no-taxon.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)",
+                           registry=[_transl_record()], taxon=None)
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertIn("--taxon", result.stdout)
         self.assertNotIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
 
@@ -408,7 +420,8 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         sequence[56:62] = list("TAATAA")
         sequence = "".join(sequence)
         result = self._run("join-ok.gb", sequence, "(pos:57..59,aa:Trp)",
-                           location="join(1..6,57..62)", registry=[_transl_record()])
+                           location="join(1..6,57..62)",
+                           registry=[_transl_record(pos="57..59")])
         self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
 
@@ -504,8 +517,8 @@ class ExceptionRegistryTypeTests(unittest.TestCase):
         path = self.dir / "transl.json"
         path.write_text(json.dumps({"exceptions": [
             {"gene": "cox1", "codon": "TAA", "amino_acid": "Trp", "transl_table": 5,
-             "taxon": "Lepidoptera", "source": "DOI 10.1000/x", "rationale": "r"}]}),
-            encoding="utf-8")
+             "taxon": "Lepidoptera", "source": "DOI 10.1000/x", "rationale": "r",
+             "pos": "10..12"}]}), encoding="utf-8")
         registry = self.module.load_exception_registry(str(path))
         self.assertEqual(registry['start'], {})
         self.assertIn(("cox1", "TAA", "trp"), registry['transl_except'])
@@ -576,13 +589,21 @@ def _write_registry(directory, name, *entries):
     return str(path)
 
 
-def _transl_record(codon="TAA", amino_acid="Trp", transl_table=5,
+def _transl_record(pos="10..12", codon="TAA", amino_acid="Trp", transl_table=5,
                    taxon="Lepidoptera", source="DOI 10.1000/example",
-                   rationale="documented exception"):
-    """A complete, auditable /transl_except registry entry."""
-    return {"gene": "cox1", "codon": codon, "amino_acid": amino_acid,
-            "transl_table": transl_table, "taxon": taxon, "source": source,
-            "rationale": rationale}
+                   rationale="documented exception", **extra):
+    """A complete, auditable, SITE-BOUND /transl_except registry entry.
+
+    ``pos`` is the genomic position set of the single stop codon this record covers
+    (``None`` omits it, which is only valid together with ``scope="gene_wide"``).
+    """
+    record = {"gene": "cox1", "codon": codon, "amino_acid": amino_acid,
+              "transl_table": transl_table, "taxon": taxon, "source": source,
+              "rationale": rationale}
+    if pos is not None:
+        record["pos"] = pos
+    record.update(extra)
+    return record
 
 
 class HspFieldValidationTests(unittest.TestCase):
@@ -698,7 +719,7 @@ class TranslExceptSemanticsTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.dir = Path(temp.name)
 
-    def _run(self, name, sequence, transl_except, location="1..%d", registry=None, taxon=None):
+    def _run(self, name, sequence, transl_except, location="1..%d", registry=None, taxon="Lepidoptera"):
         path = self.dir / name
         if "%d" in location:
             location = location % len(sequence)
@@ -784,7 +805,7 @@ class TranslExceptSemanticsTests(unittest.TestCase):
         sequence = "".join(sequence)
         result = self._run("join-codon.gb", sequence,
                            "(pos:join(4..5,101),aa:Leu)", location="join(1..5,101..107)",
-                           registry=[_transl_record(amino_acid="Leu")])
+                           registry=[_transl_record(pos="join(4..5,101)", amino_acid="Leu")])
         self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
 
@@ -808,14 +829,34 @@ class TranslExceptSemanticsTests(unittest.TestCase):
         self.assertIn("TRANSL_EXCEPT_UNEXPLAINED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
 
-    def test_multiple_entries_are_all_validated_with_evidence(self):
-        # two internal stops (codon 4 = 10..12, codon 7 = 19..21), two declarations
+    def test_one_record_covers_only_its_own_site(self):
+        # P1-2: two identical TAA stops, one site-bound record -> only codon 4 is
+        # validated; the second stop keeps its ERROR
         sequence = "ATG" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA"
-        result = self._run("two.gb", sequence,
+        result = self._run("one-site.gb", sequence,
                            "(pos:10..12,aa:Trp),(pos:19..21,aa:Trp)",
-                           registry=[_transl_record()])
-        self.assertEqual(result.stdout.count("TRANSL_EXCEPT_MATCHED"), 2)
+                           registry=[_transl_record(pos="10..12")])
+        self.assertEqual(result.stdout.count("TRANSL_EXCEPT_VALIDATED"), 1)
+        self.assertEqual(result.stdout.count("TRANSL_EXCEPT_DECLARED_UNVERIFIED"), 1)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_codon_index_binding_covers_only_that_codon(self):
+        sequence = "ATG" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA"
+        result = self._run("one-index.gb", sequence,
+                           "(pos:10..12,aa:Trp),(pos:19..21,aa:Trp)",
+                           registry=[_transl_record(pos=None, codon_index=4)])
+        self.assertEqual(result.stdout.count("TRANSL_EXCEPT_VALIDATED"), 1)
+        self.assertEqual(result.stdout.count("TRANSL_EXCEPT_DECLARED_UNVERIFIED"), 1)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_explicit_gene_wide_scope_covers_multiple_sites(self):
+        # reusing one record across sites requires an EXPLICIT, auditable scope
+        sequence = "ATG" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA"
+        result = self._run("gene-wide.gb", sequence,
+                           "(pos:10..12,aa:Trp),(pos:19..21,aa:Trp)",
+                           registry=[_transl_record(pos=None, scope="gene_wide")])
         self.assertEqual(result.stdout.count("TRANSL_EXCEPT_VALIDATED"), 2)
+        self.assertIn("scope=gene_wide", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
 
     def test_matching_position_without_evidence_is_not_accepted(self):
@@ -851,18 +892,105 @@ class TranslExceptSemanticsTests(unittest.TestCase):
         self.assertIn("taxon", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
 
-    def test_registry_taxon_match_is_validated(self):
-        result = self._run("taxon-match.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)",
-                           registry=[_transl_record(taxon="Lepidoptera")], taxon="Lepidoptera")
-        self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
-        self.assertNotIn("[ERROR]", result.stdout)
-
     def test_registry_amino_acid_mismatch_stays_unverified(self):
         # the record exists for TAA->Trp, but the declaration claims Gln
         result = self._run("aa-mismatch.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Gln)",
                            registry=[_transl_record()])
         self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
+
+
+class TranslExceptRegistryFormatTests(unittest.TestCase):
+    """P1-2 / P2-1: a malformed transl_except registry fails closed at LOAD time.
+
+    A record that does not say which stop it covers would silently become a
+    gene-wide rule, and evidence fields with the wrong JSON type would be
+    stringified into a non-empty "audited" value.
+    """
+
+    def setUp(self):
+        self.module = load_module("annot_transl_registry", Path("scripts") / "annot_check.py")
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+
+    def _load(self, *entries):
+        path = self.dir / "registry.json"
+        path.write_text(json.dumps({"exceptions": list(entries)}, ensure_ascii=False),
+                        encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                self.module.load_exception_registry(str(path))
+        return caught.exception.code
+
+    @staticmethod
+    def _record(**overrides):
+        record = {"gene": "cox1", "codon": "TAA", "amino_acid": "Trp", "transl_table": 5,
+                  "taxon": "Lepidoptera", "source": "DOI 10.1000/example",
+                  "rationale": "documented", "pos": "10..12"}
+        record.update(overrides)
+        return record
+
+    def test_record_without_a_site_binding_is_rejected(self):
+        record = self._record()
+        record.pop("pos")
+        self.assertEqual(self._load(record), 1)
+
+    def test_codon_index_and_pos_together_are_rejected(self):
+        self.assertEqual(self._load(self._record(codon_index=4)), 1)
+
+    def test_unknown_scope_is_rejected(self):
+        record = self._record()
+        record.pop("pos")
+        record["scope"] = "gene"
+        self.assertEqual(self._load(record), 1)
+
+    def test_scope_with_a_site_binding_is_rejected(self):
+        self.assertEqual(self._load(self._record(scope="gene_wide")), 1)
+
+    def test_duplicate_site_records_are_rejected(self):
+        self.assertEqual(self._load(self._record(), self._record()), 1)
+
+    def test_distinct_sites_are_kept(self):
+        path = self.dir / "ok.json"
+        path.write_text(json.dumps({"exceptions": [self._record(),
+                                                   self._record(pos="19..21")]}),
+                        encoding="utf-8")
+        registry = self.module.load_exception_registry(str(path))
+        self.assertEqual(len(registry["transl_except"][("cox1", "TAA", "trp")]), 2)
+
+    def test_gene_wide_scope_record_is_kept(self):
+        record = self._record()
+        record.pop("pos")
+        record["scope"] = "gene_wide"
+        path = self.dir / "wide.json"
+        path.write_text(json.dumps({"exceptions": [record]}), encoding="utf-8")
+        registry = self.module.load_exception_registry(str(path))
+        self.assertEqual(registry["transl_except"][("cox1", "TAA", "trp")][0]["site"],
+                         ("gene_wide", None))
+
+    def test_wrong_evidence_field_types_are_rejected(self):
+        cases = (("taxon", ["Coleoptera"]), ("taxon", 3), ("source", {"doi": "x"}),
+                 ("rationale", 1), ("transl_table", "5"), ("codon_index", "4"),
+                 ("gene", 1), ("amino_acid", 1))
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                self.assertEqual(self._load(self._record(**{field: value})), 1)
+
+    def test_fuzzy_position_is_rejected(self):
+        self.assertEqual(self._load(self._record(pos="<10..12")), 1)
+
+    def test_mixed_strand_position_is_rejected(self):
+        self.assertEqual(self._load(self._record(pos="join(complement(10..11),12)")), 1)
+
+    def test_start_records_are_unaffected(self):
+        path = self.dir / "start.json"
+        path.write_text(json.dumps({"exceptions": [
+            {"gene": "cox1", "codon": "CGA", "taxon": "Lepidoptera",
+             "source": "DOI", "rationale": "r"}]}), encoding="utf-8")
+        registry = self.module.load_exception_registry(str(path))
+        self.assertIn(("cox1", "CGA"), registry["start"])
+        self.assertEqual(registry["transl_except"], {})
 
 
 class SchemaTypeMatrixTests(unittest.TestCase):
