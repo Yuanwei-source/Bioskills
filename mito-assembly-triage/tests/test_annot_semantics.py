@@ -301,12 +301,18 @@ class BlastXmlParsingTests(unittest.TestCase):
         self.module = load_module("cox1_structured", Path("scripts") / "cox1_id.py")
 
     @staticmethod
-    def _hsp(q_from, q_to, identity, align_len, bitscore=500):
+    def _hsp(q_from, q_to, identity, align_len, bitscore=500, hit_from=None):
+        # hit_from defaults to q_from: the target coordinates must themselves be
+        # non-overlapping, otherwise the HSP pair is subject reuse, not two
+        # independent alignments (see test_pr1_review_regressions).
+        if hit_from is None:
+            hit_from = q_from
+        hit_to = hit_from + align_len - 1
         return ("<Hsp><Hsp_bit-score>%d</Hsp_bit-score>"
                 "<Hsp_query-from>%d</Hsp_query-from><Hsp_query-to>%d</Hsp_query-to>"
-                "<Hsp_hit-from>1</Hsp_hit-from><Hsp_hit-to>%d</Hsp_hit-to>"
+                "<Hsp_hit-from>%d</Hsp_hit-from><Hsp_hit-to>%d</Hsp_hit-to>"
                 "<Hsp_identity>%d</Hsp_identity><Hsp_align-len>%d</Hsp_align-len></Hsp>"
-                % (bitscore, q_from, q_to, align_len, identity, align_len))
+                % (bitscore, q_from, q_to, hit_from, hit_to, identity, align_len))
 
     def _xml(self, hits, query_len=1000):
         body = "".join(hits)

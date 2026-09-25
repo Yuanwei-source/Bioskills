@@ -441,10 +441,12 @@ def _case_errors_without_jsonschema(case):
             errors.append('缺少必需字段: %s' % key)
     if case.get('schema_version') != '2.0':
         errors.append('schema_version 必须是 "2.0"')
-    for key in ('case_id', 'events_file'):
-        if key in case and not isinstance(case[key], str):
-            errors.append('%s 必须是字符串' % key)
-    for key in ('inputs', 'hypotheses', 'anomalies'):
+    if 'case_id' in case and (not isinstance(case['case_id'], str) or not case['case_id']):
+        errors.append('case_id 必须是非空字符串 (minLength: 1)')
+    if 'events_file' in case and not isinstance(case['events_file'], str):
+        errors.append('events_file 必须是字符串')
+    for key in ('inputs', 'hypotheses', 'anomalies', 'modifications',
+                'validation', 'lessons_proposed'):
         if key in case and not isinstance(case[key], list):
             errors.append('%s 必须是数组' % key)
     hypotheses = case.get('hypotheses')

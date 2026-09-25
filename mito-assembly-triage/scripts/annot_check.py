@@ -264,28 +264,66 @@ def feature_partial(feature):
     return (detail['five'], detail['three'])
 
 
+VALID_TRANSL_EXCEPT_AA = frozenset(name.lower() for name in (
+    'Ala', 'Arg', 'Asn', 'Asp', 'Cys', 'Gln', 'Glu', 'Gly', 'His', 'Ile', 'Leu',
+    'Lys', 'Met', 'Phe', 'Pro', 'Pyl', 'Sec', 'Ser', 'Thr', 'Trp', 'Tyr', 'Val',
+    'OTHER', 'TERM', 'fMet'))
+
+_TRANSL_EXCEPT_RE = re.compile(
+    r'pos:\s*(complement\()?\s*(\d+)\s*\.\.\s*(\d+)\s*\)?\s*,\s*aa:\s*([A-Za-z]+)')
+
+
 def parse_transl_except(feature):
-    """[(pos_start, pos_end, aa)] parsed from /transl_except entries."""
+    """Parsed /transl_except entries plus a count of unreadable ones.
+
+    Returns ``(entries, unparsed)``; each entry is a dict with start/end (1-based
+    genomic), amino_acid, complemented and valid_aa.  ``pos:complement(a..b)`` is
+    accepted because that is the standard spelling on a minus-strand CDS.  A
+    qualifier that is present but cannot be parsed is *counted*, never silently
+    dropped.
+    """
     entries = []
+    unparsed = 0
     for value in feature.qualifiers.get('transl_except', []) or []:
-        for start, end, amino_acid in re.findall(
-                r'pos:(\d+)\.\.(\d+),\s*aa:([A-Za-z]+)', str(value)):
-            entries.append((int(start), int(end), amino_acid))
-    return entries
+        text = str(value)
+        found = list(_TRANSL_EXCEPT_RE.finditer(text))
+        unparsed += max(0, text.count('pos:') - len(found))
+        for match in found:
+            amino_acid = match.group(4)
+            entries.append({'start': int(match.group(2)), 'end': int(match.group(3)),
+                            'amino_acid': amino_acid,
+                            'complemented': bool(match.group(1)),
+                            'valid_aa': amino_acid.strip().lower() in VALID_TRANSL_EXCEPT_AA})
+    return entries, unparsed
 
 
-def cds_codon_index(feature, position, codon_start=1):
-    """Codon index (0-based, after /codon_start) of a 1-based record position."""
-    parts = feature.location.parts
-    if len(parts) != 1:
-        return None
-    low, high = int(parts[0].start), int(parts[0].end)
-    if (feature.location.strand or 0) >= 0:
-        offset = (position - 1) - low
-    else:
-        offset = high - position
-    offset -= (codon_start - 1)
-    return offset // 3 if offset >= 0 else None
+def coding_position_list(feature):
+    """1-based genomic positions of the CDS in TRANSCRIPTION order.
+
+    Verified against ``feature.extract(record)``: for a compound location the
+    parts are already in transcription order, and a minus-strand part runs from
+    its high coordinate down to its low coordinate.
+    """
+    positions = []
+    for part in feature.location.parts:
+        low, high = int(part.start), int(part.end)
+        if (part.strand or 0) >= 0:
+            positions.extend(range(low + 1, high + 1))
+        else:
+            positions.extend(range(high, low, -1))
+    return positions
+
+
+def cds_codon_positions(feature, codon_start=1):
+    """[[genomic positions of codon 0], ...] in transcription order.
+
+    Matching is by exact position set: a /transl_except whose declared range is
+    not *exactly* the three genomic positions of one codon explains nothing.  A
+    wrong-frame 3 nt window (e.g. 11..13 for a stop at 10..12) must not be
+    snapped onto the nearest codon by an integer division.
+    """
+    positions = coding_position_list(feature)[max(0, codon_start - 1):]
+    return [positions[index:index + 3] for index in range(0, len(positions) - 2, 3)]
 
 
 def terminal_is_complete(last3, remainder, valid_stops):
@@ -463,23 +501,40 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         last3 = str(coding[-3:]).upper() if len(coding) >= 3 else ''
 
         # /transl_except 必须解释“具体哪个内部终止”, 而不是只要存在就全免
-        exceptions = parse_transl_except(feature)
+        exceptions, unparsed = parse_transl_except(feature)
         stop_codons = [index for index, amino_acid in enumerate(protein) if amino_acid == '*']
         if terminal_is_complete(last3, remainder, valid_stops) and protein.endswith('*'):
             stop_codons = stop_codons[:-1]
+        codon_positions = cds_codon_positions(feature, codon_start)
         explained = set()
-        for position_start, position_end, amino_acid in exceptions:
+        for entry in exceptions:
+            position_start, position_end = entry['start'], entry['end']
+            amino_acid = entry['amino_acid']
+            position_text = ('complement(%d..%d)' if entry['complemented'] else '%d..%d') \
+                % (position_start, position_end)
             span = position_end - position_start + 1
-            index = cds_codon_index(feature, position_start, codon_start) if span == 3 else None
+            if not entry['valid_aa']:
+                index, reason = None, ' (aa:%s 不是合法的例外氨基酸)' % amino_acid
+            elif span != 3:
+                index, reason = None, ' (pos 范围 %d nt, 不是单个密码子)' % span
+            else:
+                wanted = set(range(position_start, position_end + 1))
+                index = next((number for number, codon in enumerate(codon_positions)
+                              if codon and set(codon) == wanted), None)
+                reason = ('' if index is not None else
+                          ' (pos:%s 与任何一个密码子的基因组位置都不完全相同)' % position_text)
             if index is not None and index in stop_codons:
                 explained.add(index)
-                findings.info('TRANSL_EXCEPT_MATCHED: %s 位置 %s..%s 的 %s 解释了密码子 %d 的内部终止'
-                              % (display, position_start, position_end, amino_acid, index + 1))
+                findings.info('TRANSL_EXCEPT_MATCHED: %s 位置 %s 的 %s 解释了密码子 %d 的内部终止'
+                              % (display, position_text, amino_acid, index + 1))
             else:
-                reason = '' if span == 3 else ' (pos 范围 %s nt, 不是单个密码子)' % span
                 findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明的 /transl_except '
-                                '(pos:%s..%s, aa:%s) 未对应任何内部终止密码子%s'
-                                % (display, position_start, position_end, amino_acid, reason))
+                                '(pos:%s, aa:%s) 未对应任何内部终止密码子%s'
+                                % (display, position_text, amino_acid, reason))
+        if unparsed:
+            findings.review('TRANSL_EXCEPT_UNPARSED: %s 的 /transl_except 有 %d 条无法解析 '
+                            '(仅支持 pos:a..b / pos:complement(a..b) 配 aa:三字母代码); '
+                            '未能采纳的例外不构成豁免' % (display, unparsed))
         if exceptions and not stop_codons:
             findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明了 /transl_except, '
                             '但该 CDS 没有内部终止密码子, 声明无对应异常' % display)
@@ -735,8 +790,21 @@ def load_exception_registry(path):
     except (OSError, ValueError) as exc:
         print('ERROR: 无法读取例外记录 %s: %s' % (path, exc))
         sys.exit(1)
+    if not isinstance(data, dict):
+        print('ERROR: 例外记录 %s 的顶层必须是 JSON 对象 ({"exceptions": [...]}), 实际为 %s'
+              % (path, type(data).__name__))
+        sys.exit(1)
+    raw = data.get('exceptions', [])
+    if not isinstance(raw, list):
+        print('ERROR: 例外记录 %s 的 "exceptions" 必须是数组, 实际为 %s'
+              % (path, type(raw).__name__))
+        sys.exit(1)
     registry = {}
-    for item in data.get('exceptions', []):
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            print('ERROR: 例外记录 %s 的 exceptions[%d] 必须是对象, 实际为 %s'
+                  % (path, index, type(item).__name__))
+            sys.exit(1)
         key = (_canonical_key(item.get('gene', '')), str(item.get('codon', '')).upper())
         registry[key] = {'taxon': item.get('taxon'), 'source': item.get('source'),
                          'rationale': item.get('rationale')}

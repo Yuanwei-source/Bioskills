@@ -17,9 +17,14 @@ COX1 物种鉴定: 提取 COX1 (或给定区域), 提交 NCBI blastn, 解析**�
   2 = 拒绝执行 (缺 --allow-public-upload 或坐标非法); 3 = 网络或结果格式故障。
 
 用法:
-  python3 cox1_id.py <genome.fasta> --allow-public-upload --coords 1353,2891 [--max-results 5]
+  python3 cox1_id.py <genome.fasta> --allow-public-upload --coords 1353,2891
+                    [--max-results 5] [--output-json results.json]
 依赖: 网络 (NCBI BLAST URL API), 可选 BioPython
+
+--output-json 会把每个候选的 accession、逐 HSP 原始坐标/identity/bitscore 与
+blocker 原因持久化; 无论最终判读是什么都会写出。
 """
+import json
 import sys
 import re
 import time
@@ -56,6 +61,26 @@ def read_single_fasta(fn):
     return records[0]
 
 
+# ---------------------------------------------------------- BLAST XML dialects
+# This tool requests XML2 (FORMAT_TYPE=XML2, i.e. ``blastn -outfmt 16``) but must
+# also keep reading the legacy dialect (-outfmt 5 / FORMAT_TYPE=XML):
+#
+#   XML2   root <BlastXML2 xmlns="http://www.ncbi.nlm.nih.gov">
+#          query-len | description/HitDescr/id + title | len |
+#          hsps/Hsp/bit-score + identity + query-from + query-to + hit-from + hit-to + align-len
+#   legacy root <BlastOutput>
+#          BlastOutput_query-len | Hit_accession + Hit_def | Hit_len |
+#          Hit_hsps/Hsp/Hsp_bit-score + Hsp_identity + Hsp_query-from + ...
+#
+# Lookup is by namespace-stripped local name so that a namespace change cannot
+# silently turn real hits into an empty result set.
+XML2_ROOT = 'BlastXML2'
+LEGACY_XML_ROOT = 'BlastOutput'
+_XML_MARKERS = frozenset((
+    'query-len', 'BlastOutput_query-len', 'Iteration_query-len',
+    'Hit', 'HitDescr', 'hsps', 'Hsp', 'BlastOutput_iterations', 'Iteration_hits'))
+
+
 # ------------------------------------------------------------- structured parse
 def _text(element):
     return element.text.strip() if element is not None and element.text else ''
@@ -77,6 +102,58 @@ def _float_text(element):
         return None
 
 
+def _local_name(tag):
+    """Tag name with any ``{namespace}`` prefix removed."""
+    return tag.rsplit('}', 1)[-1] if isinstance(tag, str) else ''
+
+
+def _child(element, *names):
+    """First DIRECT child whose local name is in ``names`` (else None).
+
+    Never rely on ``Element`` truthiness: an element with no children (e.g.
+    ``<len>1200</len>``) is falsy and ``a or b`` would silently skip it.
+    """
+    if element is None:
+        return None
+    for child in element:
+        if _local_name(child.tag) in names:
+            return child
+    return None
+
+
+def _value(element, *names):
+    """Text of the first matching direct child ('' when absent)."""
+    return _text(_child(element, *names))
+
+
+def _int_value(element, *names):
+    return _int_text(_child(element, *names))
+
+
+def _float_value(element, *names):
+    return _float_text(_child(element, *names))
+
+
+def _find_all(element, name):
+    """All descendants (self excluded) whose local name is exactly ``name``."""
+    return [item for item in element.iter()
+            if item is not element and _local_name(item.tag) == name]
+
+
+def _int_descendant(element, *names):
+    """First descendant int matching any local name, in the order of ``names``.
+
+    Unlike ``_int_value`` this searches the whole subtree: ``query-len`` sits
+    below ``Search`` in XML2 and ``Iteration_query-len`` below ``Iteration`` in
+    the legacy dialect, so a direct-child lookup silently returns None.
+    """
+    for name in names:
+        for item in element.iter():
+            if _local_name(item.tag) == name:
+                return _int_text(item)
+    return None
+
+
 def union_length(intervals):
     """Union length of half-open-free 1-based inclusive intervals (never double counts)."""
     merged = []
@@ -91,11 +168,48 @@ def union_length(intervals):
 
 
 def parse_search_info(text):
-    """(status, rid) from an NCBI SearchInfo XML payload ('not xml' -> (None, None))."""
-    status = re.search(r'<Status>\s*([A-Za-z]+)\s*</Status>', text or '')
-    rid = re.search(r'<RID>\s*([^<\s]+)\s*</RID>', text or '')
-    return (status.group(1).upper() if status else None,
-            rid.group(1) if rid else None)
+    """(status, rid) from an NCBI SearchInfo payload.
+
+    NCBI answers ``FORMAT_OBJECT=SearchInfo`` with the **QBlastInfo plain text**
+    block (``RID = ...`` on a line of its own, ``Status=WAITING`` / ``Status=READY``),
+    not with XML -- Biopython's ``NCBIWWW`` parses exactly those textual fields.
+    An XML ``BlastSearchInfo`` payload is still accepted.  A ``CMD=Put`` response
+    carries only the RID, so a missing status is not an error; an unrecognised
+    payload returns ``(None, None)`` so the caller can fail with exit code 3
+    instead of polling a status it will never see.
+    """
+    text = text or ''
+    tag_free = re.sub(r'<[^>]+>', ' ', text)
+
+    def _pick(*patterns):
+        for pattern in patterns:
+            for candidate in (text, tag_free):
+                match = re.search(pattern, candidate)
+                if match:
+                    return match.group(1).strip()
+        return None
+
+    status = _pick(r'<Status>\s*([A-Za-z_]+)\s*</Status>',
+                   r'\bStatus\s*=\s*([A-Za-z_]+)')
+    rid = _pick(r'<RID>\s*([^<\s]+)\s*</RID>',
+                r'\bRID\s*=\s*([A-Za-z0-9_.-]+)')
+    return (status.upper() if status else None, rid)
+
+
+def subject_overlap_bases(hsps):
+    """Target bases reused by more than one HSP (direction-normalised).
+
+    Query-side union coverage is not enough: two HSPs can map to overlapping
+    stretches of the SAME subject record while covering disjoint query regions
+    (a repeat-collapsed reference, or duplicated query sequence).  Aggregating
+    those into one precise identity would present reused target evidence as an
+    independent second alignment.
+    """
+    intervals = [(min(hsp['hit_from'], hsp['hit_to']), max(hsp['hit_from'], hsp['hit_to']))
+                 for hsp in hsps
+                 if hsp.get('hit_from') is not None and hsp.get('hit_to') is not None]
+    spanned = sum(end - start + 1 for start, end in intervals)
+    return max(0, spanned - union_length(intervals))
 
 
 def hsp_collinearity(hsps, max_span_ratio=3.0, hit_len=None, origin_margin=200):
@@ -170,39 +284,66 @@ def hsp_collinearity(hsps, max_span_ratio=3.0, hit_len=None, origin_margin=200):
 
 
 def parse_blast_xml(text):
-    """Parse an NCBI BLAST XML2 response into per-hit union-coverage records.
+    """Parse an NCBI BLAST XML response into per-hit union-coverage records.
 
-    Returns {'query_len': int|None, 'hits': [{accession, description, identity,
-    aligned_bases, coverage, bitscore, hsp_count}]} sorted by strength.
+    Reads both dialects this project can meet (see the constants above): the XML2
+    dialect this tool requests, and the legacy ``-outfmt 5`` dialect used by the
+    older local fixtures.  Returns {'query_len': int|None, 'hits': [...]} sorted
+    by strength; per hit: accession, description, identity (None when the HSPs
+    cannot be reliably aggregated), aligned/spanned/redundant/subject-overlap
+    bases, coverage (query-interval union), bitscore, hsp_count, blockers and the
+    raw HSP list.
 
-    identity is the alignment-length-weighted identity over all HSPs of the hit;
-    coverage is the query-interval union (overlapping HSPs are not double counted).
+    A document that is XML but is not a recognisable BLAST report -- or that
+    contains ``<Hit>`` elements this parser cannot read -- raises ``ValueError``:
+    the caller must report a format failure (exit code 3), not ``no_match``
+    (exit code 1).  A protocol mismatch is not evidence about the database.
     """
     try:
         root = ElementTree.fromstring(text)
     except ElementTree.ParseError as exc:
         raise ValueError('BLAST 结果不是有效 XML: %s' % exc)
-    query_len = (_int_text(root.find('.//BlastOutput_query-len'))
-                 or _int_text(root.find('.//Iteration_query-len')))
+    root_name = _local_name(root.tag)
+    if root_name not in (XML2_ROOT, LEGACY_XML_ROOT):
+        raise ValueError('无法识别的 BLAST XML 格式: 根元素 <%s> (支持 %s=XML2 / %s=legacy XML)'
+                         % (root_name, XML2_ROOT, LEGACY_XML_ROOT))
+    if not any(_local_name(item.tag) in _XML_MARKERS for item in root.iter()):
+        raise ValueError('BLAST XML 结构无法识别: 根元素 <%s> 中没有任何已知字段' % root_name)
+
+    query_len = None
+    for name in ('BlastOutput_query-len', 'Iteration_query-len', 'query-len'):
+        query_len = _int_descendant(root, name)
+        if query_len is not None:
+            break
+
+    hit_elements = _find_all(root, 'Hit')
     hits = []
-    for hit in root.iter('Hit'):
-        accession = _text(hit.find('Hit_accession')) or _text(hit.find('Hit_id'))
-        description = ' '.join((_text(hit.find('Hit_def'))).split())
-        hit_len = _int_text(hit.find('Hit_len'))
+    for hit in hit_elements:
+        accession = _value(hit, 'Hit_accession', 'Hit_id')
+        description = ' '.join(_value(hit, 'Hit_def').split())
+        if not accession or not description:
+            # XML2 keeps them under <description><HitDescr><id>/<title>
+            descr = _child(hit, 'description')
+            item = _child(descr, 'HitDescr')
+            if item is None:
+                item = descr
+            accession = accession or _value(item, 'id', 'accession')
+            description = description or ' '.join(_value(item, 'title', 'def').split())
+        hit_len = _int_value(hit, 'Hit_len', 'len')
         intervals, hsps, identity_total, align_total, best_bits, hsp_count = [], [], 0, 0, 0.0, 0
-        for hsp in hit.findall('./Hit_hsps/Hsp'):
-            query_from = _int_text(hsp.find('Hsp_query-from'))
-            query_to = _int_text(hsp.find('Hsp_query-to'))
-            align_len = _int_text(hsp.find('Hsp_align-len')) or 0
-            identity = _int_text(hsp.find('Hsp_identity')) or 0
-            bits = _float_text(hsp.find('Hsp_bit-score')) or 0.0
+        for hsp in _find_all(hit, 'Hsp'):
+            query_from = _int_value(hsp, 'Hsp_query-from', 'query-from')
+            query_to = _int_value(hsp, 'Hsp_query-to', 'query-to')
+            align_len = _int_value(hsp, 'Hsp_align-len', 'align-len') or 0
+            identity = _int_value(hsp, 'Hsp_identity', 'identity') or 0
+            bits = _float_value(hsp, 'Hsp_bit-score', 'bit-score') or 0.0
             if query_from is None or query_to is None:
                 continue
             hsp_count += 1
             intervals.append((query_from, query_to))
             hsps.append({'query_from': query_from, 'query_to': query_to,
-                         'hit_from': _int_text(hsp.find('Hsp_hit-from')),
-                         'hit_to': _int_text(hsp.find('Hsp_hit-to')),
+                         'hit_from': _int_value(hsp, 'Hsp_hit-from', 'hit-from'),
+                         'hit_to': _int_value(hsp, 'Hsp_hit-to', 'hit-to'),
                          'identity': identity, 'align_len': align_len,
                          'identity_pct': (identity / align_len * 100) if align_len else 0.0,
                          'bitscore': bits})
@@ -210,16 +351,20 @@ def parse_blast_xml(text):
             align_total += align_len
             best_bits = max(best_bits, bits)
         # Non-redundant query coverage (overlapping HSPs are counted once).  A
-        # composite identity is only aggregated when the HSPs neither overlap nor
-        # conflict: otherwise the same bases would be weighted twice, or two
-        # unrelated target positions would be presented as one alignment.
+        # composite identity is only aggregated when the HSPs neither overlap
+        # (query OR target side) nor conflict: otherwise the same bases would be
+        # weighted twice, or reused target positions would be presented as two
+        # independent alignments.
         aligned_bases = union_length(intervals)
         spanned_bases = sum(abs(query_to - query_from) + 1 for query_from, query_to in intervals)
         redundant_bases = max(0, spanned_bases - aligned_bases)
+        target_reuse = subject_overlap_bases(hsps)
         collinearity = hsp_collinearity(hsps, hit_len=hit_len)
         blockers = []
         if redundant_bases > 0:
             blockers.append('overlapping_hsps')
+        if target_reuse > 0:
+            blockers.append('subject_overlap')
         if not collinearity['collinear']:
             blockers.append('non_collinear_hsps')
         aggregate = not blockers
@@ -237,6 +382,8 @@ def parse_blast_xml(text):
             'aligned_bases': aligned_bases,
             'spanned_bases': spanned_bases,
             'redundant_bases': redundant_bases,
+            'subject_overlap_bases': target_reuse,
+            'subject_overlap': target_reuse > 0,
             # metrics could not be reliably aggregated -- NOT a statement that the
             # hit is an invalid candidate
             'ambiguous_alignment': bool(blockers),
@@ -250,6 +397,9 @@ def parse_blast_xml(text):
             'hsp_count': hsp_count,
             'hsps': hsps,
         })
+    if hit_elements and not any(item['hsp_count'] for item in hits):
+        raise ValueError('BLAST XML 含 %d 个 <Hit> 但未能解析出任何 HSP; 结果结构不被支持'
+                         % len(hit_elements))
     hits.sort(key=lambda item: (-(item['bitscore'] or 0.0), -((item['identity'] or 0.0))))
     return {'query_len': query_len, 'hits': hits}
 
@@ -370,6 +520,7 @@ def main():
               '固定 DNA 模式不能证明基因身份', file=sys.stderr)
         sys.exit(2)
     max_results = int(argv[argv.index('--max-results') + 1]) if '--max-results' in argv else 5
+    out_json = argv[argv.index('--output-json') + 1] if '--output-json' in argv else None
 
     try:
         sequence = read_single_fasta(fn)
@@ -435,6 +586,39 @@ def main():
 
     query_len = parsed['query_len'] or len(query)
     hits = distinct_candidates(parsed['hits'])
+    results = {
+        'query_length': query_len, 'blast_url_api': BLAST_URL, 'rid': rid,
+        'candidates': [{
+            'accession': hit['accession'], 'description': hit['description'],
+            'identity': hit['identity'], 'identity_range': hit['identity_range'],
+            'coverage': hit['coverage'], 'hsp_count': hit['hsp_count'],
+            'bitscore': hit['bitscore'], 'hit_len': hit['hit_len'],
+            'aligned_bases': hit['aligned_bases'], 'spanned_bases': hit['spanned_bases'],
+            'redundant_bases': hit['redundant_bases'],
+            'subject_overlap_bases': hit['subject_overlap_bases'],
+            'ambiguity_reasons': hit['ambiguity_reasons'],
+            'collinearity': hit['collinearity'], 'hsps': hit['hsps'],
+        } for hit in hits],
+        'selection': None, 'verdict': None,
+        'notes': ['阈值 (%.0f%% identity / %.0f%% coverage / top-次优 1%%) 是工程启发式, '
+                  '无类群特异性依据' % (MIN_IDENTITY, MIN_QUERY_COVERAGE * 100),
+                  'identity 不等于物种鉴定; 候选必须人工核对原始 HSP 与坐标'],
+    }
+
+    def finish(verdict, selection=None, code=0):
+        """Record the verdict, persist --output-json (if any), then exit."""
+        results['verdict'] = verdict
+        results['selection'] = selection
+        if out_json:
+            try:
+                with open(out_json, 'w', encoding='utf-8') as handle:
+                    json.dump(results, handle, ensure_ascii=False, indent=2)
+            except OSError as exc:
+                print('结果文件写入失败 %s: %s' % (out_json, exc), file=sys.stderr)
+                sys.exit(2)
+            print('完整候选与逐 HSP 原始记录已写入: %s' % out_json)
+        sys.exit(code)
+
     print('\n=== 物种鉴定结果 (COX1 blastn vs nt, XML2) ===')
     print('查询长度: %d bp | 数据库: nt (NCBI BLAST URL API, 该接口不暴露库版本号)' % query_len)
     print('%-40s %8s %8s %6s' % ('命中描述', 'Ident%', 'cov%', 'HSP'))
@@ -445,11 +629,18 @@ def main():
               % (hit['description'][:40], identity_text, hit['coverage'] * 100, hit['hsp_count']))
     ambiguous_hits = [hit for hit in hits if hit.get('ambiguity_reasons')]
     for hit in ambiguous_hits[:3]:
-        print('AMBIGUOUS_ALIGNMENT: %s 的**多 HSP 指标无法可靠汇总** (原因: %s; redundant=%dbp, '
-              'target span/aligned=%.1f) —— 这不等于该 hit 不是有效候选; '
-              '未汇总指标不参与自动择优, 原始 HSP / 逐 HSP identity / bitscore / 坐标均已保留'
+        print('AMBIGUOUS_ALIGNMENT: %s 的多 HSP 指标无法可靠汇总 (原因: %s; q-overlap=%dbp, '
+              'subject-overlap=%dbp, target span/aligned=%.1f) —— 这不等于该 hit 不是有效候选; '
+              '未汇总指标不参与自动择优; 原始 HSP 见下方明细与 --output-json'
               % (hit['accession'], ','.join(hit['ambiguity_reasons']), hit['redundant_bases'],
-                 hit['collinearity']['span_ratio']), file=sys.stderr)
+                 hit['subject_overlap_bases'], hit['collinearity']['span_ratio']), file=sys.stderr)
+        for hsp in hit['hsps'][:20]:
+            print('    HSP q%s..%s -> s%s..%s  identity=%s/%s  bits=%.1f'
+                  % (hsp['query_from'], hsp['query_to'], hsp['hit_from'], hsp['hit_to'],
+                     hsp['identity'], hsp['align_len'], hsp['bitscore']), file=sys.stderr)
+        if len(hit['hsps']) > 20:
+            print('    ... 其余 %d 个 HSP 见 --output-json' % (len(hit['hsps']) - 20),
+                  file=sys.stderr)
         if hit.get('conflicting_alignment'):
             print('CONFLICTING_ALIGNMENT: %s 的 HSP 在 query/hit 方向或目标共线性上互相冲突; '
                   '不能视为一条连续可靠的对齐' % hit['accession'], file=sys.stderr)
@@ -460,7 +651,7 @@ def main():
     if not hits:
         print('no_match: 当前数据库与检索条件下未发现可比命中 '
               '(这只说明本次检索无候选, 不等于无近缘物种证据)', file=sys.stderr)
-        sys.exit(1)
+        finish('no_match', code=1)
     print('候选 accession 数: %d (最优 accession 不等于已完成物种鉴定; 跨 accession 候选全部保留)'
           % len(hits))
 
@@ -473,7 +664,7 @@ def main():
                   % len({hit['accession'] for hit in ambiguous_hits}), file=sys.stderr)
         print('insufficient: 没有唯一、达到 %.0f%% identity 且 query coverage >= %.0f%% 的可自动汇总命中'
               % (MIN_IDENTITY, MIN_QUERY_COVERAGE * 100), file=sys.stderr)
-        sys.exit(1)
+        finish('insufficient', code=1)
     verdict = interpret(best['identity'], best['coverage'])
     print('\n最佳候选: %s (accession=%s)' % (best['description'][:60], best['accession']))
     print('  identity=%.1f%%  query coverage=%.0f%%  HSP=%d'
@@ -481,6 +672,7 @@ def main():
     print('  [%s] %s' % (verdict['status'], verdict['message']))
     print('\n注意: 本节不给出物种级确定结论; 阈值分档为工程启发式, 无类群特异性依据; '
           '阈值失败只过滤候选, 不构成分类学结论。')
+    finish(verdict['status'], best['accession'], 0)
 
 
 if __name__ == '__main__':

@@ -361,8 +361,10 @@ class HspCollinearityTests(unittest.TestCase):
         hit = self._hit("NC_D", hsp + hsp)
         self.assertTrue(hit["ambiguous_alignment"])          # not aggregated (conservative)
         self.assertFalse(hit["conflicting_alignment"])        # a duplicate is not a contradiction
-        self.assertEqual(hit["ambiguity_reasons"], ["overlapping_hsps"])
+        # a duplicated HSP reuses BOTH the query and the target interval
+        self.assertEqual(hit["ambiguity_reasons"], ["overlapping_hsps", "subject_overlap"])
         self.assertEqual(hit["redundant_bases"], 500)
+        self.assertEqual(hit["subject_overlap_bases"], 500)
 
     def test_blocked_hit_keeps_its_raw_evidence(self):
         hit = self._hit("NC_E", self._hsp(1, 400, 1, 400, 400, 400)
@@ -511,12 +513,17 @@ class BlastIdentityAggregationTests(unittest.TestCase):
         self.module = load_module("cox1_agg", Path("scripts") / "cox1_id.py")
 
     @staticmethod
-    def _hsp(query_from, query_to, identity, align_len, bitscore=500):
+    def _hsp(query_from, query_to, identity, align_len, bitscore=500, hit_from=None):
+        # hit_from defaults to query_from: two HSPs must not reuse the same target
+        # stretch (that is subject overlap, a separate blocker from query overlap).
+        if hit_from is None:
+            hit_from = query_from
+        hit_to = hit_from + align_len - 1
         return ("<Hsp><Hsp_bit-score>%d</Hsp_bit-score>"
                 "<Hsp_query-from>%d</Hsp_query-from><Hsp_query-to>%d</Hsp_query-to>"
-                "<Hsp_hit-from>1</Hsp_hit-from><Hsp_hit-to>%d</Hsp_hit-to>"
+                "<Hsp_hit-from>%d</Hsp_hit-from><Hsp_hit-to>%d</Hsp_hit-to>"
                 "<Hsp_identity>%d</Hsp_identity><Hsp_align-len>%d</Hsp_align-len></Hsp>"
-                % (bitscore, query_from, query_to, align_len, identity, align_len))
+                % (bitscore, query_from, query_to, hit_from, hit_to, identity, align_len))
 
     def _xml(self, hits, query_len=1000):
         return ("<?xml version=\"1.0\"?><BlastOutput><BlastOutput_db>nt</BlastOutput_db>"

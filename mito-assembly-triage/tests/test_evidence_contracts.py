@@ -292,6 +292,14 @@ class SchemaValidatorEquivalenceTests(unittest.TestCase):
             {"id": "A1", "status": "RESOLVED", "confidence": "high"}]), False),
         "empty_hypotheses": (_fixed_case(hypotheses=[]), False),
         "inputs_missing_sha256": (_fixed_case(inputs=[{"role": "assembly_fasta"}]), False),
+        # The four divergences an independent review found between
+        # schemas/case.schema.json and the no-jsonschema fallback (minLength and
+        # the three optional arrays).  Keeping them here makes both paths answer
+        # for them forever.
+        "empty_case_id": (_fixed_case(case_id=""), False),
+        "modifications_null": (_fixed_case(modifications=None), False),
+        "validation_not_array": (_fixed_case(validation="not-an-array"), False),
+        "lessons_proposed_not_array": (_fixed_case(lessons_proposed={}), False),
     }
 
     def setUp(self):
