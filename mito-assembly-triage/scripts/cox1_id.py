@@ -243,10 +243,17 @@ def hsp_collinearity(hsps, max_span_ratio=3.0, hit_len=None, origin_margin=200):
               if None not in (hsp.get('query_from'), hsp.get('query_to'),
                               hsp.get('hit_from'), hsp.get('hit_to'))]
     if len(usable) < 2:
+        # A single HSP cannot be checked for collinearity, but its DERIVED strand
+        # and paired coordinate must still reflect the raw coordinates: reporting
+        # '+' for a subject-minus hit makes --output-json contradict the very HSP
+        # it summarises.
+        subject_strand = '+' if not usable else \
+            ('+' if usable[0]['hit_to'] >= usable[0]['hit_from'] else '-')
         return {'consistent_direction': True, 'monotonic': True, 'span_ratio': 1.0,
                 'collinear': True, 'max_span_ratio': max_span_ratio,
-                'subject_strand': '+', 'cross_origin_candidate': False,
-                'paired_target_coordinates': [], 'pairing': 'query_from<->hit_from'}
+                'subject_strand': subject_strand, 'cross_origin_candidate': False,
+                'paired_target_coordinates': [hsp['hit_from'] for hsp in usable],
+                'pairing': 'query_from<->hit_from'}
     signatures = set()
     for hsp in usable:
         query_direction = '+' if hsp['query_to'] >= hsp['query_from'] else '-'

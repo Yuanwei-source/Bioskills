@@ -74,10 +74,18 @@ FASTA、同源性、翻译、RNA 结构和比较基因组证据可以支持候�
 类群特异的**非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不得靠伪造 5' 端缺失或改碱基绕过；
 用 `--tolerate-start "基因:密码子"` 逐条声明，并用 `--exception-registry <json>` 引用**已审计记录**
 （taxon/source/rationale）—— 未登记时输出 `EXCEPTION_NOT_REGISTERED`，不得当作已验证结论。
+同一个 `--exception-registry` 也用于 `/transl_except`（见下）。
 
 **5'/3' partial 由 GenBank location 的 `<`/`>` 决定**，不由 `/codon_start` 决定：location 完整却设
-`/codon_start=2` 是注释自相矛盾（`CODON_START_CONFLICT`）；`/transl_except` 必须真正对应到该内部终止密码子
-才豁免（`TRANSL_EXCEPT_MATCHED`），否则未解释的内部终止仍是错误。
+`/codon_start=2` 是注释自相矛盾（`CODON_START_CONFLICT`）。
+
+**`/transl_except` 分语法与证据两层**：声明的位置集合必须**恰好**是某个真实内部终止密码子（含读框、链方向、
+跨 `join()` 边界的密码子；负链必须写 `pos:complement(a..b)`），整个 qualifier 必须被完整消费，`aa` 不得是 `TERM`
+—— 通过只记 `TRANSL_EXCEPT_MATCHED`（位置事实），**MATCHED 不等于已接受**。接受还需 `--exception-registry` 中键为
+`gene + codon + amino_acid` 且带 `transl_table`/`taxon`/`source`/`rationale` 的条目（`transl_table` 与 `--table`、
+`taxon` 与 `--taxon` 均需一致），才记 `TRANSL_EXCEPT_VALIDATED`。**不引入全局密码子→氨基酸重编码表**：任意合法 token
+（如 `TAA -> Gln`）即使位置匹配也只记 `TRANSL_EXCEPT_DECLARED_UNVERIFIED`（REVIEW），**内部终止继续作为 ERROR**。
+语法无法完整解析记 `TRANSL_EXCEPT_UNPARSED`（整条作废）；未解释的内部终止始终是错误。
 
 **重叠**只记录与分级（`≤8bp` INFO，`>8bp` 默认 REVIEW，`--overlap-severity error` 可升级），
 `--tolerate-overlap` 的含义是"已人工审核并保留该注释"，不代表已证明功能真实性；

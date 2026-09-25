@@ -36,17 +36,23 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
    （partial 只看 location，见下条）。
 2. 逐条记录：起始密码子、终止密码子（完整 / 不完整 `T`/`TA`）、内部终止数、同源蛋白覆盖度、边界证据。
 3. **内部终止必须解释**，排查顺序：密码表选错 → 边界/阅读框错误 → 碱基错误（测序或组装）→ 真实生物学例外。
-   - `/transl_except` **不是存在即豁免**：代码按 CDS 转录顺序建立每个密码子的**精确基因组位置集合**；
-     只有声明的 `pos` 位置集合与某个真实内部终止密码子的位置集合**完全相同**时才记 `TRANSL_EXCEPT_MATCHED` 并扣除该项。
-     同时必须满足三条声明语义：
-     （1）`aa` 为合法三字母代码或 `OTHER`，且 **`aa:TERM` 不得用来解释内部终止**（TERM 只表示在此终止，
-     不能证明 CDS 可继续翻译）；（2）`pos` 的链方向与 CDS 一致 —— **负链 CDS 必须写 `pos:complement(a..b)`**，
-     正链不得写 `complement`；（3）整个 qualifier 必须被完整解析。
-     因此**一条声明不能吸收两个内部终止**，错帧的 3 nt 窗口（如终止在 `10..12` 却写 `11..13`）、非法的 `aa:Foo`、
-     方向不符的裸 `pos` 以及带尾随损坏文本的 qualifier 都**不**算解释。
-     `pos:join(a..b,c)`（密码子跨 `join()` 边界）与负链标准写法都支持：位置集合相等即匹配。
-     `TRANSL_EXCEPT_UNEXPLAINED`（位置对不上）与 `TRANSL_EXCEPT_UNPARSED`（语法无法完整解析，
-     **整条 qualifier 作废而非部分沿用**）都会报告；未解释的内部终止仍是 ERROR。
+   - `/transl_except` **分三层，存在不等于豁免**：
+     **① 语法层**：代码按 CDS 转录顺序建立每个密码子的**精确基因组位置集合**；整个 qualifier 必须被
+     **完整消费**（一个或多个 `(pos:...,aa:...)`），语法不完整就记 `TRANSL_EXCEPT_UNPARSED` 并**整条作废，
+     不沿用合法前缀**（尾随逗号、尾随损坏文本、缺 `pos:` token、模糊位置、括号不配对都属此类）。
+     `pos` 支持 `a..b`、`complement(a..b)`、`join(..)`/`order(..)`（密码子可跨 `join()` 边界）；
+     同一 `pos` 内**不同链方向的片段混用直接拒绝**（整段位置不得由 OR 合并成单链）。
+     `aa` 须是合法三字母代码且**不是 `TERM`**；`pos` 方向须与 CDS 一致（**负链 CDS 必须 `pos:complement(a..b)`**，
+     正链不得写 `complement`）；位置集合必须**恰好**等于某个真实内部终止密码子。通过只记
+     `TRANSL_EXCEPT_MATCHED`（位置/读框事实），**MATCHED 本身不等于已接受**。
+     **② 生物学层**：语法匹配后还必须有审计证据才能接受。证据来自 `--exception-registry` 的
+     `transl_except` 条目，键为 `gene + codon + amino_acid`，且必须同时给出 `transl_table`、`taxon`、
+     `source`、`rationale`；`transl_table` 须与本次 `--table` 一致，`taxon` 须与 `--taxon` 一致（若给出）。
+     满足才记 `TRANSL_EXCEPT_VALIDATED` 并扣除该项。
+     **不引入全局密码子→氨基酸重编码表**：密码子含义随类群与密码表变化，把“合法 INSDC token”当成
+     “已验证例外”会把类群特异的例外伪装成普遍规律。因此 `TAA -> Gln` 这类任意声明即使位置匹配，
+     也只能得到 `TRANSL_EXCEPT_DECLARED_UNVERIFIED`（REVIEW），**内部终止仍保留 ERROR**。
+     **③ 结果层**：因此**一条声明不能吸收两个内部终止**；未验证、未解释的内部终止仍是 ERROR。
    - `/transl_table` 逐条与 `--table` 比对，不一致记 `TABLE_CONFLICT`（代码按 `--table` 翻译）。
    - 不允许只改结论文字。
 4. **非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不再被无条件判错：

@@ -10,6 +10,7 @@
    into a precise-looking composite identity; conflicting HSPs are AMBIGUOUS and
    cross-accession candidates are retained.
 """
+import json
 import sys
 import tempfile
 import unittest
@@ -142,6 +143,14 @@ class TranslExceptReadingFrameTests(unittest.TestCase):
         from Bio.Seq import Seq
         return str(Seq(sequence).reverse_complement())
 
+    def _registry(self, name="registry.json"):
+        path = self.dir / name
+        path.write_text(json.dumps({"exceptions": [
+            {"gene": "cox1", "codon": "TAA", "amino_acid": "Trp", "transl_table": 5,
+             "taxon": "Lepidoptera", "source": "DOI 10.1000/example",
+             "rationale": "documented"}]}), encoding="utf-8")
+        return str(path)
+
     def test_minus_strand_exception_is_matched_at_the_correct_codon(self):
         coding = "ATG" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA"   # internal stop = codon 4
         stored = self._revcomp(coding)
@@ -152,8 +161,10 @@ class TranslExceptReadingFrameTests(unittest.TestCase):
             {"location": "complement(1..%d)" % len(coding), "type": "CDS", "gene": "cox1",
              "transl_except": "(pos:complement(10..12),aa:Trp)"},
         ])
-        result = run_annot_check(path, "--allow-atypical", REASON)
+        result = run_annot_check(path, "--allow-atypical", REASON,
+                                 "--exception-registry", self._registry())
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
 
     def test_minus_strand_exception_at_the_wrong_codon_stays_unexplained(self):
@@ -176,8 +187,10 @@ class TranslExceptReadingFrameTests(unittest.TestCase):
             {"location": "1..%d" % len(coding), "type": "CDS", "gene": "cox1",
              "transl_except": "(pos:10..12,aa:Trp)"},
         ])
-        result = run_annot_check(path, "--allow-atypical", REASON)
+        result = run_annot_check(path, "--allow-atypical", REASON,
+                                 "--exception-registry", self._registry("two-stops.json"))
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
         self.assertIn("1 个内部终止", result.stdout)
 
@@ -320,6 +333,15 @@ class HspCollinearityTests(unittest.TestCase):
         self.assertTrue(hit["collinearity"]["collinear"])
         self.assertFalse(hit["ambiguous_alignment"])
         self.assertIsNotNone(hit["identity"])
+        # the DERIVED strand metadata must agree with the raw coordinates, otherwise
+        # --output-json contradicts the HSP it summarises (single-HSP fast path)
+        self.assertEqual(hit["collinearity"]["subject_strand"], "-")
+        self.assertEqual(hit["collinearity"]["paired_target_coordinates"], [1000])
+
+    def test_plus_strand_single_hsp_metadata(self):
+        hit = self._hit("NC_PLUS1", self._hsp(1, 500, 100, 599, 495, 500))
+        self.assertEqual(hit["collinearity"]["subject_strand"], "+")
+        self.assertEqual(hit["collinearity"]["paired_target_coordinates"], [100])
 
     def test_cross_origin_jump_is_flagged_but_not_accepted(self):
         # a wrong-way jump whose coordinates touch BOTH ends of the 15000 bp subject

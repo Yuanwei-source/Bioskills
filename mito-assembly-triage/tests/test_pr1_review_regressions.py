@@ -339,7 +339,7 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.dir = Path(temp.name)
 
-    def _run(self, name, sequence, transl_except, location="1..%d"):
+    def _run(self, name, sequence, transl_except, location="1..%d", registry=None):
         path = self.dir / name
         if "%d" in location:
             location = location % len(sequence)
@@ -347,12 +347,26 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         if transl_except is not None:
             spec["transl_except"] = transl_except
         write_gb_raw(path, sequence + "A" * 40, [spec])
-        return run_annot_check(path, "--allow-atypical", REASON)
+        extra = []
+        if registry:
+            extra = ["--exception-registry", _write_registry(self.dir, name, *registry)]
+        return run_annot_check(path, "--allow-atypical", REASON, *extra)
 
-    def test_exact_codon_is_accepted(self):
-        result = self._run("ok.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)")
+    def test_exact_codon_with_evidence_is_validated(self):
+        result = self._run("ok.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)",
+                           registry=[_transl_record()])
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
+
+    def test_exact_codon_without_evidence_stays_unverified(self):
+        # a position/reading-frame match is a syntax fact, not a biological claim:
+        # without an audited record the internal stop keeps its ERROR
+        result = self._run("ok-bare.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)")
+        self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
 
     def test_wrong_frame_three_nt_window_is_not_accepted(self):
         result = self._run("wrong-frame.gb", INTERNAL_STOP_CDS, "(pos:11..13,aa:Trp)")
@@ -371,10 +385,12 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         self.assertIn("aa:Foo", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
 
-    def test_minus_strand_complement_position_is_accepted(self):
+    def test_minus_strand_complement_position_is_validated(self):
         result = self._run("minus-ok.gb", _revcomp(INTERNAL_STOP_CDS),
-                           "(pos:complement(10..12),aa:Trp)", location="complement(1..%d)")
+                           "(pos:complement(10..12),aa:Trp)", location="complement(1..%d)",
+                           registry=[_transl_record()])
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
 
     def test_minus_strand_complement_at_the_wrong_codon_is_not_accepted(self):
@@ -383,7 +399,7 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         self.assertIn("TRANSL_EXCEPT_UNEXPLAINED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
 
-    def test_compound_cds_exception_inside_a_part_is_accepted(self):
+    def test_compound_cds_exception_inside_a_part_is_validated(self):
         # CDS = join(1..6, 57..62): coding order is 1..6 then 57..62, so the codons
         # are ATG (1..3), AAA (4..6), TAA (57..59, internal stop) and TAA (60..62,
         # terminal stop).
@@ -392,8 +408,8 @@ class TranslExceptExactCodonTests(unittest.TestCase):
         sequence[56:62] = list("TAATAA")
         sequence = "".join(sequence)
         result = self._run("join-ok.gb", sequence, "(pos:57..59,aa:Trp)",
-                           location="join(1..6,57..62)")
-        self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+                           location="join(1..6,57..62)", registry=[_transl_record()])
+        self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
 
     def test_compound_cds_exception_outside_its_codon_is_not_accepted(self):
@@ -481,7 +497,18 @@ class ExceptionRegistryTypeTests(unittest.TestCase):
             {"gene": "cox1", "codon": "CGA", "taxon": "Lepidoptera",
              "source": "DOI 10.1000/x", "rationale": "documented"}]}), encoding="utf-8")
         registry = self.module.load_exception_registry(str(path))
-        self.assertIn(("cox1", "CGA"), registry)
+        self.assertIn(("cox1", "CGA"), registry['start'])
+        self.assertEqual(registry['transl_except'], {})
+
+    def test_valid_transl_except_record_lands_in_its_own_section(self):
+        path = self.dir / "transl.json"
+        path.write_text(json.dumps({"exceptions": [
+            {"gene": "cox1", "codon": "TAA", "amino_acid": "Trp", "transl_table": 5,
+             "taxon": "Lepidoptera", "source": "DOI 10.1000/x", "rationale": "r"}]}),
+            encoding="utf-8")
+        registry = self.module.load_exception_registry(str(path))
+        self.assertEqual(registry['start'], {})
+        self.assertIn(("cox1", "TAA", "trp"), registry['transl_except'])
 
 
 class SchemaKeywordCoverageTests(unittest.TestCase):
@@ -539,6 +566,23 @@ def _hsp_missing(fields):
             % tuple('' if key not in values else values[key]
                     for key in ('query-from', 'query-to', 'hit-from', 'hit-to',
                                 'identity', 'align-len', 'bit-score')))
+
+
+def _write_registry(directory, name, *entries):
+    """Write a temporary --exception-registry file and return its path."""
+    path = Path(directory) / (name + ".registry.json")
+    path.write_text(json.dumps({"exceptions": list(entries)}, ensure_ascii=False),
+                    encoding="utf-8")
+    return str(path)
+
+
+def _transl_record(codon="TAA", amino_acid="Trp", transl_table=5,
+                   taxon="Lepidoptera", source="DOI 10.1000/example",
+                   rationale="documented exception"):
+    """A complete, auditable /transl_except registry entry."""
+    return {"gene": "cox1", "codon": codon, "amino_acid": amino_acid,
+            "transl_table": transl_table, "taxon": taxon, "source": source,
+            "rationale": rationale}
 
 
 class HspFieldValidationTests(unittest.TestCase):
@@ -654,14 +698,19 @@ class TranslExceptSemanticsTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.dir = Path(temp.name)
 
-    def _run(self, name, sequence, transl_except, location="1..%d"):
+    def _run(self, name, sequence, transl_except, location="1..%d", registry=None, taxon=None):
         path = self.dir / name
         if "%d" in location:
             location = location % len(sequence)
         write_gb_raw(path, sequence + "A" * 40, [
             {"location": location, "type": "CDS", "gene": "cox1",
              "transl_except": transl_except}])
-        return run_annot_check(path, "--allow-atypical", REASON)
+        extra = []
+        if registry:
+            extra += ["--exception-registry", _write_registry(self.dir, name, *registry)]
+        if taxon:
+            extra += ["--taxon", taxon]
+        return run_annot_check(path, "--allow-atypical", REASON, *extra)
 
     def test_aa_term_does_not_explain_an_internal_stop(self):
         result = self._run("term.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:TERM)")
@@ -681,6 +730,30 @@ class TranslExceptSemanticsTests(unittest.TestCase):
                            "(pos:complement(10..12),aa:Trp)")
         self.assertIn("TRANSL_EXCEPT_UNEXPLAINED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
+
+    def test_trailing_comma_is_unparsed_and_does_not_explain(self):
+        result = self._run("comma.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp),")
+        self.assertIn("TRANSL_EXCEPT_UNPARSED", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_mixed_strand_compound_position_is_not_accepted(self):
+        # join(complement(10..11),12) OR-ed its leaves into "minus", hiding the
+        # plus-strand leaf and letting the declaration clear a real stop
+        result = self._run("mixed.gb", _revcomp(INTERNAL_STOP_CDS),
+                           "(pos:join(complement(10..11),12),aa:Trp)",
+                           location="complement(1..%d)")
+        self.assertIn("TRANSL_EXCEPT_UNEXPLAINED", result.stdout)
+        self.assertIn("不同链方向", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_mixed_strand_compound_position_ignores_a_valid_registry(self):
+        result = self._run("mixed-reg.gb", _revcomp(INTERNAL_STOP_CDS),
+                           "(pos:join(complement(10..11),12),aa:Trp)",
+                           location="complement(1..%d)", registry=[_transl_record()])
+        self.assertIn("[ERROR]", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
 
     def test_trailing_garbage_is_unparsed_and_does_not_explain(self):
         result = self._run("junk.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp),BROKEN")
@@ -703,16 +776,27 @@ class TranslExceptSemanticsTests(unittest.TestCase):
         self.assertIn("TRANSL_EXCEPT_UNPARSED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
 
-    def test_cross_part_codon_is_supported(self):
+    def test_cross_part_codon_is_validated_with_evidence(self):
         # CDS join(1..5,101..107): codons are {1,2,3} {4,5,101} {102,103,104} {105,106,107}
         sequence = list("A" * 200)
         sequence[0:5] = list("ATGTA")
         sequence[100:107] = list("AATATAA")
         sequence = "".join(sequence)
         result = self._run("join-codon.gb", sequence,
-                           "(pos:join(4..5,101),aa:Leu)", location="join(1..5,101..107)")
-        self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+                           "(pos:join(4..5,101),aa:Leu)", location="join(1..5,101..107)",
+                           registry=[_transl_record(amino_acid="Leu")])
+        self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
+
+    def test_cross_part_codon_without_evidence_stays_unverified(self):
+        sequence = list("A" * 200)
+        sequence[0:5] = list("ATGTA")
+        sequence[100:107] = list("AATATAA")
+        sequence = "".join(sequence)
+        result = self._run("join-bare.gb", sequence,
+                           "(pos:join(4..5,101),aa:Leu)", location="join(1..5,101..107)")
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
 
     def test_cross_part_codon_with_wrong_positions_is_not_accepted(self):
         sequence = list("A" * 200)
@@ -724,20 +808,61 @@ class TranslExceptSemanticsTests(unittest.TestCase):
         self.assertIn("TRANSL_EXCEPT_UNEXPLAINED", result.stdout)
         self.assertIn("[ERROR]", result.stdout)
 
-    def test_multiple_well_formed_entries_are_all_parsed(self):
+    def test_multiple_entries_are_all_validated_with_evidence(self):
         # two internal stops (codon 4 = 10..12, codon 7 = 19..21), two declarations
         sequence = "ATG" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA" + "AAA" * 2 + "TAA"
         result = self._run("two.gb", sequence,
-                           "(pos:10..12,aa:Trp),(pos:19..21,aa:Trp)")
+                           "(pos:10..12,aa:Trp),(pos:19..21,aa:Trp)",
+                           registry=[_transl_record()])
         self.assertEqual(result.stdout.count("TRANSL_EXCEPT_MATCHED"), 2)
+        self.assertEqual(result.stdout.count("TRANSL_EXCEPT_VALIDATED"), 2)
         self.assertNotIn("[ERROR]", result.stdout)
 
-    def test_entry_with_a_wrong_aa_is_not_matched(self):
+    def test_matching_position_without_evidence_is_not_accepted(self):
+        # A legal but unproven amino acid (TAA -> Gln is not a known reassignment)
+        # must not be promoted to an accepted exception: position/reading-frame
+        # agreement is a syntax fact only, so the internal stop keeps its ERROR.
         result = self._run("wrong-aa.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Gln)")
-        # Gln is a legal token but not what the declared position claims to need;
-        # it is only refused when it cannot explain a stop, so a *matching*
-        # position still explains it -- guarded here to pin the current contract.
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertNotIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_incomplete_registry_record_stays_unverified(self):
+        record = _transl_record()
+        record.pop("source")
+        result = self._run("incomplete.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)",
+                           registry=[record])
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertIn("source", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_registry_table_mismatch_stays_unverified(self):
+        result = self._run("table-mismatch.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)",
+                           registry=[_transl_record(transl_table=2)])
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertIn("transl_table", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_registry_taxon_mismatch_stays_unverified(self):
+        result = self._run("taxon-mismatch.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)",
+                           registry=[_transl_record(taxon="Lepidoptera")], taxon="Diptera")
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertIn("taxon", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
+
+    def test_registry_taxon_match_is_validated(self):
+        result = self._run("taxon-match.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Trp)",
+                           registry=[_transl_record(taxon="Lepidoptera")], taxon="Lepidoptera")
+        self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
+        self.assertNotIn("[ERROR]", result.stdout)
+
+    def test_registry_amino_acid_mismatch_stays_unverified(self):
+        # the record exists for TAA->Trp, but the declaration claims Gln
+        result = self._run("aa-mismatch.gb", INTERNAL_STOP_CDS, "(pos:10..12,aa:Gln)",
+                           registry=[_transl_record()])
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
 
 
 class SchemaTypeMatrixTests(unittest.TestCase):

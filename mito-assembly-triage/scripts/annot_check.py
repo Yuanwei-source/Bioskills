@@ -292,40 +292,47 @@ def _split_location_list(text):
 
 
 def _location_positions(text):
-    """(1-based genomic positions, is_complement) for a location, else None.
+    """(1-based genomic positions, is_complement, mixed) for a location, else None.
 
     Grammar kept deliberately small: ``a``, ``a..b``, ``complement(...)`` and
     ``join(...)``/``order(...)``.  Anything else -- fuzzy markers, ``^``, bare
     text -- returns None so the caller reports the qualifier as unparsed rather
     than silently accepting one substring of it.
+
+    ``mixed`` is True when the leaves disagree about ``complement()``.  Collapsing
+    them into a single OR-ed boolean is what previously let
+    ``join(complement(10..11),12)`` be treated as an entirely minus-strand
+    position, hiding the plus-strand leaf.
     """
     text = text.strip()
     if not text:
         return None
     if text.startswith('complement(') and text.endswith(')'):
         inner = _location_positions(text[len('complement('):-1])
-        return None if inner is None else (inner[0], not inner[1])
+        return None if inner is None else (inner[0], not inner[1], inner[2])
     for keyword in ('join(', 'order('):
         if text.startswith(keyword) and text.endswith(')'):
-            positions, complemented = [], False
+            positions, flags = [], set()
             for piece in _split_location_list(text[len(keyword):-1]):
                 parsed = _location_positions(piece)
                 if parsed is None:
                     return None
                 positions.extend(parsed[0])
-                complemented = complemented or parsed[1]
-            return (positions, complemented) if positions else None
+                flags.add(parsed[1])
+            if not positions:
+                return None
+            return (positions, flags == {True}, len(flags) > 1)
     if re.fullmatch(r'\d+', text):
-        return ([int(text)], False)
+        return ([int(text)], False, False)
     match = re.fullmatch(r'(\d+)\s*\.\.\s*(\d+)', text)
     if match:
         start, end = int(match.group(1)), int(match.group(2))
-        return (list(range(start, end + 1)), False) if start <= end else None
+        return (list(range(start, end + 1)), False, False) if start <= end else None
     return None
 
 
 def _parse_transl_except_entry(text):
-    """(positions, complemented, amino_acid) from one '(pos:...,aa:...)' chunk."""
+    """(positions, complemented, mixed, amino_acid) from one '(pos:...,aa:...)' chunk."""
     text = text.strip()
     if not (text.startswith('(') and text.endswith(')')):
         return None
@@ -338,7 +345,7 @@ def _parse_transl_except_entry(text):
     parsed = _location_positions(pieces[0][len('pos:'):])
     if parsed is None:
         return None
-    return (parsed[0], parsed[1], match.group(1))
+    return (parsed[0], parsed[1], parsed[2], match.group(1))
 
 
 def parse_transl_except(feature):
@@ -380,11 +387,12 @@ def parse_transl_except(feature):
             if parsed is None:
                 broken += 1
             else:
-                positions, complemented, amino_acid = parsed
+                positions, complemented, mixed, amino_acid = parsed
                 token = amino_acid.strip().lower()
                 local.append({
                     'text': chunk.strip(), 'positions': positions,
-                    'complemented': complemented, 'amino_acid': amino_acid,
+                    'complemented': complemented, 'mixed': mixed,
+                    'amino_acid': amino_acid,
                     'valid_token': token in TRANSL_EXCEPT_AA_TOKENS,
                     'explains_stop': (token in TRANSL_EXCEPT_AA_TOKENS
                                       and token not in TRANSL_EXCEPT_TERMINATION_TOKENS),
@@ -395,6 +403,11 @@ def parse_transl_except(feature):
                 broken += 1
                 break
             pending = rest[1:].lstrip()
+            if not pending:
+                # a dangling separator means an entry is missing: the qualifier was
+                # not consumed completely and must not be trusted
+                broken += 1
+                break
         if broken:
             # A partially readable qualifier is NOT partially trusted: salvaging the
             # well-formed prefix would let trailing corruption carry an exception
@@ -564,6 +577,32 @@ def identity_findings(findings, cds, trnas, rnas, atypical_reason):
         findings.info('tRNA 身份完整且无重复 (22 个)')
 
 
+def _transl_except_evidence(registry, gene, codon, amino_acid, table, expected_taxon):
+    """(record, note) for a declared stop-codon exception; record None = not accepted.
+
+    The layering is deliberate and is the whole point of this function: matching a
+    position and reading frame is a SYNTAX fact, while accepting an exception is a
+    BIOLOGICAL claim.  Codon meaning depends on the taxon and the genetic code, so
+    no global codon->amino-acid table is consulted here -- the evidence has to be
+    supplied per case, with taxon, genetic code and a citable source.
+    """
+    record = (registry or {}).get((gene, str(codon).upper(), amino_acid.strip().lower()))
+    if record is None:
+        return None, ' (未登记该 gene/codon/aa 组合)'
+    incomplete = [name for name in ('taxon', 'source', 'rationale', 'transl_table')
+                  if not str(record.get(name) or '').strip()]
+    if incomplete:
+        return None, ' (记录缺少 %s)' % '/'.join(incomplete)
+    if str(record['transl_table']).strip() != str(table.id):
+        return None, ' (记录 transl_table=%s 与本次 --table %s 不一致)' % (
+            record['transl_table'], table.id)
+    if expected_taxon and str(record['taxon']).strip().lower() \
+            != str(expected_taxon).strip().lower():
+        return None, ' (记录 taxon=%s 与本次 --taxon %s 不一致)' % (
+            record['taxon'], expected_taxon)
+    return record, ''
+
+
 def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions,
                  registry=None, expected_taxon=None):
     valid_starts = set(tbl.start_codons)
@@ -608,13 +647,15 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         start_codon = str(coding[:3]).upper()
         last3 = str(coding[-3:]).upper() if len(coding) >= 3 else ''
 
-        # /transl_except 必须解释“具体哪个内部终止”, 而不是只要存在就全免
+        # /transl_except 必须解释“具体哪个内部终止”, 而不是只要存在就全免.
+        # 位置/读框一致只是语法事实; “是否接受为生物学例外”必须有审计证据.
         exceptions, unparsed = parse_transl_except(feature)
         stop_codons = [index for index, amino_acid in enumerate(protein) if amino_acid == '*']
         if terminal_is_complete(last3, remainder, valid_stops) and protein.endswith('*'):
             stop_codons = stop_codons[:-1]
         codon_positions = cds_codon_positions(feature, codon_start)
         minus_strand = (feature.location.strand or 0) < 0
+        transl_registry = (registry or {}).get('transl_except') or {}
         explained = set()
         for entry in exceptions:
             amino_acid = entry['amino_acid']
@@ -624,6 +665,9 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
             elif not entry['explains_stop']:
                 index, reason = None, (' (aa:TERM 表示终止, 不能被当作可继续翻译的氨基酸'
                                        '来解释内部终止)')
+            elif entry['mixed']:
+                index, reason = None, (' (pos 由不同链方向的片段组成, 不能作为链一致的单密码'
+                                       '子位置)')
             elif entry['complemented'] != minus_strand:
                 index, reason = None, (' (pos 的链方向与 CDS 不一致: %s链 CDS 需要 pos:%s)'
                                        % ('负' if minus_strand else '正',
@@ -637,14 +681,31 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
                               if codon and set(codon) == wanted), None)
                 reason = ('' if index is not None else
                           ' (pos:%s 与任何一个密码子的基因组位置都不完全相同)' % position_text)
-            if index is not None and index in stop_codons:
-                explained.add(index)
-                findings.info('TRANSL_EXCEPT_MATCHED: %s 位置 %s 的 %s 解释了密码子 %d 的内部终止'
-                              % (display, position_text, amino_acid, index + 1))
-            else:
+            if index is None or index not in stop_codons:
                 findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明的 /transl_except '
                                 '%s 未对应任何内部终止密码子%s'
                                 % (display, position_text, reason))
+                continue
+            actual_codon = str(coding[3 * index:3 * index + 3]).upper()
+            findings.info('TRANSL_EXCEPT_MATCHED: %s 位置 %s 精确对应密码子 %d 的内部终止 %s '
+                          '(位置/读框事实, 单独的 MATCHED 不等于已接受)'
+                          % (display, position_text, index + 1, actual_codon))
+            record, note = _transl_except_evidence(transl_registry, canonical, actual_codon,
+                                                   amino_acid, tbl, expected_taxon)
+            if record is None:
+                findings.review(
+                    'TRANSL_EXCEPT_DECLARED_UNVERIFIED: %s 的 /transl_except %s 声明密码子 %d 的'
+                    ' %s 由 %s 替代, 但缺少已审计证据%s; 该内部终止仍按 ERROR 处理 '
+                    '(请用 --exception-registry 记录 gene/codon/amino_acid/transl_table/'
+                    'taxon/source/rationale)'
+                    % (display, position_text, index + 1, actual_codon, amino_acid, note))
+            else:
+                explained.add(index)
+                findings.info(
+                    'TRANSL_EXCEPT_VALIDATED: %s 密码子 %d 的内部终止 %s->%s 已按审计记录接受 '
+                    '(taxon=%s transl_table=%s source=%s rationale=%s)'
+                    % (display, index + 1, actual_codon, amino_acid, record.get('taxon'),
+                       record.get('transl_table'), record.get('source'), record.get('rationale')))
         if unparsed:
             findings.review('TRANSL_EXCEPT_UNPARSED: %s 的 /transl_except 有 %d 条无法完整解析 '
                             '(要求 (pos:a..b|pos:complement(a..b)|pos:join(...), aa:三字母代码)); '
@@ -671,7 +732,7 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
             key = (canonical, start_codon)
             if key in start_exceptions:
                 used_start_exceptions.add(key)
-                record = (registry or {}).get(key)
+                record = ((registry or {}).get('start') or {}).get(key)
                 if record:
                     findings.review(
                         'NONCANONICAL_START_REVIEW: %s 起始密码子 %s 按已审计例外记录接受; '
@@ -893,10 +954,15 @@ def reference_findings(findings, cds, ref, tolerance=CDS_LENGTH_TOLERANCE_PCT):
 
 # -------------------------------------------------------------------------- main
 def load_exception_registry(path):
-    """Audited non-canonical start exceptions: (gene, codon) -> taxon/source/rationale.
+    """Audited exceptions, in two sections.
 
-    The CLI flag only *selects* an entry; the biological justification lives in the
-    registry so that accepting an exception is not the same as proving it.
+    ``start``         : (gene, codon) -> taxon/source/rationale  (non-canonical starts)
+    ``transl_except`` : (gene, codon, amino_acid) -> taxon/transl_table/source/rationale
+
+    An entry carrying ``amino_acid`` is a /transl_except record, anything else is a
+    start-codon record.  The CLI flag only *selects* an entry; the biological
+    justification lives in the registry so that accepting an exception is never the
+    same as proving it.
     """
     try:
         with open(path, encoding='utf-8') as handle:
@@ -913,15 +979,23 @@ def load_exception_registry(path):
         print('ERROR: 例外记录 %s 的 "exceptions" 必须是数组, 实际为 %s'
               % (path, type(raw).__name__))
         sys.exit(1)
-    registry = {}
+    registry = {'start': {}, 'transl_except': {}}
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             print('ERROR: 例外记录 %s 的 exceptions[%d] 必须是对象, 实际为 %s'
                   % (path, index, type(item).__name__))
             sys.exit(1)
-        key = (_canonical_key(item.get('gene', '')), str(item.get('codon', '')).upper())
-        registry[key] = {'taxon': item.get('taxon'), 'source': item.get('source'),
-                         'rationale': item.get('rationale')}
+        gene = _canonical_key(item.get('gene', ''))
+        codon = str(item.get('codon', '')).upper()
+        amino_acid = item.get('amino_acid')
+        if amino_acid:
+            registry['transl_except'][(gene, codon, str(amino_acid).strip().lower())] = {
+                'taxon': item.get('taxon'), 'source': item.get('source'),
+                'rationale': item.get('rationale'), 'transl_table': item.get('transl_table')}
+        else:
+            registry['start'][(gene, codon)] = {
+                'taxon': item.get('taxon'), 'source': item.get('source'),
+                'rationale': item.get('rationale')}
     return registry
 
 

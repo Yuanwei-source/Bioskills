@@ -427,10 +427,14 @@ READS_SUPPORT_LEVELS = ('NOT_ASSESSED', 'READS_CONSISTENT', 'READS_DISCRIMINATIN
 def _case_errors_without_jsonschema(case):
     """Explicit equivalent of schemas/case.schema.json.
 
-    This is what runs when ``jsonschema`` is unavailable -- and it **must not be
-    weaker than the schema**: CI installs only biopython, so a weaker fallback
-    would silently skip the ``anomalies[]`` enum checks while the docs claim they
-    are validated.  That is exactly the failure mode this project keeps hitting.
+    This is what runs when ``jsonschema`` is unavailable.  CI installs jsonschema,
+    so the primary path runs there and the two cross-comparison tests are skipped;
+    this fallback is therefore covered by the tests that call it DIRECTLY
+    (``test_fallback_verdicts_are_fixed``, ``SchemaKeywordCoverageTests`` and the
+    Schema-keyword x JSON-basic-type matrix).  It **must not be weaker than the
+    schema**: a weaker fallback would silently skip the ``anomalies[]`` enum checks
+    while the docs claim they are validated, and it must never raise on a legal
+    JSON value.  That is exactly the failure mode this project keeps hitting.
     """
     if not isinstance(case, dict):
         return ['case.json 必须是 JSON 对象']

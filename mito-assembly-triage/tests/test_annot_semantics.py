@@ -13,6 +13,7 @@ Regressions covered (expert T-matrix items in this lane):
 `depth_analysis.py`, `blast_genes.py` and `circularize.py` are deliberately out of
 scope here (other lane).
 """
+import json
 import sys
 import tempfile
 import unittest
@@ -125,11 +126,28 @@ class TranslExceptTests(unittest.TestCase):
         write_gb_raw(path, sequence + "A" * 40, [spec])
         return path
 
-    def test_matching_exception_explains_the_internal_stop(self):
+    def _registry(self):
+        path = self.dir / "registry.json"
+        path.write_text(json.dumps({"exceptions": [
+            {"gene": "cox1", "codon": "TAA", "amino_acid": "Trp", "transl_table": 5,
+             "taxon": "Lepidoptera", "source": "DOI 10.1000/example",
+             "rationale": "documented"}]}), encoding="utf-8")
+        return str(path)
+
+    def test_matching_exception_with_evidence_explains_the_internal_stop(self):
         result = run_annot_check(self._gb("match.gb", "(pos:10..12,aa:Trp)"),
+                                 "--allow-atypical", REASON,
+                                 "--exception-registry", self._registry())
+        self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
+        self.assertIn("TRANSL_EXCEPT_VALIDATED", result.stdout)
+        self.assertNotIn("[ERROR]", result.stdout)
+
+    def test_matching_exception_without_evidence_keeps_the_stop_as_error(self):
+        result = run_annot_check(self._gb("match-bare.gb", "(pos:10..12,aa:Trp)"),
                                  "--allow-atypical", REASON)
         self.assertIn("TRANSL_EXCEPT_MATCHED", result.stdout)
-        self.assertNotIn("[ERROR]", result.stdout)
+        self.assertIn("TRANSL_EXCEPT_DECLARED_UNVERIFIED", result.stdout)
+        self.assertIn("[ERROR]", result.stdout)
 
     def test_non_matching_exception_does_not_excuse_the_stop(self):
         # codon 4 is the only internal stop; declaring it at codon 2 explains nothing
