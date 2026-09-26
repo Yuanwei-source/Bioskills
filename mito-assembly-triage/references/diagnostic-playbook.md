@@ -1,135 +1,86 @@
 # 动态诊断手册
 
-诊断循环：`INTAKE → HYPOTHESIZE → CHOOSE_TEST → EXECUTE → UPDATE → DECIDE → VERIFY → LEARN`
+`INTAKE → HYPOTHESIZE → CHOOSE_TEST → EXECUTE → UPDATE → DECIDE → VERIFY → LEARN`
 
-> **适用边界**：针对用户报告的**单个异常**按需诊断，默认不重组装、不跑全部工具。
-> 结构化事实链由 `tools/experience.py` 的 `case-*` 子命令承载（`case.json` / `events.jsonl` / `case.md`）。
-> **先读**：入口路由 `START_HERE.md`；分流（组装 vs 注释）/优先级/停止条件/参考等级/最小证据集
-> `diagnostic-decision-tree.md`；结论层与报告模板 `conclusion-report.md`。
+按用户目标处理一个或多个异常，不默认重组装。入口见
+[START_HERE.md](START_HERE.md)，工具选择见 [tool-catalog.md](tool-catalog.md)。
 
-## INTAKE（先收语境，再动手）
+## INTAKE
 
-必须记录：
+记录具体异常、坐标与观察来源，区分事实和用户猜测。确认类群、遗传密码表、
+组装状态、可用 FASTA/GB/GFF/FASTQ/BAM/GFA、软件/数据库版本与输入哈希。
+检查已有产物能否复用，了解资源限制与上传授权。若需参考先记用途，取得时再登记。
 
-- 用户报告的**具体异常**（现象 + 位置 + 已知前提）；
-- 类群（目/科，尽量到属）与遗传密码表；
-- 输入类型与实际可用数据：`FASTA` / `GFF` / `GB` / `FASTQ` / `BAM` / `GFA`；
-- 工具与版本、是否部分组装、是否多 contig；
-- 用户允许的资源开销、联网与对外上传权限（默认**不允许**向公共库上传）。
+当前任务的结构化案例可写入任务工作目录；长期知识库另按
+[learning-policy.md](learning-policy.md) 授权。不要把输出写进 skill 安装目录。
+案例类型使用 `abnormal_case`、`normal_validation_case` 或 `tool_failure_case`；
+正常案例必须明确检查范围，工具失败不得当作生物学异常。
 
-同时**先检查已有产出**（`logs/`、既有 BAM/GB/候选目录），避免重跑与重复消耗。
+## HYPOTHESIZE
 
-## HYPOTHESIZE（至少留一个替代解释）
+列出当前证据相容且会影响决策的解释，以及各自的预期观测与反证；不按固定数量凑假设。
+基因未检出需考虑命名/漏注释/检索灵敏度/断裂/真实丢失；内部 stop 需考虑密码表、
+边界/读框、碱基错误和有证据的生物例外；结构异常需考虑表示方式、重复与错接。
+将解释写入 `hypotheses[]`，支持、反对与未知分别记录。
 
-每个异常都要保留竞争假设与可能的反证。最低覆盖：
+## CHOOSE_TEST
 
-| 异常 | 至少考虑的替代解释 |
-|---|---|
-| 基因缺失 | 漏注释、组装断裂、错接、真实丢失、NUMT/污染 |
-| 内部 stop / 移码 | 密码表、边界、碱基错误、真实生物例外 |
-| tRNA 异常 | 命名退化、真实结构退化、工具灵敏度、错接 |
-| rRNA 边界异常 | 参考边界本身有误、类群长度差异、组装嵌合 |
-| 接缝/控制区异常 | 重复错接、真实长度异质性、未闭合 |
-| 覆盖异常 | NUMT、污染、多倍型/异质性、组装错误、比对歧义 |
-| 重排/顺序不同 | 参照物远缘、方向/旋转表示差异、真实重排 |
-
-写入 `case.json` → `hypotheses[]`，每条含 `id` / `explanation` / `support` / `against` / `unknown`（schema 强约束）。
-
-## CHOOSE_TEST（选能区分假设、且成本低的检查）
-
-- **先分流**：这个异常更像**组装**问题还是**注释**问题（`diagnostic-decision-tree.md` §1）。
-  分流错了，后面的检查再多也不会改变结论：注释工具回答不了组装问题，重组装也修不掉密码表/边界错误。
-- 按**优先级**排：P0 结构真实性 → P1 注释一致性 → P2 生物学解释（`diagnostic-decision-tree.md` §2）。
-- 优先选**能改变假设排序**、成本低、可复现的检查；
-- 即使某项检查不能改变排序，**若它是安全关键修复的验收条件，也不得省略**；
-- 没有可用数据时不循环空跑；无法区分时直接进入 DECIDE 并写 `UNRESOLVED`；
-- 只做**最小充分证据集**里必需的项（`diagnostic-decision-tree.md` §6），不是为了凑齐全套工具；
-- 先查工具目录（`tool-catalog.md`）确认输入要求与"不能证明什么"。
+按 [diagnostic-decision-tree.md](diagnostic-decision-tree.md) 选择当前最有判别力的检查。
+优先低成本且能改变结论的检查，修复验收必需项不得省略。参考等级与用途按
+[reference-policy.md](reference-policy.md) §5；只检查所用工具的依赖。
+可检索已授权知识库的适用经验，但经验频次不能替代当前证据。
 
 ## EXECUTE
 
-- 只调用现有脚本与经典工具；记录**命令、参数、版本、输入 hash、输出路径与退出码**（写入 `events.jsonl`）；
-- `tools/experience.py case-validate` **只检验记录格式**（schema / 字段 / 枚举），**不证明科学结论**；
-- **禁止直接覆盖原始序列**；候选另存新目录；
-- 对外查询/上传样本序列必须先获得显式许可（如 `cox1_id.py --allow-public-upload`）。
+优先现有脚本与成熟工具；补充代码需相称验证。
+记录完整命令、参数、版本、输入 hash、输出路径、真实退出状态和日志。
+原件只读，候选另存。公共资料查询/下载可按任务执行，发送样本或私有信息须明确授权。
 
-## UPDATE（按假设分别记账）
+## UPDATE
 
-对每条假设写出：支持证据、反证、证据来源、依赖关系、尚缺数据。
+对每项检查记录支持、反对、无法区分或工具故障，更新竞争解释；新证据可改变原分流。
+按产生机制判断证据独立性，不按软件数量计数，见
+[evidence-standard.md](evidence-standard.md) §4。
 
-**独立性按产生机制判断，不按软件个数**：共用同一参考、或共用同一份初始组装的多个软件结果，
-**不按独立证据重复计数**（见 `evidence-standard.md`）。
+## DECIDE
 
-## DECIDE（分级下结论，不用一个状态掩盖局部）
+每条异常单独记录 claim、状态、置信度与 reads 支持，案例级 decision 仅作汇总。
+`NO_CHANGE` 仅表示处置不修改；注明理由，不能据此推出样本质量通过。
+置信度与缺失输入的规则统一见证据标准 §2；复核与判定人的记录见决策树 §4。
 
-三层状态，别混用：
+`annot_check.py` 的待核查项逐条说明证据与处置；INFO 项保留日志即可，
+除非影响本次结论。结论需要的支持/反证、未测项、范围与局限即使无专用 CLI 字段，
+也必须写入事件及报告。四类停止条件只在决策树 §3 定义，不为收尾强行给肯定结论。
 
-| 层级 | 取值 | 落点 |
-|---|---|---|
-| 假设级 | `SUPPORTED` / `REFUTED` / `UNRESOLVED` / `NOT_TESTED` | `hypotheses[]` 的 `support`/`against`/`unknown`，以及事件 `impact`（如 `H1:against`） |
-| 操作级 | `NO_CHANGE` / `ANNOTATION_CORRECTED` / `SEQUENCE_CORRECTED` / `STRUCTURE_CORRECTED` / `UNRESOLVED` | `modifications[]` 与事件记录 |
-| 案例级 | `RESOLVED` / `NO_CHANGE` / `UNRESOLVED`（**schema 强约束**） | `case.json` → `decision`（仅汇总，不代替异常） |
-| 异常级（多异常并存） | 每个异常各自 `status` + `confidence` + `reads_support` | `case.json` → `anomalies[]`（schema 校验：`id`/`claim`/`status`/`confidence`，可选 `reads_support`） |
+### 任务内记账示例
 
-案例级还要给 `decision.confidence` ∈ `high` / `moderate` / `low` / `not_assessable`（判据见 `evidence-standard.md` §2）。
+在用户任务工作目录运行；占位内容替换为实际事实。假设 ID 由 case-init 按顺序分配，
+事件 action 应可唯一定位本次检查。
 
-**`confidence` 属于具体结论，不属于整个样本**：不要因为缺 reads 或缺核基因组就给全局上限，
-只对**与该输入相关**的结论降档（见 `evidence-standard.md` §2.1）。同一案例里可以并存
-`high` 的注释身份结论与 `not_assessable` 的结构结论。
+```bash
+python3 <skill目录>/tools/experience.py case-init work/case-001 \
+  --issue internal_stop --observation '<位置与观察>' \
+  --hypothesis '<边界或读框解释>' --hypothesis '<碱基错误解释>'
+python3 <skill目录>/tools/experience.py case-event work/case-001 \
+  --action translation_check_01 \
+  --result '<命令/版本/产物；支持与反证；未测项；范围/局限；复核信息>' --impact H1:against
+python3 <skill目录>/tools/experience.py case-anomaly work/case-001 \
+  --id A1 --claim '<具体命题>' --status UNRESOLVED --confidence low \
+  --reads-support NOT_ASSESSED --event-action translation_check_01
+python3 <skill目录>/tools/experience.py case-validate work/case-001
+python3 <skill目录>/tools/experience.py case-report work/case-001
+```
 
-**待核查项必须逐条入账**：`annot_check.py` 退出码 `2` 不等于通过质量门。以下状态必须在事件/案例中逐条记录
-（被降级项 + 支持证据 + 判定人）：`NONCANONICAL_START_REVIEW`、`PARTIAL_CDS_5P`、`UNDETERMINED_TRNA`、
-`OVERLAP_LONG`、`OVERLAP_ACCEPTED`、`ORIENTATION`、以及所有由 `--allow-atypical` 降级的基因集差异。
-
-**决定级别必须写明**：每条异常除 `status`/`confidence`/`reads_support` 外，还要在 `claim` 或事件里注明
-由谁决定（`AUTO` / `ASSIST` / `EXPERT`，见 `diagnostic-decision-tree.md` §4）。`EXPERT` 级事项
-（真实基因丢失、重排/新结构、环化认定、NUMT 来源归属、"组装是否可用"）未获人工确认时**保持 `UNRESOLVED`**，
-不得因为 AI 自己觉得证据够了就标 `RESOLVED`。
-
-**停止条件（四类，必须给出理由）**：
-
-- **Stop A 关键输入缺失**（无 reads / 无参考 / 无核或竞争参考）→ 该结论 `UNRESOLVED` + `not_assessable`，
-  并写明"缺哪一项输入才能推进"；
-- **Stop B 边际收益为零**（已有证据组合决定了结论，再跑同类工具不会改变置信档位）→ 停止并列出已排除的解释；
-- **Stop C 无法判别**（竞争解释需要不存在的数据才能区分）→ `UNRESOLVED` + 写明"最少还需什么证据"；
-- **Stop D 低功效阴性**（观测区覆盖过低，阴性结果不具判别力）→ 把阴性结果记为**弱证据**，不作独立结论
-  （阴性证据强度表见 `evidence-standard.md` §3.2）。
-
-不要为了收尾而猜测；也不要把"还没跑完所有工具"当成继续的理由。
+`case-validate` 只检查部分格式。`case-report` 生成草稿，交付前按
+[conclusion-report.md](conclusion-report.md) 补齐科学内容并复核分类。
 
 ## VERIFY
 
-- 修复必须通过**修复前定义的**验收检查（否则等于事后找理由）；
-- 区分三类修改所需证据：注释校正 / 单碱基修改 / 结构连接；
-- 修改后的 FASTA 与注释**分别保存**，原件不动；`annot_check.py` 的退出码 `0`
-  （或退出码 `2` 且每条待核查项已逐条入账）作为注释侧验收；`--require-circular` 只做
-  `CIRCULAR_DECLARATION_CHECK`，**不**构成物理环化证据。
+用修复前定义的验收标准分别检查注释、碱基或结构修改，不能用候选来源证明候选正确。
+注释侧返回 0，或返回 2 且待核查项已按证据逐条处理，均不自动验证 reads/结构。
+每个新增接缝和尾首闭合另需证据，拓扑声明不替代物理验证。
 
 ## LEARN
 
-- 写入成功、失败与未解决案例（`case-report`），说明新案例是**支持还是挑战**既有 lesson；
-- **AI 自己重复提出同一解释不构成可信度提升**（频次不是证据）；
-- 政策边界见 `learning-policy.md`。
-
-## 低成本检查速查（按需，不是固定流水线）
-
-| 异常 | 先做（低成本） | 升级检查（需更多数据） |
-|---|---|---|
-| 基因缺失 | 名称规范化、全长同源检索、邻域与跨环位置复核 | 候选 contig、GFA、独立注释；必要时 reads |
-| 内部 stop / 移码 | 按类群密码表重译原始坐标、同源蛋白比对 | 若怀疑碱基错误 → 含**竞争参考**的 reads pileup |
-| tRNA 异常 | 反密码子、专用结构模型、近缘同源与邻域 | 分歧时复核序列、局部 reads（若可用）与文献 |
-| rRNA 边界异常 | 同源保守区、相邻基因、参考注释准确性 | 必要时结构/转录证据；**不得只按长度改边界** |
-| 接缝/控制区/重排 | 多条类群适当参考、端部唯一重叠、结构图 | 唯一锚定的接缝 reads、pair/long reads、竞争结构检查 |
-| 覆盖异常 / 疑似 NUMT | MAPQ 分布、soft-clip、异常 mate、局部重复 | 竞争性比对到核与线粒体候选；**核组装缺失时须注明不能完全排除 NUMT** |
-
-## 相关文件
-
-- 入口路由（我有什么数据/我被什么现象叫来）：`START_HERE.md`
-- 分流、优先级、停止条件、参考等级、最小证据集、AI/人工边界：`diagnostic-decision-tree.md`
-- 结论层与报告模板（事实/结论/无证据声明/下一步）：`conclusion-report.md`
-- 证据等级、`confidence`、竞争参考与阴性证据强度：`evidence-standard.md`
-- 注释侧硬阈值与 tRNA 缺失分级：`annotation_quality.md`
-- 顺序与坐标约定：`standard_gene_order.md`
-- 工具输入/产出与局限：`tool-catalog.md`；环境：`tool_check.md`
-- 经验晋升、正常案例与共享边界：`learning-policy.md`
-- 实现约束（schema/解析/退出码/原子写入）：`developer-contract.md`
+任务报告可记录成功、失败和未解决事项。获准后才把案例纳入跨任务经验库、提出 lesson，
+并说明它支持还是挑战既有经验。重复判断不提高可信度，推广和共享见经验政策。

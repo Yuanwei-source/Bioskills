@@ -1,6 +1,6 @@
 # 注释质量标准
 
-> **执行者**：`scripts/annot_check.py`。本文标注"代码"的条目由它执行，标注"人工"的必须人工判断。
+> **执行者**：`scripts/annot_check.py`。代码检测项与证据解释分开；复核规则见决策树 §4。
 > **证据要求**见 `evidence-standard.md`；顺序与坐标约定见 `standard_gene_order.md`。
 
 ## 0. 三类判据必须分开陈述
@@ -11,7 +11,7 @@
 |---|---|---|
 | (a) 一般生物学预期 | 典型后生动物 13 CDS + 22 tRNA + 2 rRNA；昆虫近祖基因排列 | 有类群例外，须按类群文献确认 |
 | (b) NCBI 提交审查要求 | 要求提供基因/CDS 等注释，差异需向策展人说明；无统一的 bp 阈值 | 提交合规性，不是判定样本真假的标准 |
-| (c) 本工具的工程预警阈值 | `>8bp` 重叠、tRNA `60–75bp`、rrnL `1100–1500` / rrnS `600–850`、正链 CDS `9+` | 本工具默认值，**不是领域公理**，可显式放宽 |
+| (c) 本工具的工程预警阈值 | `>8bp` 重叠、tRNA `60–75bp`、rrnL `1100–1500` / rrnS `600–850`、正链 CDS `9+` | 当前默认值，**不是领域公理**；仅有对应参数的检查可调整 |
 
 NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS 与 tRNA 通常很少重叠超过几个核苷酸"；
 它**没有**规定 `8 bp` 这个错误阈值，也**没有**把"22 个 tRNA"写成对所有动物的硬性要求。
@@ -22,12 +22,19 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 | 项目 | 为什么必须 | 记录位置 |
 |---|---|---|
 | 类群（目/科，尽量到属） | 基因集、密码表、tRNA 结构、排列都可能类群特异 | `case.json` → `taxon` |
-| 遗传密码表 `transl_table` | 后生动物线粒体多用 5；用错表会造出**假内部终止** | 命令参数 + 事件记录 |
+| 遗传密码表 `transl_table` | 按具体类群确认，不能默认所有动物用表 5；用错表会产生假内部终止 | 命令参数 + 事件记录 |
 | 组装状态 | 完整环 / 部分 / 多 contig；决定"缺失"是注释问题还是序列问题 | `case.json` → `inputs` |
 | 注释来源与版本 | MITOS2 / MitoFinder / 手工；误差方向不同 | 事件 `tool_version` |
 
 非典型类群：`annot_check.py --allow-atypical "<理由>"` 把**基因集数量与身份**差异从 ERROR 降为待核查，
-并要求逐项确认。它不是万能开关 —— **不放松**起始密码子、重叠、tRNA/rRNA 长度与链分布检查。
+并要求逐项确认。它不放松起始密码子、重叠、tRNA/rRNA 长度与链分布检查。
+
+**昆虫背景预警**：`9+/4−` 链分布和本文长度区间不是全动物标准。当前
+`--taxon` 不会自动切换这些阈值，也没有完整的按类群配置接口。
+对非昆虫或已知例外，保留原始警告，并在解释层记录不适用的理由与来源；不能改输入迎合阈值。
+遗传密码表按 [NCBI Genetic Codes](https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi)
+核对类群（例如脊椎动物表 2、许多无脊椎动物表 5，另有其他类群用表）。
+
 
 ## 2. CDS
 
@@ -36,34 +43,11 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
    （partial 只看 location，见下条）。
 2. 逐条记录：起始密码子、终止密码子（完整 / 不完整 `T`/`TA`）、内部终止数、同源蛋白覆盖度、边界证据。
 3. **内部终止必须解释**，排查顺序：密码表选错 → 边界/阅读框错误 → 碱基错误（测序或组装）→ 真实生物学例外。
-   - `/transl_except` **分三层，存在不等于豁免**：
-     **① 语法层**：代码按 CDS 转录顺序建立每个密码子的**精确基因组位置集合**；整个 qualifier 必须被
-     **完整消费**（一个或多个 `(pos:...,aa:...)`），语法不完整就记 `TRANSL_EXCEPT_UNPARSED` 并**整条作废，
-     不沿用合法前缀**（尾随逗号、尾随损坏文本、缺 `pos:` token、模糊位置、括号不配对都属此类）。
-     `pos` 支持 `a..b`、`complement(a..b)`、`join(..)`/`order(..)`（密码子可跨 `join()` 边界）；
-     同一 `pos` 内**不同链方向的片段混用直接拒绝**（整段位置不得由 OR 合并成单链）。
-     `aa` 须是合法三字母代码且**不是 `TERM`**；`pos` 方向须与 CDS 一致（**负链 CDS 必须 `pos:complement(a..b)`**，
-     正链不得写 `complement`）；位置集合必须**恰好**等于某个真实内部终止密码子。通过只记
-     `TRANSL_EXCEPT_MATCHED`（位置/读框事实），**MATCHED 本身不等于已接受**。
-     **② 生物学层**：语法匹配后还必须有审计证据才能接受。证据来自 `--exception-registry` 的
-     `transl_except` 条目，键为 `gene + codon + amino_acid`，且必须满足三个 fail-closed 约束：
-     （a）**样本绑定**：必须显式给出 `--taxon` 并与记录 `taxon` 一致 —— 未提供 `--taxon` 时无法把记录绑定到本样本，
-     **不得**升为已验证；
-     （b）**位点绑定**：记录必须说明它覆盖**哪个** stop —— 给 `codon_index`（CDS 转录顺序上的 1-based 密码子序号）
-     或 `pos`（该密码子的基因组位置，如 `10..12`）之一；只有**显式** `scope="gene_wide"` 的记录才允许复用多个位点。
-     不绑定位点的记录在**加载时**受控失败（否则一条记录会静默变成基因范围的重编码规则）；
-     （c）**字段完整且类型正确**：`transl_table`（正整数，须等于 `--table`）、`source`、`rationale` 必须为非空字符串；
-     数组/对象/整数等错误 JSON 类型在**加载时**受控失败（`str(value)` 非空不等于已审计）。
-     三者均满足才记 `TRANSL_EXCEPT_VALIDATED`（并输出 `scope=`）并扣除该项。
-     **不引入全局密码子→氨基酸重编码表**：密码子含义随类群与密码表变化，把“合法 INSDC token”当成
-     “已验证例外”会把类群特异的例外伪装成普遍规律。因此 `TAA -> Gln` 这类任意声明即使位置匹配，
-     也只能得到 `TRANSL_EXCEPT_DECLARED_UNVERIFIED`（REVIEW），**内部终止仍保留 ERROR**。
-     **③ 结果层**：因此**一条声明不能吸收两个内部终止**；一条未绑定该位点的记录也不能验证别处的同类 stop；
-     未验证、未解释的内部终止仍是 ERROR。
-     registry 的最小 transl_except 记录：
-     `{"gene":"cox1","codon":"TAA","amino_acid":"Trp","pos":"10..12",`
-     `"transl_table":5,"taxon":"Lepidoptera","source":"DOI ...","rationale":"..."}`
-     （或用 `"codon_index":4`，或 `"scope":"gene_wide"` 且不给位点）。
+   - `/transl_except` 的位置、读框与链必须对应真实内部终止；语法匹配只记
+     `TRANSL_EXCEPT_MATCHED`，不能作为接受依据。还需已审计 registry 绑定类群、
+     位点（或显式 gene_wide）、密码表与来源/理由，才可记 `TRANSL_EXCEPT_VALIDATED`。
+     未验证声明不消除内部终止错误。参数格式、最小记录和解析约束见
+     [developer-contract.md](developer-contract.md) §8。
    - `/transl_table` 逐条与 `--table` 比对，不一致记 `TABLE_CONFLICT`（代码按 `--table` 翻译）。
    - 不允许只改结论文字。
 4. **非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不再被无条件判错：
@@ -73,11 +57,9 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
      未引用已审计记录时额外输出 `EXCEPTION_NOT_REGISTERED`，**不得**把它当成已验证结论。
    - **不得**为了让检查通过而伪造 5' 端缺失、随意改 `/codon_start` 或改碱基。
 5. **partial 来自 GenBank location，不来自 `/codon_start`**：
-   - 代码直接读 Biopython 的 `BeforePosition`/`AfterPosition` **位置对象**（不解析 location 字符串），
-     按链方向解释生物学的 5'/3' 端；**负链的 5' 端在高坐标**，跨原点 `join()` 的各段按转录顺序排列；
-     位置对象**始终优先于**字符串兜底（仅当 parts 完全不带 fuzzy 信息时才用字符串），
-     两者矛盾时以对象为准**并报** `PARTIAL_SOURCE_CONFLICT`，不静默取值；
-   - `<1..N` → `PARTIAL_CDS_5P`（不检查起始密码子）；`N..>M` → `PARTIAL_CDS_3P`（**不要求**终止密码子）；
+   - 按链方向解释生物学 5'/3' 端；负链的 5' 端在高坐标，跨原点按分段转录顺序判断。
+     模糊位置对象与字符串兜底的解析约束见开发契约 §8。
+   - 正链示例：`<1..N` → `PARTIAL_CDS_5P`（不检查起始密码子）；`N..>M` → `PARTIAL_CDS_3P`（**不要求**终止密码子）；
      两端同时 partial 时两者都记；
    - `location` 标注为**完整**却设 `/codon_start=2` → `CODON_START_CONFLICT`（注释自相矛盾），需先确认 5' 端是否真的缺失；
    - 这是与“非典型起始密码子”**不同**的问题，不要混为一谈。
@@ -160,8 +142,8 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 | 基因身份 | 缺失 / 非标准名 / 重复（`nad*`↔`nd*`、`cob`↔`cytb`、`coi/ii/iii`↔`cox1/2/3`、`12S/16S`↔`rrnS/rrnL` 已归一） | ERROR（`--allow-atypical` → REVIEW） |
 | tRNA 类型 | 裸名 `trnL`/`trnS` 或反密码子与裸名不一致 | REVIEW（`UNDETERMINED_TRNA`） |
 | 起始密码子 | 不在密码表合法起始集 | ERROR（`--tolerate-start "基因:密码子"` + `--exception-registry` → REVIEW） |
-| 5' partial | location 带 `<` | INFO（不检查起始密码子） |
-| 3' partial | location 带 `>` | INFO（不要求终止密码子） |
+| 5' partial | 按链方向解释 location 的模糊端点（正链示例 `<`） | INFO（不检查起始密码子） |
+| 3' partial | 按链方向解释 location 的模糊端点（正链示例 `>`） | INFO（不要求终止密码子） |
 | codon_start 矛盾 | location 完整却设 `/codon_start=2/3` | REVIEW（`CODON_START_CONFLICT`） |
 | 遗传密码表 | `/transl_table` 与 `--table` 不一致 | REVIEW（`TABLE_CONFLICT`） |
 | 内部终止 | 翻译含内部 `*` 且未被 `transl_except` 对应 | ERROR（对应时记 `TRANSL_EXCEPT_MATCHED`） |
@@ -196,7 +178,7 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
   `source`/`rationale` 非空）才能记 `TRANSL_EXCEPT_VALIDATED`——**生物学上是否成立仍需类群文献支持**。
 
 >(d) 层实现约束（selector 归一化后为空即加载失败、`null` 拒绝、密码子统一规则、`(gene, codon)` 唯一性、
->位点未绑定即失败）**不是生物学判据**，已集中到 `developer-contract.md` §2，本文件不再重复。
+>位点未绑定即失败）见 [developer-contract.md](developer-contract.md) §2/§8。
 
 | 类群 | 已报告的特殊情况 | 对判据的意义 |
 |---|---|---|
@@ -208,6 +190,13 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 | 六足总纲之外 | 链分布、长度区间、排列均可能不同 | (c) 层阈值不得跨类群外推 |
 
 ## 10. 交叉引用与来源
+
+- 密码表：[NCBI Genetic Codes](https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi)，
+  按具体类群选择，核对日期 2026-09-26。
+- 鳞翅目实例：[H. cunea mitogenome](https://pmc.ncbi.nlm.nih.gov/articles/PMC2850540/)，
+  记录排列、tRNA 结构及候选 CGA 起始；作者明确 CGA 是缺少该物种 mRNA 证据下的暂定注释。
+  文献中的候选起始不能被写成已实验验证，也不能外推为全目统一规则。
+
 
 - 证据门槛、`confidence` 判据、`reads_support` 与**阴性证据强度**：`evidence-standard.md` §1–§3
 - 分流（组装 vs 注释）、优先级、停止条件、参考等级、最小证据集：`diagnostic-decision-tree.md`

@@ -18,10 +18,11 @@
 
 ## 2. 最小依赖原则（不要过度安装）
 
-- 只做**序列体检 / 注释质检 / 基因定位**等诊断时，**不需要**先安装完整 MITOS2；
-  需要 `BioPython`；`blastn`/`makeblastdb` 用于定位与环化候选。
-- `check_env.sh` 的**核心工具缺失**才阻断通用流程；组装/注释工具缺失只影响对应步骤，
-  应在报告中说明该步骤未执行，而不是伪造结论。
+- 只检查当前工具实际依赖：序列体检/注释质检通常需要 Python 与 Biopython，
+  基因定位另需 BLAST，BAM 分析需 samtools；不要求先安装完整 MITOS2。
+- `check_env.sh` 是全环境盘点，不是每次诊断的前置质量门。它的“核心”是脚本分组，
+  不代表所有任务都需要这些工具。缺 bwa 不阻断仅 FASTA/GB 检查；缺 samtools 才阻断依赖它的 BAM 检查。
+- 在报告中说明相关步骤未执行及原因，继续不依赖缺失工具的工作。
 
 ## 3. 自检
 
@@ -46,7 +47,7 @@ bash scripts/check_env.sh
 |---|---|
 | MITOS2 报 `no such directory <path>` | 先看路径指到哪里：指向 **`--outdir`** 时说明输出目录不存在——`run_mitos2.sh` 现在会自己 `mkdir -p`，绕过它直接调 MITOS2 时需自己建；只有路径指向参考库时才设置 `MITOS2_REFDIR`（目录**尾斜杠**）与 `MITOS2_REFSEQVER` |
 | MITOS2 报 `cmsearch` / `plotprot.R` / `RNAplot` / `drawmitos` 找不到 | 在 `MITOS2_EXTRA_PATH` 补齐依赖 PATH；重装后需修复 `drawmitos` wrapper |
-| MitoFinder 报 `install.sh.ok` / `Mitofinder.config` 缺失 | 手动创建/复制对应文件，路径加**尾斜杠** |
+| MitoFinder 报 `install.sh.ok` / `Mitofinder.config` 缺失 | 核查安装步骤、版本与实际依赖；按该版本安装说明恢复配置，不靠创建成功标记伪装安装完成 |
 | `depth_analysis.py` 报 BAM 相关错误 | 确认 BAM 已 `samtools sort` + `samtools index`，且参考名与 BAM 头一致 |
 | `circularize.py` 报"最高分候选不唯一" | 属**预期保护**：不能凭首个候选猜方向；补充 scaffold / 独立证据或标 `UNRESOLVED` |
 | 环形图报"需要 BioPython + matplotlib" | 改 `PLOT_PY` 指向同时含这两个库的 Python |
@@ -54,6 +55,6 @@ bash scripts/check_env.sh
 
 ## 5. 迁移与复现
 
-- 换机时先复制 `config/env.sh`，再跑 `check_env.sh`；
+- 换机时以 `config/env.sh` 为模板校正新机路径，再按需要跑 `check_env.sh`；
 - MITOS2 数据库目录可整体同步（如 `rsync` 旧机该目录）；
 - 报告里写清**哪个步骤因缺依赖未执行**，这比给出未验证结论更重要。

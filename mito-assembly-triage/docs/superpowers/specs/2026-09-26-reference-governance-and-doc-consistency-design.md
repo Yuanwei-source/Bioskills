@@ -1,48 +1,55 @@
-# Reference governance and documentation consistency
+# 诊断文档一致性与分层修订设计
 
-## Goal
+## 目标与范围
 
-Make the diagnostic documentation internally consistent and keep its claims aligned
-with the current command-line interfaces. The change must preserve the existing
-scientific safeguards and must not add analysis features, loosen evidence thresholds,
-or alter user data.
+修订 `SKILL.md` 和 `references/*.md`，统一决策规则、减少重复、如实说明现有 CLI
+的能力。保留原始数据保护、样本证据要求和上传授权边界。本轮不修改分析脚本或 schema；
+文档会改变代理的工作指引，但不声称修复了程序行为。
 
-## Canonical ownership
+## 规则归属
 
-`reference-policy.md` and `scripts/reference_registry.py` own the L1--L5
-reference-purpose matrix. Other documents may describe how to choose a level, but
-must link to that matrix rather than restating a divergent version.
+- `SKILL.md`：适用范围、关键边界、简要流程和按需加载入口。
+- `START_HERE.md`：按输入与现象选路线，条件式首次检查。
+- `diagnostic-playbook.md`：唯一详细诊断循环和记录方法。
+- `diagnostic-decision-tree.md`：分流、优先级、停止条件和人工复核关系。
+- `evidence-standard.md`：最低证据、置信度、reads 支持与阴性结果。
+- `reference-policy.md`：唯一文档版 L1–L5 用途矩阵，与登记脚本保持一致。
+- `annotation_quality.md` / `standard_gene_order.md`：生物学解释与类群适用范围。
+- `conclusion-report.md`：科学报告要求、简版回答与生成器限制。
+- `tool-catalog.md` / `tool_check.md`：工具选择、输入输出、退出码及按任务检查依赖。
+- `learning-policy.md`：任务记录、跨任务经验、共享边界与经验推广限制。
+- `developer-contract.md`：解析细节、schema、测试映射及实现欠缺。
 
-`evidence-standard.md` owns confidence semantics. It will distinguish an
-evidence-supported candidate claim from a claim that requires unavailable sample
-reads for direct verification. Missing reads therefore limits only the latter.
+## 必须解决的冲突
 
-`conclusion-report.md` describes the report the current `case-report` command can
-produce: claim, status, confidence, optional reads support, and event links.
-Richer fields remain recommended narrative content until the schema and CLI support
-them. Scientific status, expert review, and permission to adopt/publish a result are
-kept conceptually separate.
+1. 报告中的支持/反对证据、未测项、适用范围与局限仍为必需内容。CLI 未承载的内容
+   通过现有事件与报告正文表达，不能降为可有可无，也不宣称 schema 已强制校验。
+2. 明示 `case-report` 当前按状态归类，不能据此证明有无证据；`UNRESOLVED` 可有
+   部分支持，`NO_CHANGE` 不代表质量通过。自动报告是草稿，使用前必须复核分类、补齐
+   证据与具体下一步。记录实现缺陷，本轮不扩展 CLI。
+3. 科学状态由证据决定。证据充分但尚待专家审阅，不自动改为 `UNRESOLVED`；复核
+   级别、复核状态和实际判定人分别写入事件及报告。采纳/发布权限独立于科学判定。
+4. 当前任务的 case、日志和报告可在工作目录保存；纳入跨任务经验库需授权，向外部
+   发送样本或案例需明确授权。已有授权在其范围内持续有效。示例避免隐式写入长期库。
+5. 没有必要 reads 时，样本碱基真实性/物理闭环的验证结论不可评估；候选与间接证据
+   的相容性是另一条具体命题，按其证据评估。缺失输入不降低无关的注释结论。
+6. 参考登记用途不是证据充分性的保证。远缘参考筛查不得被包装成身份、边界或结构
+   已证实；等级限制只在一处维护，其他文件链接过去。
 
-## Documentation changes
+## 精简与措辞
 
-- Replace the generic external-query authorization sentence with the actual boundary:
-  public-reference download is allowed and recorded; uploading a sample or sharing
-  data requires explicit authorization.
-- State that persistent case/lesson storage requires user authorization, while a
-  task-local report may be generated in the working directory.
-- Replace all default `--table 5` examples with a required, taxon-confirmed table
-  placeholder; label insect-specific expectations as an insect profile.
-- Make `START_HERE.md` a router and conditional first-pass checklist. Remove its
-  duplicated reference-level policy and clarify links that previously used an
-  unqualified section number.
-- Correct wording that treats low coverage plus soft clips as a normal state. It is
-  an explanation to test, not a conclusion.
-- Replace non-retrievable literature placeholders in gene-order guidance with a
-  request to supply a taxon-specific source before making a biological claim.
+- 通用示例显式要求类群确认的密码表；限定类群且已确认表 5 的例子可以保留。
+- 昆虫链分布与长度默认值标为工程预警；说明当前工具不会自动按类群切换阈值。
+- 解析器约束与回归历史迁至开发契约；工具目录保留必要输入、用途、限制和退出码。
+- 简单问答可简短作答，完整报告仍保留证据边界；缺少无关工具不阻断当前诊断。
+- 低覆盖和 soft-clip 保留多种竞争解释，不能直接判正常或错误。
+- 经验工具的不同类群计数是当前工程限制，不等同于科学独立性。
+- 补充可核查的具体来源；无法核实的说法删除或标明尚未验证，不能转嫁为用户必做步骤。
 
-## Verification
+## 验收
 
-Run the repository test suite because no behavior is intended to change. Use
-repository-wide searches to confirm there is one reference-purpose matrix, no
-unqualified default table-5 command remains, and report promises match the CLI.
-Review the rendered Markdown links and heading structure.
+检查 Markdown 链接、章节引用、旧规则残留和 CLI/schema 对照；运行 skill 基础校验。
+按六个场景走读：仅 FASTA、无 reads 的注释纠错、缺少无关工具、远缘参考选择、
+证据充分但待人工复核、任务记录但未授权经验积累。逐项检查是否有重复确认或证据越界。
+针对报告、参考和案例接口运行现有测试，测试通过只说明程序回归未发现问题，不代表
+科学推理已被验证。由独立审查复核实际 diff 与本设计的符合性。

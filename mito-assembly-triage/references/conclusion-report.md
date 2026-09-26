@@ -1,109 +1,81 @@
-# 结论层与报告（你改变了什么）
+# 结论与报告
 
-> 异常清单（`anomalies[]`）是**过程记录**，不是结论。专家/合作者/审稿人真正需要的是：
-> **"这个结果改变了什么？"** 本文件定义结论层、证据矩阵与固定输出模板。
-> 结论的证据门槛见 `evidence-standard.md`；分流见 `diagnostic-decision-tree.md`。
+> 结论的证据门槛由 [evidence-standard.md](evidence-standard.md) 定义。
+> 本文件区分科学报告要求与现有 `case-report` 的实际能力。
 
-## 1. 为什么要有结论层
+## 1. 按具体命题报告
 
-一个案例里可以同时有"零覆盖缺口""缺 trnI""nad2 读框崩坏""末端低覆盖"四条异常，
-但它们对读者的意义是分层级的：
+每条结论应能独立引用、独立降级。不要用案例级 `decision` 替代逐条判断。
+“未修改”“未解决”“缺少证据”“证据反对”含义不同：
+`NO_CHANGE` 不代表质量通过；`UNRESOLVED` 可以有部分支持或相互冲突的证据。
 
-| 异常（过程） | 结论（结果） |
+| 结论类型（报告标签） | 命题与边界 |
 |---|---|
-| 64 bp 零覆盖缺口、末端 0.1× + soft-clip | **组装不完整**（`assembly_quality`） |
-| 缺 tRNA、基因碎片化、内部 stop | **注释不可靠**（`annotation_quality`） |
-| 高深度局部区块 | **来源未定**（`biological_interpretation`，`UNRESOLVED`） |
-| BLAST 高 identity | **身份线索**，不是物种鉴定（`gene_identity`） |
+| `assembly_quality` | 区分文件中的缺口、候选结构相容性与样本结构真实性；缺 reads 对各命题的限制见证据标准 §2.1 |
+| `annotation_quality` | 注释是否自洽、基因集与边界是否有支持；不自动证明样本序列正确 |
+| `gene_identity` | 某基因/片段的身份与边界；参考用途限制见 [reference-policy.md](reference-policy.md) §5 |
+| `sequence_accuracy` | 具体碱基是否有样本证据、修改是否通过验证 |
+| `biological_interpretation` | 丢失、重排、来源等解释；必须说明技术原因排查与类群适用范围 |
 
-结论必须能被单独引用、单独降级；**不允许**用案例级 `decision` 代替逐条结论。
+跨类型命题分开写，例如“当前注释未检出某 tRNA”与“该样本真实丢失此 tRNA”。
 
-## 2. 结论类型（`conclusion_type`）
+## 2. 每条结论必需的内容
 
-| 类型 | 结论在说什么 | 典型证据 | 天然上限 |
+| 内容 | 记录方式与要求 |
+|---|---|
+| `claim`、`status`、`confidence` | 用 `case-anomaly` 写入 `anomalies[]`，按具体命题判定 |
+| `reads_support` | CLI 可选字段；没有评估时明确记 `NOT_ASSESSED` |
+| 支持证据、反对证据、未测项 | 必须说明，不能因 CLI 缺少专用参数而省略；写入相关事件的 result 与报告正文 |
+| 适用范围、局限、结论类型 | 写入事件与报告；没有已知反证时写“未发现”，不能写成“已排除一切解释” |
+| 证据指针 | 关联真实事件 action、产物路径及必要坐标；同名事件多次出现时用不同 action 或明确产物区分 |
+| 复核级别、复核状态、判定人 | 分别说明，见 [diagnostic-decision-tree.md](diagnostic-decision-tree.md) §4；`EXPERT` 是级别，不是人名 |
+
+这些是科学报告的要求，**并非当前 schema 全部强制校验的字段**。
+`conclusion_type`、`evidence_for/against`、`not_tested`、`scope/limitations` 和复核信息
+目前没有对应的 `case-anomaly` 参数。可以在 `case-event --result` 中按上述标签记录，
+再引用该事件；不要虚构 CLI 参数，也不要只把补充内容留在会被重新生成覆盖的 `case.md` 中。
+
+## 3. 证据矩阵
+
+完整报告可用一张表连接事实与结论。每行都应能回溯到事件和原始产物。
+
+| 问题 | 关键事实 | 可报告结论 | 限制/下一步 |
 |---|---|---|---|
-| `assembly_quality` | 组装是否完整/是否可信（缺口、接缝、末端、重复） | 覆盖剖面、跨接缝 reads、端部唯一性 | 无 reads → `not_assessable` |
-| `annotation_quality` | 注释是否自洽、基因集是否可靠 | `annot_check.py`、重译、同源、RNA 结构 | 注释自洽 ≠ 序列正确 |
-| `gene_identity` | 某个基因/片段的身份与边界 | 同源覆盖、反密码子、邻域、参考等级 | 参考距离限制（决策树 §5） |
-| `sequence_accuracy` | 具体碱基/片段是否正确 | reads pileup 四项（深度/MAPQ/碱基质量/链向） | 无 reads → 不得声称已校正 |
-| `biological_interpretation` | 生物学解释（丢失、重排、退化、来源） | 先排除技术与注释原因 + 类群文献 | 技术原因未排除 → 不得作为结论 |
+| 是否有 reads 支持尾首连接 | 当前检查未检出跨接 reads，末端覆盖很低 | 本次未检出支持，物理闭环仍未解决 | 阴性功效不足，不能推出两端不相接 |
+| 是否真实缺 tRNA | 单工具未检出 | 当前注释未检出 | 补结构、同源与邻域检查，不能直接写真实丢失 |
+| 是否完成样本碱基验证 | 无 reads | 验证不可评估 | 可单独报告同源或翻译相容性 |
 
-一条结论**只能属于一个类型**；跨类型时拆成两条（例如"该区无 reads 支持"(assembly) 与
-"该基因真实缺失"(biological) 是两条，证据不同）。
+不要由“覆盖异常”直接推出“不完整”，也不要由没有同源命中直接推出“无污染”。
 
-## 3. 结论对象的必备字段
+## 4. 输出按任务规模组织
 
-每条结论至少包含（与 `SKILL.md` 的"每项结论至少包含"一致）：
+简单问答可用短段落说明结论、关键依据和相关限制，不强制套四段。
+完整诊断报告应包含：
 
-| 字段 | 含义 | 常见错误 |
-|---|---|---|
-| `conclusion_type` | 上表的类型 | 把 `annotation_quality` 写成 `biological_interpretation` |
-| `claim` | 一句话结论（可被反驳的陈述） | 写成"需要进一步分析"这类不可反驳句 |
-| `status` | `RESOLVED` / `NO_CHANGE` / `UNRESOLVED` | 用 `RESOLVED` 覆盖仍存疑的部分 |
-| `confidence` | `high`/`moderate`/`low`/`not_assessable`（门槛见 `evidence-standard.md` §2） | 一个全局 `high` 覆盖全部结论 |
-| `evidence_for` / `evidence_against` / `not_tested` | 支持/反对/未测 | 只写支持，把"没测"写成"没有" |
-| `scope` / `limitations` | 适用类群/数据类型 + 局限 | 把单样本结论写成类群规律 |
-| `decided_by` | `AUTO` / `ASSIST` / `EXPERT`（决策树 §4） | `EXPERT` 级事项无人确认却标 `RESOLVED` |
-| 证据指针 | 引用**真实存在**的事件 action / 产物路径（`case-anomaly --event-action`） | 结论悬空，无法回溯到工具输出 |
+1. 观察事实：直接测得的数值、坐标、工具输出与可追溯来源。
+2. 逐条结论：状态、置信度、支持与反对证据、适用范围与局限。
+3. 未解决解释与不能作出的推断：区分尚有部分支持、证据冲突、未测与已被反驳。
+4. 下一步：通常 1–3 项最有判别力的检查，说明输入及可改变的具体结论；无需继续时给停止理由。
 
-`case-validate` 只校验**记录格式**；`decided_by=EXPERT` 的结论还需要人工确认记录，格式合法不构成科学验收。
+内容可合并呈现，但不能省略会改变读者判断的限制。无需列出与任务无关的假想声明。
+正常案例也说明检查覆盖了哪些项、哪些未测，避免泛称“整个样本正常”。
 
-## 4. 证据矩阵（报告首页）
+## 5. 当前生成器的能力与限制
 
-把散落在事件与假设里的证据压成一张表——这是专家读报告时最先看的部分：
+`python3 tools/experience.py case-report <任务案例目录>` 从 case 与事件生成 `case.md`，
+包含事件、逐异常矩阵、按状态分组的结论、通用下一步提示、案例汇总、假设、参考和证据边界。
 
-| 问题 | 关键证据 | 结论 | 限制 |
-|---|---|---|---|
-| 是否完整 mt genome | 覆盖剖面（零覆盖缺口、末端低覆盖） | 否 | 末端覆盖过低，阴性判别力弱 |
-| 是否污染 | 同源检索 | 弱支持"无外源" | 无核参考，不能排除 NUMT |
-| 是否真实缺 tRNA | 多工具 + 结构 + 同源 | 未检出（等级 B） | 工具灵敏度依赖 |
-| 是否环化 | 跨接缝 reads | 无支持证据 | 低覆盖使阴性功效低，不足以证明"不相接" |
+**该输出是草稿，不是科学验收结果。已知限制：**
 
-**规则**：矩阵中每一行的"结论"都必须能追溯到 §3 的结论对象；**限制**列不得为空——
-填不出限制，通常说明该结论还没到可报告的程度。
+- 当前把 `RESOLVED/NO_CHANGE` 放入“有证据支持”，把 `UNRESOLVED` 放入“无证据支持”。
+  这是实现的分类局限，不能据此判断实际证据是否存在或充分。
+- `case-anomaly` 仅在传入 `--event-action` 时检查事件存在；它允许不传证据链接。
+  即使有关联，也不检查该事件是否真的支持 claim。
+- 生成器不完整呈现 §2 的科学报告内容；其下一步提示没有自动选择具体实验。
+- `case-validate` 的通过不验证科学证据、人工复核或状态之间的业务一致性。
 
-## 5. 强制输出模板（AI 回答与报告统一结构）
+使用草稿交付前，依据原始事件重分结论，补齐证据、局限、复核信息与具体下一步。
+将补充依据留在事件链中；保留生成草稿，另存审阅后的报告（如 `report-reviewed.md`），
+引用同一 case 与事件，不建立另一套案例数据库。重新运行生成器会覆盖 `case.md`。
 
-任何最终回答/报告固定四段，顺序不变：
-
-```text
-1. 观察事实（Observed facts）
-   - 只写工具/数据直接产出的事实：数值、坐标、命令、退出码、文件 hash
-   - 每条事实标明来源（工具 + 命令 + 产物路径/事件 action）
-
-2. 有证据支持的结论（Supported conclusions）
-   - 每条：conclusion_type + claim + status + confidence + evidence_for/against + limitations
-   - 每条必须引用第 1 段中的事实（没有对应事实的结论不得出现在这一段）
-
-3. 无证据支持的声明（Unsupported claims）
-   - 明确列出被排除/被拒绝的推断（"不能排除 NUMT""不足以证明不相接"）
-   - 也列出本来想说但没有证据的假设 —— 这一段的目的是防止过度解释
-
-4. 下一步最小实验（Next minimum experiment）
-   - 最多 1–3 项，每项写明"能改变哪条结论/置信档位"，以及缺什么输入
-   - 若已到停止条件（决策树 §3），写"建议停止"并给出理由
-```
-
-**禁止**：把第 3 段省略；用频率、"通常/可能属于"、单工具结果把第 3 段的内容挪进第 2 段。
-
-## 6. 报告顺序与案例记录的映射
-
-- 报告顺序：**事实 → 证据 → 结论 → 限制 → 下一步**（与 §5 一致）。
-- 结论层是**派生物**，不是第二套数据格式：结论落在 `case.json` 的 `anomalies[]`
-  （`id`/`claim`/`status`/`confidence`/可选 `reads_support`）+ `events.jsonl` 的事件链上，
-  由 `tools/experience.py` 写入，不新建平行文件。
-- **`case-report` 已实现本契约**：`python3 tools/experience.py case-report <dir>` 生成的 `case.md` 依次包含
-  ① 观察事实（事件） ② **证据矩阵**（逐异常：claim/状态/置信/reads 支持/证据事件）
-  ③ 有证据支持的结论 ④ **无证据支持的声明** ⑤ 下一步最小实验 ⑥ 案例级汇总
-  ⑦ 假设与未测项 ⑧ 证据边界；没有逐异常记录时明写"尚无逐异常判定"，而不是静默省略。
-  用例：`tests/test_review_round_lesson_domain_and_report.py::CaseReportLayerTests`。
-- 任何结论在报告里都必须能反查到 case 记录（`--event-action` 指向真实事件）。
-- 正常样本（`case_type = normal_validation_case`）也要按同一结构写结论（"确认无异常"本身是一条结论，
-  且必须写明检查覆盖了哪些项、未覆盖哪些项）—— 见 `learning-policy.md` §2。
-
-## 7. 与其他文件的关系
-
-- 证据门槛 / `confidence` / `reads_support` / 阴性证据强度：`evidence-standard.md`
-- 分流、优先级、停止条件、参考等级、最小证据集：`diagnostic-decision-tree.md`
-- 注释判据：`annotation_quality.md`；坐标与顺序：`standard_gene_order.md`
-- 工具参数与退出码：`tool-catalog.md`；实现约束：`developer-contract.md`
+实现欠缺及后续修复要求见 [developer-contract.md](developer-contract.md) §7。

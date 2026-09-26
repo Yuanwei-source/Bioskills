@@ -1,16 +1,23 @@
 # 经验学习与共享政策
 
-> **原则**：案例事实可以自动保存与检索；**候选 lesson 不能自动修改 `SKILL.md` 或硬规则**。
-> 状态实现见 `tools/experience.py`；本地数据落在 `MITO_KNOWLEDGE_DIR`，不进 skill 安装目录。
+> 当前任务的案例与报告可按任务保存；跨任务经验积累需授权。
+> 候选 lesson 不能自动修改 `SKILL.md` 或硬规则。状态实现见 `tools/experience.py`。
 
 ## 1. 本地与派生分离
 
 | 层 | 位置 | 说明 |
 |---|---|---|
-| 本地案例（原始事实） | `$MITO_KNOWLEDGE_DIR/cases/<case>/case.json` + `events.jsonl` + `case.md` | 同一事实链的结构化/可读表示，可自动写入 |
+| 任务案例与报告 | 用户任务目录的 `case.json` + `events.jsonl` + `case.md`，审阅版报告引用同一事实链 | 属本次分析产物，可在授权任务内写入 |
+| 跨任务案例库 | `$MITO_KNOWLEDGE_DIR/cases/<case>/` | 纳入长期检索/学习前需用户授权 |
 | 派生经验（lesson） | `$MITO_KNOWLEDGE_DIR/lessons/candidates/`、`.../verified/` | 需审核，默认不共享 |
 | 公共同步缓存（隔离） | `$MITO_KNOWLEDGE_DIR/public/` | **只读入**，不覆盖本地案例，不执行远程内容 |
 | 原始测序数据 | 用户自己的存储 | **不进**知识库，也不进公共仓库；只记录路径与 SHA-256 |
+
+这一区分按用途，不按文件是否留在磁盘判断。仅做当前任务时，可设置
+`MITO_KNOWLEDGE_DIR="$PWD/work/knowledge"` 指向任务内目录；不设置时工具可能使用默认长期目录，
+执行前确认实际落点。获准使用某个长期库后，在授权范围内不重复确认。
+查询公开文献、下载公共参考可按任务执行；对外发送样本、私有元数据或分享案例需明确授权。
+本地存储授权不等于共享授权。输出不放入 skill 安装目录。
 
 ### 1.1 案例类型（`case_type`，必须记录）
 
@@ -20,7 +27,7 @@
 | `case_type` | 含义 | 提供的学习价值 |
 |---|---|---|
 | `abnormal_case` | 报告并诊断了异常（默认） | 发现能力（sensitivity） |
-| `normal_validation_case` | 经检查**未发现异常**，且已写明检查覆盖了哪些项、未覆盖哪些项 | **特异性的唯一来源**：防止把常见变异当异常 |
+| `normal_validation_case` | 经检查**未发现异常**，且已写明检查覆盖了哪些项、未覆盖哪些项 | 为评估误报与特异性提供必要对照；标签本身不证明真实阴性 |
 | `tool_failure_case` | 失败发生在**工具/环境**层面（格式故障、退出码 3、数据库缺失、权限不足） | 防止把工具故障记成生物学结论 |
 
 `normal_validation_case` **不是**"没跑出东西"：它要求跑完该结论的**最小充分证据集**
@@ -89,15 +96,16 @@ case.json (本地案例)
 
 - **默认 fail closed**：只有一个案例支持时 `generalization_scope = single_case`、`transferability = none`；
 - 只有**多个相互独立的类群/数据集**都支持时才能提高，且必须逐案列出 `supporting_case_ids`；
-- **同一案例不得重复计数**：支持案例的 `case_id` 必须两两不同（重复直接报错），
-  独立数 = “case_id 不同 **且** 记录的类群不同”的案例数；只有一方满足不算独立；
-- 同一实验室、同一物种、同一批数据的多个案例**不算**独立支持（去重规则见 §6.4）；
+- **同一案例不得重复计数**：支持案例的 `case_id` 必须两两不同（重复直接报错）。
+  当前代码将“case_id 不同且记录类群不同”作为推广门槛的工程计数；这不等于科学独立性。
+- 科学独立性需检查样本、数据来源、实验批次与推断机制的依赖；不同类群也可能共用偏差，
+  同种不同独立实验也可能提供有价值的复核。现有 CLI 仍采用上述保守计数，不能谎改类群绕过。
 - 反例存在时（`counterexample_case_ids` 非空）**不得**提高 `transferability`。
 
 落地：`propose-lesson --generalization-scope ... --transferability ... `
 `--supporting-case <dir>`（可重复）`--counterexample-case <dir>`（可重复）。
-**独立支持**的判定是保守的：只有“case_id 不同 **且** 类群不同”才算独立；
-未记录类群的案例不计数（“无法证明独立”不得四舍五入成“独立”），重复 `case_id` 直接报错。
+当前**工程计数**仅计“case_id 不同且类群不同”；未记录类群不计，重复 case_id 报错。
+代码尚未自动验证科学独立性，来源依赖需在事件、sources 与审核记录中说明。
 
 **公共同步/导入的 lesson 同样受约束**：`validate_public_lesson()` 对缺失的 `generalization_scope`/
 `transferability` 补齐为 `single_case`/`none`（而不是当成无限制），并拒绝非法枚举、
@@ -127,8 +135,9 @@ case.json (本地案例)
 
 1. 新经验升级必须跑**稳定回归案例** + **至少一个合适的反例**；
 2. **禁止**用出现频次、或同一 AI 的多次判断替代独立验证（"我自己又说了三遍"不是证据）；
-3. 数据库/参考更新时，把相关经验标记 `needs_review`，保留旧版本溯源与回滚能力；
+3. 数据库/参考更新时，在审核记录或说明中标注“需复核”，保留旧版本溯源与回滚能力；
+   `needs_review` 不是当前 lesson 的合法状态，不要作为 `--status` 传入；
 4. 重复案例先**去重**，再判断是否构成独立支持；
 5. **推广必须显式**：`generalization_scope` / `transferability` 默认 `single_case` / `none`；
-   提升它们要求多个独立类群案例，并在 `applicable_when` / `not_applicable_when` 中写明边界；
+   提升它们需满足 §3 的工程门槛并另核查科学独立性，在 `applicable_when` / `not_applicable_when` 中写明边界；
    典型错误：把"某昆虫 `nad6` 断裂"写成"昆虫 `nad6` 常断裂"。
