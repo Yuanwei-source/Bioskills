@@ -15,6 +15,15 @@ hash、产物路径和实际退出状态。参数以各工具 `--help` 为准，
 | reads 检查：`depth_analysis.py` | 排序并建索引 BAM + 匹配 FASTA；覆盖、soft-clip、碱基支持 | 单 mt 参考不排除 NUMT；callable 的工程检查不替代全部科学验收 | 0 正常 / 1 输入或 BAM 错误 / 2 低覆盖 |
 | 两 scaffold 候选：`circularize.py` | 两 FASTA、参考 GB；首次可无 BAM 生成候选，回贴后验证需 BAM；需 blastn/minimap2/samtools/Biopython | 只自动验证一个内部接缝，不验证尾首闭合；方向/顺序与参考冲突时拒绝 accept | 0 CANDIDATE_ACCEPTED / 2 REVIEW（含待回贴）/ 1 失败或接缝不足；0 也非物理闭环证明 |
 | COX1 线索：`cox1_id.py` | 本地确定 `--coords start,end`，片段 400–5000 bp；须有上传授权再传 `--allow-public-upload` | 向 NCBI 上传片段；不自动定位 COX1，identity/coverage 不等于物种鉴定 | 0 得判读 / 1 insufficient 或 no_match / 2 拒绝 / 3 网络或格式故障 |
+**HSP 坐标与数值边界（格式故障 = 退出码 3，不是 `no_match`）**：坐标**越界**（`query-from/to` 超出
+`query-len`、`hit-from/to` 超出 `Hit_len`）、`query-len`/`Hit_len` 声明为 `<= 0`、非有限 `bit-score`
+（`nan`/`inf`）、`align-len` 小于 query 跨度、以及 `*-strand`/`*-frame` 与坐标方向矛盾，都判为
+**格式故障**（退出码 3）——同一份回复内部自相矛盾时，其中任何 HSP 都不可信，不得降级成 `no_match`。
+长度字段**缺失**不报错，但会把 `ranges_checked=false` 与 `unchecked` 原因写进 `--output-json`，
+使"未校验"可见而不是默认正确。`identity == 0` 且 `align-len > 0` 属**弱到无用的命中**：记为 blocker
+（`zero_identity`）、不汇总 identity、不参与自动择优，但**不**退出 3，原始 HSP 始终保留在
+`--output-json` 中供人工核对。
+
 
 所有 Python 工具位于 `scripts/`。注释选项与例外接受条件见
 [annotation_quality.md](annotation_quality.md)；解析细节与测试见
