@@ -81,6 +81,7 @@ CI 固定安装 `jsonschema`，因此等价性测试在 CI 中真正执行而不
 | 两条校验路径等价 | `tests/test_evidence_contracts.py`、`tests/test_pr1_review_regressions.py` |
 | 工具链桥（MITOS2→GenBank、`run_mitos2` outdir、`check_env` 提示） | `tests/test_toolchain_fixes.py` |
 | 案例 CLI（`case-anomaly`、假设编号） | `tests/test_case_anomaly_cli.py` |
+| 案例类型与 lesson 范围/领域（复审核 R-1…R-8） | `tests/test_case_type_and_lesson_scope.py`、`tests/test_review_round_lesson_domain_and_report.py` |
 | 注释策略与类群例外 | `tests/test_annotation_policy.py` |
 | 数据与路径保护（未发表数据不进公共库） | `.gitignore` 规则 + `git check-ignore`/`git add -n` 人工核验（见 `REAL-DATA` 审计记录） |
 
@@ -103,3 +104,10 @@ CI 固定安装 `jsonschema`，因此等价性测试在 CI 中真正执行而不
 2. **跨字段矛盾不校验**（如案例级 `RESOLVED` 与异常 `UNRESOLVED` 并存）：schema 不表达，
    两套实现都不拒绝；若要加必须同时加在两边。
 3. **BLAST 坐标边界**：`cox1_id.py` 的 HSP 边界情形仍有未覆盖组合（详见 issue 记录）。
+4. **`case_type` 是可选字段**：`learning-policy.md` 把记录分类列为必需，但 schema 未列入 `required`。
+   若改成强制项，已有/外部归档案例（可能缺该字段）会一次性变成 `INVALID`，
+   因此当前策略是**可选 + 缺失时按 `abnormal_case` 保守处理 + 新案例一律写入**；
+   要真正强制，必须同时提供迁移方案（回填 `case_type`）与两套校验路径的同步修改。
+5. **lesson 的领域/范围不是 schema 强制项**：写入端（`propose-lesson`）是 fail-closed 的，
+   验收端（`validate_public_lesson`）对缺失值做保守补齐后才接受；两边规则不同步就会再造出偏差，
+   因此改任意一边必须同时跑 `tests/test_review_round_lesson_domain_and_report.py`。

@@ -92,8 +92,13 @@
 - 结论层是**派生物**，不是第二套数据格式：结论落在 `case.json` 的 `anomalies[]`
   （`id`/`claim`/`status`/`confidence`/可选 `reads_support`）+ `events.jsonl` 的事件链上，
   由 `tools/experience.py` 写入，不新建平行文件。
-- `case-report` 生成可读报告；**任何结论在报告里都必须能反查到 case 记录**。
-- 正常样本（`case_type = normal_validation`）也要按同一结构写结论（"确认无异常"本身是一条结论，
+- **`case-report` 已实现本契约**：`python3 tools/experience.py case-report <dir>` 生成的 `case.md` 依次包含
+  ① 观察事实（事件） ② **证据矩阵**（逐异常：claim/状态/置信/reads 支持/证据事件）
+  ③ 有证据支持的结论 ④ **无证据支持的声明** ⑤ 下一步最小实验 ⑥ 案例级汇总
+  ⑦ 假设与未测项 ⑧ 证据边界；没有逐异常记录时明写"尚无逐异常判定"，而不是静默省略。
+  用例：`tests/test_review_round_lesson_domain_and_report.py::CaseReportLayerTests`。
+- 任何结论在报告里都必须能反查到 case 记录（`--event-action` 指向真实事件）。
+- 正常样本（`case_type = normal_validation_case`）也要按同一结构写结论（"确认无异常"本身是一条结论，
   且必须写明检查覆盖了哪些项、未覆盖哪些项）—— 见 `learning-policy.md` §2。
 
 ## 7. 与其他文件的关系
