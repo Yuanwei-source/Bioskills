@@ -17,7 +17,7 @@
 
 ## V1 测试与环境
 
-使用 `/home/dell/miniforge3/envs/MT_assembly/bin/python`（Biopython 1.87）运行：
+使用 `<MITOS2 环境>/bin/python`（Biopython 1.87）运行（原始记录里的本地绝对路径已改为占位符）：
 
 ```text
 Ran 26 tests
