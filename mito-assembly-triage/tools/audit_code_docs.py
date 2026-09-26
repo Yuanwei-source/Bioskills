@@ -87,6 +87,8 @@ RULES = (
     ("异常入口只降基因集/身份", 'scripts/annot_check.py', '--allow-atypical', (r'allow-atypical',)),
     ("cox1_id 退出码 3 = 格式/网络故障", 'scripts/cox1_id.py', 'FORMAT', (r'退出码?\s*3', r'exit\s*3')),
     ("circularize 不匹配不得接受候选", 'scripts/circularize.py', 'accept-candidate', (r'accept-candidate', r'REVIEW')),
+    ("案例校验单一实现，缺依赖即失败", 'tools/experience.py', 'MissingDependency',
+     (r'jsonschema', r'退出码?\s*3')),
     ("案例类型三值", 'tools/experience.py', 'CASE_TYPES', (r'case_type', r'normal_validation_case')),
     ("逐异常判定写入 anomalies[]", 'tools/experience.py', 'case_anomaly', (r'anomalies', r'case-anomaly')),
     ("未登记参考不得引用", 'tools/experience.py', 'case_reference', (r'case-reference',)),

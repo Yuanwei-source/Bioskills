@@ -160,5 +160,5 @@
 
 ## 7. 实现与格式限制
 
-案例 schema、双路径验证和报告生成器的限制见
+案例 schema、校验路径（唯一实现，缺依赖即失败）和报告生成器的限制见
 [developer-contract.md](developer-contract.md) §1/§7；这些实现要求不构成生物学证据。

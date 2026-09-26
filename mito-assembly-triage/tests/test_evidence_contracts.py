@@ -261,19 +261,15 @@ def _fixed_case(**overrides):
     return case
 
 
-class SchemaValidatorEquivalenceTests(unittest.TestCase):
-    """The jsonschema path and the no-dependency fallback must follow ONE schema.
+class CaseSchemaVerdictTests(unittest.TestCase):
+    """裁定固定：固定的数据集必须始终给出同一裁定（唯一实现路径）。
 
-    Technical debt being managed here: the two validators are separate code, so a
-    schema change can drift them apart silently.  This fixed data set pins the
-    verdicts; ``test_both_paths_agree`` additionally requires identical results
-    wherever jsonschema is installed.  If a future schema edit only touches one
-    implementation, one of these two tests fails.
+    这份数据集原本用于比对两条校验路径（jsonschema 与已删除的手写兜底），其中的用例包含
+    **历史上真实出现过的分歧**（`case_id` 的 `minLength` 与三个可选数组、显式 `decision: null`）。
+    兜底实现删除后仍保留该数据集：它把"这些用例的裁定"钉死，schema 一改就会有人回答。
 
-    Note: a cross-field contradiction (a case-level RESOLVED decision next to an
-    UNRESOLVED anomaly) is deliberately NOT rejected by either validator -- the
-    schema does not express it, and adding the rule to only one implementation
-    would create exactly the divergence this test guards against.
+    注意：跨字段矛盾（案例级 RESOLVED 与异常 UNRESOLVED 并存）**依然不被拒绝** ——
+    schema 不表达该规则。要加就必须由 schema 表达，不允许再出现第二份实现。
     """
 
     FIXED_CASES = {
@@ -305,30 +301,13 @@ class SchemaValidatorEquivalenceTests(unittest.TestCase):
     def setUp(self):
         self.module = load_module("experience_schema_equiv", Path("tools") / "experience.py")
 
-    def test_fallback_verdicts_are_fixed(self):
+    def test_verdicts_are_fixed(self):
         for name, (case, expected_valid) in self.FIXED_CASES.items():
             with self.subTest(case=name):
-                errors = self.module._case_errors_without_jsonschema(case)
+                errors = self.module.case_schema_errors(case)
                 self.assertEqual(not errors, expected_valid,
                                  "%s -> %s" % (name, errors))
 
-    def test_both_paths_agree(self):
-        try:
-            import jsonschema
-        except ImportError:
-            self.skipTest("jsonschema is not installed; the fallback is covered by "
-                          "test_fallback_verdicts_are_fixed")
-        schema = json.loads((ROOT / "schemas" / "case.schema.json").read_text(encoding="utf-8"))
-        for name, (case, _expected) in self.FIXED_CASES.items():
-            with self.subTest(case=name):
-                try:
-                    jsonschema.validate(case, schema)
-                    schema_ok = True
-                except jsonschema.ValidationError:
-                    schema_ok = False
-                fallback_ok = not self.module._case_errors_without_jsonschema(case)
-                self.assertEqual(schema_ok, fallback_ok,
-                                 "%s: jsonschema=%s fallback=%s" % (name, schema_ok, fallback_ok))
 
     def test_public_entry_point_matches_the_fixed_verdicts(self):
         temp = tempfile.TemporaryDirectory()

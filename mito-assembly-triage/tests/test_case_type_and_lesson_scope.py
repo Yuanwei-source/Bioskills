@@ -100,14 +100,13 @@ class CaseTypeCliTests(unittest.TestCase):
 
         bad = base()
         bad["case_type"] = "anomalous"
-        self.assertTrue(module.case_schema_errors(bad), "jsonschema 路径必须拒绝非法 case_type")
-        self.assertTrue(module._case_errors_without_jsonschema(bad),
-                        "兜底路径必须拒绝非法 case_type（两条路径必须等价）")
+        self.assertTrue(module.case_schema_errors(bad), "校验器必须拒绝非法 case_type")
+        self.assertTrue(module.case_schema_errors(bad), "校验器必须拒绝非法 case_type")
         for value in module.CASE_TYPES:
             good = base()
             good["case_type"] = value
             self.assertEqual(module.case_schema_errors(good), [], value)
-            self.assertEqual(module._case_errors_without_jsonschema(good), [], value)
+            self.assertEqual(module.case_schema_errors(good), [], value)
 
 
 class LessonScopeTests(unittest.TestCase):

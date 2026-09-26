@@ -14,7 +14,7 @@ Every case below failed on `d3ca6f6` and is kept as a regression guard:
         precise identity and auto-selected as the best candidate.
   P1-4  ``/transl_except`` accepted a wrong-frame 3 nt window and any amino-acid
         string, silently excusing a real internal stop.
-  P1-5  The no-jsonschema fallback (the one CI runs) accepted cases the schema
+  P1-5  The (now removed) no-jsonschema fallback accepted cases the schema
         rejects: empty ``case_id`` and non-array ``modifications`` /
         ``validation`` / ``lessons_proposed``.
   P2-1  ``pos:complement(...)`` and compound-CDS exceptions were dropped; the
@@ -538,7 +538,7 @@ class ExceptionRegistryTypeTests(unittest.TestCase):
 
 
 class SchemaKeywordCoverageTests(unittest.TestCase):
-    """P1-5: every declared top-level type/const keyword is enforced by the fallback."""
+    """P1-5: every declared top-level type/const keyword is enforced by the validator."""
 
     def setUp(self):
         self.module = load_module("experience_keyword_coverage", Path("tools") / "experience.py")
@@ -567,17 +567,17 @@ class SchemaKeywordCoverageTests(unittest.TestCase):
             with self.subTest(field=key):
                 case = self._base()
                 case[key.replace("_empty", "")] = bad
-                self.assertTrue(self.module._case_errors_without_jsonschema(case),
-                                "%s=%r was accepted by the fallback" % (key, bad))
+                self.assertTrue(self.module.case_schema_errors(case),
+                                "%s=%r was accepted by the validator" % (key, bad))
 
-    def test_a_legal_case_still_passes_the_fallback(self):
-        self.assertEqual(self.module._case_errors_without_jsonschema(self._base()), [])
+    def test_a_legal_case_still_passes_the_validator(self):
+        self.assertEqual(self.module.case_schema_errors(self._base()), [])
 
     def test_legal_array_valued_optionals_are_accepted(self):
         case = self._base()
         case.update({"modifications": [{"x": 1}], "validation": ["a"],
                      "lessons_proposed": ["b"]})
-        self.assertEqual(self.module._case_errors_without_jsonschema(case), [])
+        self.assertEqual(self.module.case_schema_errors(case), [])
 
 
 def _hsp_missing(fields):
@@ -1278,14 +1278,14 @@ class SchemaTypeMatrixTests(unittest.TestCase):
             "anomalies": [], "events_file": "events.jsonl",
         }
 
-    def test_no_json_value_crashes_the_fallback(self):
+    def test_no_json_value_crashes_the_validator(self):
         for field in self.FIELDS:
             for value in self.VALUES:
                 with self.subTest(field=field, value=value):
                     case = self._base()
                     case[field] = value
                     try:
-                        errors = self.module._case_errors_without_jsonschema(case)
+                        errors = self.module.case_schema_errors(case)
                     except Exception as exc:  # noqa: BLE001 - this IS the assertion
                         self.fail("%s=%r raised %s: %s" % (field, value, type(exc).__name__, exc))
                     self.assertIsInstance(errors, list)
@@ -1302,30 +1302,10 @@ class SchemaTypeMatrixTests(unittest.TestCase):
                         self.fail("case_schema_errors %s=%r raised %s: %s"
                                   % (field, value, type(exc).__name__, exc))
 
-    def test_matrix_agrees_with_jsonschema(self):
-        try:
-            import jsonschema
-        except ImportError:
-            self.skipTest("jsonschema is not installed")
-        disagreements = []
-        for field in self.FIELDS:
-            for value in self.VALUES:
-                case = self._base()
-                case[field] = value
-                try:
-                    jsonschema.validate(case, self.schema)
-                    schema_ok = True
-                except jsonschema.ValidationError:
-                    schema_ok = False
-                fallback_ok = not self.module._case_errors_without_jsonschema(case)
-                if schema_ok != fallback_ok:
-                    disagreements.append('%s=%r jsonschema=%s fallback=%s'
-                                         % (field, value, schema_ok, fallback_ok))
-        self.assertEqual(disagreements, [])
 
-    def test_a_legal_case_passes_every_path(self):
+    def test_a_legal_case_passes_the_validator(self):
         case = self._base()
-        self.assertEqual(self.module._case_errors_without_jsonschema(case), [])
+        self.assertEqual(self.module.case_schema_errors(case), [])
         self.assertEqual(self.module.case_schema_errors(case), [])
 
 

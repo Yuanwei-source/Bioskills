@@ -5,23 +5,31 @@
 > 拆出本文件的原因：把"selector 归一化后为空则加载失败"这类**实现约束**写在生物学文件里，
 > 容易被后来者误读成"领域规则"。
 
-## 1. 两条验证路径必须等价
+## 1. 案例校验只有一条路径（缺依赖即失败）
 
-案例记录有两条校验路径：`schemas/case.schema.json` + `jsonschema`，以及无依赖时的显式兜底
-`_case_errors_without_jsonschema()`。**两者必须对同一份 schema 给出一致裁定**，由固定数据集锁住：
+案例校验**唯一**的实现是 `schemas/case.schema.json` + `jsonschema`：
 
 | 测试 | 锁住什么 |
 |---|---|
-| `tests/test_evidence_contracts.py::SchemaValidatorEquivalenceTests` | 合法 / 缺字段 / 类型错 / 非法枚举 / 嵌套对象错 / 跨字段冲突 → 两路径裁定相同 |
-| `tests/test_pr1_review_regressions.py::SchemaKeywordCoverageTests` | schema 的每个顶层关键字至少有一条"兜底也必须拒绝"的样本 |
-| `tests/test_pr1_review_regressions.py::...fallback_verdicts_are_fixed` | 无 `jsonschema` 环境下的裁定快照 |
+| `tests/test_evidence_contracts.py::CaseSchemaVerdictTests` | 固定数据集（合法/缺字段/类型错/非法枚举/嵌套对象错/跨字段冲突，含历史上的分歧用例）的裁定不得改变 |
+| `tests/test_pr1_review_regressions.py::SchemaKeywordCoverageTests` | schema 的每个顶层关键字至少有一条“必须被拒绝”的样本 |
+| `tests/test_pr1_review_regressions.py::SchemaTypeMatrixTests` | 任意合法 JSON 值都不得让校验器抛异常（只给裁定） |
+| `tests/test_missing_dependency.py` | **缺 `jsonschema` 时必须响亮失败**（退出码 3 + 安装命令），且写入口不得落盘 |
 
-**改动 schema 时必须同时跑这两组测试**：否则两条路径会再次静默偏离（历史上已经偏离过两次：
-显式 `decision: null`；`case_id` 的 `minLength: 1` 与三个可选数组）。
-CI 固定安装 `jsonschema`，因此等价性测试在 CI 中真正执行而不是跳过。
+**为什么不再有第二份实现**：早期为“没装库的环境”另写了一份手写等价校验
+（`_case_errors_without_jsonschema`，88 行）。两份实现都对同一案例说 `VALID`，却靠人肉同步，
+并且**已经偏离过两次**（显式 `decision: null`；`case_id` 的 `minLength: 1` 与三个可选数组）。
+这违反本 skill 自己的原则——**同一结论必须对应同一条证据路径**；一份可能更弱的校验器
+静默给出同一个结论，比直接失败危险得多。因此那份实现被删除（issue #3 以“删除重复实现”结案）。
+
+**缺依赖时的契约**：`case-validate` / `case-anomaly` / `case-reference` 在缺 `jsonschema`
+时以**退出码 3** 失败（环境/依赖故障，与 `cox1_id.py` 的 3 同一含义），并打印
+`pip install jsonschema`；**不得**降级、不得写入未校验的案例。依赖声明见 `tool_check.md`
+与 `scripts/check_env.sh`。
 
 **跨字段业务规则不在 schema 里表达**（如案例级 `RESOLVED` 与某异常 `UNRESOLVED` 并存）；
-若将来要加，必须**同时**加在两条路径上（见 §7 技术债）。
+若将来要加，必须由 schema 表达（必要时用 `allOf`/`if-then`），**不允许**再引入第二份实现。
+
 
 ## 2. `/transl_except` 与例外 registry 的加载约束（fail-closed）
 
@@ -58,6 +66,7 @@ CI 固定安装 `jsonschema`，因此等价性测试在 CI 中真正执行而不
 | `blast_genes.py` | `0` / `1` | 全部基因唯一命中 / 任一基因无唯一命中或命中歧义（**不写部分结果**） | `1` 不是"基因真的缺失" |
 | `mitos2_to_genbank.py` | `0` / 非 0 | 写出 `<out.gb>` / 缺文件、坐标越界、`result.fas` 与坐标不一致、未知 feature 类型 | 非 0 时**不得**留下半成品 |
 | `depth_analysis.py` | `0` / `1` / `2` | 正常 / 输入或 BAM 错误 / 存在低覆盖区 | `2` 不是"组装错误" |
+| `experience.py case-validate/case-anomaly/case-reference` | `0` / `1` / `3` | 通过 / 记录非法或参数错误 / **缺必需依赖 `jsonschema`**（打印 `pip install jsonschema`，不降级） | `3` 不是“案例有问题”，而是校验器不可用 |
 | `circularize.py` | `0` / `2` / `1` | 接受候选 / REVIEW（含待回贴）/ 失败或接缝证据不足 | 任何一个码都不能独自证明物理闭环 |
 
 后台任务"子进程正常退出"只表示命令执行成功；科学验收由证据标准另行判定。
@@ -173,7 +182,9 @@ python3 tools/experience.py sync-public --manifest <manifest-url-or-file>
 
 ## 7. 已知技术债
 
-1. **两套案例校验实现**（§1）：保持等价是硬要求，但仍是重复实现。
+1. ~~**两套案例校验实现**~~ **已解决**：手写兜底实现已删除，改为单一 `jsonschema` 路径 +
+   缺依赖时以退出码 3 失败（见 §1）。固定数据集测试保留，继续钉住裁定。
+
 2. **跨字段矛盾不校验**（如案例级 `RESOLVED` 与异常 `UNRESOLVED` 并存）：schema 不表达，
    两套实现都不拒绝；若要加必须同时加在两边。
 3. **BLAST 坐标边界**：`cox1_id.py` 的 HSP 边界情形仍有未覆盖组合（详见 issue 记录）。

@@ -588,94 +588,6 @@ CONFIDENCE_LEVELS = ('high', 'moderate', 'low', 'not_assessable')
 READS_SUPPORT_LEVELS = ('NOT_ASSESSED', 'READS_CONSISTENT', 'READS_DISCRIMINATING')
 
 
-def _case_errors_without_jsonschema(case):
-    """Explicit equivalent of schemas/case.schema.json.
-
-    This is what runs when ``jsonschema`` is unavailable.  CI installs jsonschema,
-    so the primary path runs there and the two cross-comparison tests are skipped;
-    this fallback is therefore covered by the tests that call it DIRECTLY
-    (``test_fallback_verdicts_are_fixed``, ``SchemaKeywordCoverageTests`` and the
-    Schema-keyword x JSON-basic-type matrix).  It **must not be weaker than the
-    schema**: a weaker fallback would silently skip the ``anomalies[]`` enum checks
-    while the docs claim they are validated, and it must never raise on a legal
-    JSON value.  That is exactly the failure mode this project keeps hitting.
-    """
-    if not isinstance(case, dict):
-        return ['case.json 必须是 JSON 对象']
-    errors = []
-    required = ('schema_version', 'case_id', 'inputs', 'issue', 'hypotheses', 'decision', 'events_file')
-    for key in required:
-        if key not in case:
-            errors.append('缺少必需字段: %s' % key)
-    if case.get('schema_version') != '2.0':
-        errors.append('schema_version 必须是 "2.0"')
-    if 'case_id' in case and (not isinstance(case['case_id'], str) or not case['case_id']):
-        errors.append('case_id 必须是非空字符串 (minLength: 1)')
-    if 'events_file' in case and not isinstance(case['events_file'], str):
-        errors.append('events_file 必须是字符串')
-    if 'case_type' in case and case['case_type'] not in CASE_TYPES:
-        errors.append('case_type 取值非法: %s' % (case['case_type'],))
-    for key in ('inputs', 'hypotheses', 'anomalies', 'modifications',
-                'validation', 'lessons_proposed', 'references'):
-        if key in case and not isinstance(case[key], list):
-            errors.append('%s 必须是数组' % key)
-    references = case.get('references')
-    if isinstance(references, list):
-        for index, item in enumerate(references):
-            if not isinstance(item, dict) or not {'reference_id', 'accession', 'purpose'} <= set(item):
-                errors.append('references[%d] 缺少必需字段 (reference_id/accession/purpose)' % index)
-    hypotheses = case.get('hypotheses')
-    if isinstance(hypotheses, list):
-        if not hypotheses:
-            errors.append('hypotheses 不能为空 (至少 1 条候选解释)')
-        for index, item in enumerate(hypotheses):
-            if not isinstance(item, dict) or \
-                    not {'id', 'explanation', 'support', 'against', 'unknown'} <= set(item):
-                errors.append('hypotheses[%d] 缺少必需字段 '
-                              '(id/explanation/support/against/unknown)' % index)
-    inputs = case.get('inputs')
-    if isinstance(inputs, list):
-        for index, item in enumerate(inputs):
-            if not isinstance(item, dict) or not {'role', 'path', 'sha256'} <= set(item):
-                errors.append('inputs[%d] 缺少必需字段 (role/path/sha256)' % index)
-    decision = case.get('decision')
-    if 'decision' in case:
-        if not isinstance(decision, dict):
-            # explicit null/str is NOT the same as an absent key
-            errors.append('decision 必须是对象')
-        else:
-            if not {'status', 'confidence', 'rationale'} <= set(decision):
-                errors.append('decision 缺少必需字段 (status/confidence/rationale)')
-            if decision.get('status') not in DECISION_STATUSES:
-                errors.append('decision.status 取值非法: %s' % decision.get('status'))
-            if decision.get('confidence') not in CONFIDENCE_LEVELS:
-                errors.append('decision.confidence 取值非法: %s' % decision.get('confidence'))
-    if 'issue' in case:
-        issue = case['issue']
-        if not isinstance(issue, dict):
-            errors.append('issue 必须是对象')
-        elif 'type' not in issue:
-            errors.append('issue 缺少必需字段 (type)')
-    if 'taxon' in case and not isinstance(case['taxon'], dict):
-        errors.append('taxon 必须是对象')
-    anomalies = case.get('anomalies')
-    if isinstance(anomalies, list):
-        for index, item in enumerate(anomalies):
-            if not isinstance(item, dict):
-                errors.append('anomalies[%d] 必须是对象' % index)
-                continue
-            if not {'id', 'claim', 'status', 'confidence'} <= set(item):
-                errors.append('anomalies[%d] 缺少必需字段 (id/claim/status/confidence)' % index)
-            if item.get('status') not in DECISION_STATUSES:
-                errors.append('anomalies[%d].status 取值非法: %s' % (index, item.get('status')))
-            if item.get('confidence') not in CONFIDENCE_LEVELS:
-                errors.append('anomalies[%d].confidence 取值非法: %s' % (index, item.get('confidence')))
-            if 'reads_support' in item and item['reads_support'] not in READS_SUPPORT_LEVELS:
-                errors.append('anomalies[%d].reads_support 取值非法: %s'
-                              % (index, item['reads_support']))
-    return errors
-
-
 def case_anomaly(args):
     """Write one anomaly into case.json's anomalies[] -- the format the schema owns.
 
@@ -684,6 +596,8 @@ def case_anomaly(args):
     file is replaced.  `--event-action` must name an existing event action, so the
     anomaly's link to the original tool output is real rather than decorative.
     """
+    # 缺依赖即失败：校验不可用时不得改动案例（宁可失败也不产生未校验写入）
+    _require_jsonschema()
     root = pathlib.Path(args.directory).resolve()
     case_path = root / 'case.json'
     if not case_path.is_file():
@@ -762,21 +676,43 @@ def case_anomaly(args):
              ', reads_support=%s' % entry['reads_support'] if args.reads_support else ''))
 
 
-def case_schema_errors(case):
-    """Enforce schemas/case.schema.json; fall back to an equivalent explicit check."""
-    schema_path = CASE_SCHEMA
+class MissingDependency(RuntimeError):
+    """必需依赖缺失。
+
+    宁可失败也不产生弱化结论：同一结论必须对应同一证据路径。因此本 skill 不再为案例校验
+    提供第二份实现——缺库时报错并给出安装命令，由 CLI 以退出码 3 返回（环境/依赖故障，
+    与 cox1_id.py 的 3 同一含义）。
+    """
+
+    EXIT_CODE = 3
+
+
+def _require_jsonschema():
     try:
         import jsonschema
-    except ImportError:
-        jsonschema = None
-    if jsonschema is not None and os.path.exists(schema_path):
-        try:
-            jsonschema.validate(case, _json(schema_path))
-        except jsonschema.ValidationError as exc:
-            location = '/'.join(str(part) for part in exc.absolute_path) or '<root>'
-            return ['schema 校验失败: %s (%s)' % (exc.message, location)]
-        return []
-    return _case_errors_without_jsonschema(case)
+    except ImportError as exc:
+        raise MissingDependency(
+            '缺少必需依赖 jsonschema（案例校验的唯一实现）：pip install jsonschema') from exc
+    return jsonschema
+
+
+def case_schema_errors(case):
+    """按 `schemas/case.schema.json` 校验案例——**只有 jsonschema 这一条路径**。
+
+    早期版本另有一份手写的“等价”实现，库缺失时静默切换。两份实现都对同一案例说
+    `VALID`，却需要人肉同步，且已偏离过两次（`decision: null`、`case_id` 的
+    `minLength`）。现在缺库即失败，不再降级。
+    """
+    schema_path = CASE_SCHEMA
+    if not os.path.exists(schema_path):
+        raise MissingDependency('缺少 schema 文件: %s（skill 安装不完整）' % schema_path)
+    jsonschema = _require_jsonschema()
+    try:
+        jsonschema.validate(case, _json(schema_path))
+    except jsonschema.ValidationError as exc:
+        location = '/'.join(str(part) for part in exc.absolute_path) or '<root>'
+        return ['schema 校验失败: %s (%s)' % (exc.message, location)]
+    return []
 
 
 def case_validate(args):
@@ -811,6 +747,8 @@ def case_reference(args):
     the record.  An unknown id, or a purpose the record never declared, fails closed so
     dangling citations cannot be written.
     """
+    # 缺依赖即失败：校验不可用时不得改动案例（宁可失败也不产生未校验写入）
+    _require_jsonschema()
     root = pathlib.Path(args.directory).resolve()
     case_path = root / 'case.json'
     if not case_path.is_file():
@@ -1030,13 +968,18 @@ def main():
         elif cmd == 'case-anomaly':
             ap.add_argument('directory'); ap.add_argument('--id', required=True); ap.add_argument('--claim', required=True); ap.add_argument('--status', required=True); ap.add_argument('--confidence', required=True); ap.add_argument('--reads-support', dest='reads_support', default=None); ap.add_argument('--event-action', dest='event_action', action='append', default=[], metavar='ACTION'); ap.add_argument('--update', action='store_true')
             try: case_anomaly(ap.parse_args(sys.argv[2:]))
+            except MissingDependency as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(MissingDependency.EXIT_CODE)
             except (ValueError, OSError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
         elif cmd == 'case-reference':
             ap.add_argument('directory'); ap.add_argument('--reference-id', dest='reference_id', required=True); ap.add_argument('--purpose', required=True); ap.add_argument('--registry', default=None); ap.add_argument('--update', action='store_true')
             try: case_reference(ap.parse_args(sys.argv[2:]))
+            except MissingDependency as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(MissingDependency.EXIT_CODE)
             except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
         elif cmd == 'case-validate':
-            ap.add_argument('directory'); sys.exit(case_validate(ap.parse_args(sys.argv[2:])))
+            ap.add_argument('directory')
+            try: sys.exit(case_validate(ap.parse_args(sys.argv[2:])))
+            except MissingDependency as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(MissingDependency.EXIT_CODE)
+            except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
         else:
             ap.add_argument('directory'); case_report(ap.parse_args(sys.argv[2:]))
     else:

@@ -24,6 +24,16 @@
   不代表所有任务都需要这些工具。缺 bwa 不阻断仅 FASTA/GB 检查；缺 samtools 才阻断依赖它的 BAM 检查。
 - 在报告中说明相关步骤未执行及原因，继续不依赖缺失工具的工作。
 
+### 2.1 Python 库依赖（已声明，不再靠“缺库就换实现”）
+
+| 库 | 谁需要 | 缺失时的行为 | 安装 |
+|---|---|---|---|
+| `jsonschema` | **案例校验（唯一实现路径）**：`case-validate` / `case-anomaly` / `case-reference` | **退出码 3 并提示安装**，不降级、不写未校验案例 | `python3 -m pip install jsonschema` |
+| `biopython` | `annot_check.py`、`blast_genes.py`、`circularize.py`、`mitos2_to_genbank.py`、`seq_stats.py` | 各脚本自有报错路径；**逐脚本依赖边界审查中**（仓库 issue），因此这里只声明不预判 | `python3 -m pip install biopython` |
+
+`scripts/check_env.sh` 会逐个检查并给出确切安装命令（`jsonschema` 缺失计入核心依赖缺失）。
+**设计原则**：关键证据链可以失败，但不能静默降级——同一个结论不允许有第二条实现路径。
+
 ## 3. 自检
 
 ```bash

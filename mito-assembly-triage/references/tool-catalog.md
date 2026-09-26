@@ -37,7 +37,7 @@ COX1 多 HSP 出现 query/target 重叠、非共线或混链时不自动汇总�
 
 | 工具 | 用途 | 输出与限制 |
 |---|---|---|
-| `tools/experience.py case-init/case-event/case-anomaly` | 案例、事件、逐异常记录；case-init 必须有 hypothesis | 写指定任务目录；例子见 [diagnostic-playbook.md](diagnostic-playbook.md) |
+| `tools/experience.py case-init/case-event/case-anomaly/case-reference/case-validate/case-report` | 案例、事件、逐异常记录、参考关联、记录校验（`case-validate` 只校记录格式，不证明科学结论）；case-init 必须有 hypothesis；缺 `jsonschema` 时校验/写入口以**退出码 3** 失败（提示 pip 安装，不降级） | 写指定任务目录；例子见 [diagnostic-playbook.md](diagnostic-playbook.md)、确切参数见 [developer-contract.md](developer-contract.md) §3.1 |
 | `case-validate / case-report` | 格式校验 / 从已有记录生成 case.md | 校验失败 1；报告是草稿，按状态分类有缺陷，见 [conclusion-report.md](conclusion-report.md) §5 |
 | `search-structured / propose-lesson / review-lesson` | 检索、提炼、审核经验 | 写跨任务知识库前需授权；verified 不是通用规则 |
 | `export-contribution / sync-public` | 预览脱敏贡献 / 同步隔离缓存 | 生成预览与实际上传分开；授权与校验见 [learning-policy.md](learning-policy.md) |
