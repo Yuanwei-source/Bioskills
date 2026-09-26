@@ -97,6 +97,30 @@ else
   echo "  ✗ MITOS2_PY 未设置或不存在 — 检查 config/env.sh"
 fi
 
+echo ""
+echo "=== Python 库依赖 ==="
+# 案例校验只有 jsonschema 一条实现路径（曾经的手写兜底已删除：同一结论不允许两条证据路径）。
+# 缺它时 `case-validate` / `case-anomaly` / `case-reference` 会以退出码 3 失败，不会静默降级。
+lib_missing=0
+for lib in jsonschema; do
+  if python3 -c "import $lib" >/dev/null 2>&1; then
+    ver=$(python3 -c "import importlib.metadata as m; print(m.version('$lib'))" 2>/dev/null || echo '已安装')
+    echo "  ✓ $lib: $ver（案例校验的唯一实现）"
+  else
+    echo "  ✗ $lib: 未安装 —— 案例校验无法工作（会以退出码 3 失败，不降级）"
+    echo "    安装: python3 -m pip install $lib"
+    lib_missing=1
+  fi
+done
+# Biopython：注释与序列脚本使用；各脚本的依赖边界正在逐脚本审查（见仓库 issue），
+# 因此这里只声明与提示，不阻断（不预判那个边界结论）。
+if python3 -c "import Bio" >/dev/null 2>&1; then
+  echo "  ✓ Biopython: 已安装（annot_check / blast_genes / circularize / mitos2_to_genbank / seq_stats 需要）"
+else
+  echo "  ○ Biopython: 未安装 —— 上述脚本无法工作；安装: python3 -m pip install biopython"
+fi
+if [ "$lib_missing" -ne 0 ]; then missing=1; fi
+
 if [ "$missing" -ne 0 ]; then
   if [ -n "$env_unset_hint" ]; then
     echo "\n结果: 核心依赖缺失 —— 但 $env_unset_hint 未设置，本轮“未找到”可能只是假阴性；请先导出环境变量再重跑" >&2
