@@ -56,5 +56,5 @@ jobs:
       - name: Python syntax and tests
         working-directory: mito-assembly-triage
         run: |
-          python3 -m py_compile tools/experience.py
+          python3 -m py_compile scripts/*.py tools/*.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
