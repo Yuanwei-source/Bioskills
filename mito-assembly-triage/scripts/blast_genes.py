@@ -7,6 +7,13 @@
 import sys, os, subprocess, tempfile
 
 
+
+# 前置门禁：本步骤所需依赖（唯一清单来源 config/dependencies.json）
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _deps import require_stage  # noqa: E402
+require_stage('gene_locating', __file__)
+
 def merge_hsps(hsps):
     """Merge query intervals for one target/strand; overlapping HSPs count once."""
     if not hsps:
@@ -48,6 +55,8 @@ def select_gene_hits(hits, min_identity=80.0, min_coverage=0.8, expected_names=N
     return selected, errors
 
 def main():
+    # Biopython 由前置门禁保证（require_stage('gene_locating')），不再有 try/except 降级
+    from Bio import SeqIO
     if len(sys.argv) < 3:
         print(__doc__); sys.exit(1)
     ref_gb, target = sys.argv[1], sys.argv[2]
@@ -64,10 +73,6 @@ def main():
     if '--min-coverage' in sys.argv:
         min_coverage = float(sys.argv[sys.argv.index('--min-coverage')+1])
 
-    try:
-        from Bio import SeqIO
-    except ImportError:
-        print('需要 BioPython: pip install biopython'); sys.exit(1)
 
     # 1. 提取参考基因
     gb = SeqIO.read(ref_gb, 'genbank')

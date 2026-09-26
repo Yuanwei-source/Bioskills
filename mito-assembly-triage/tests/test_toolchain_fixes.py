@@ -90,7 +90,9 @@ class RunMitos2OutdirTests(unittest.TestCase):
         # (argument parsing + mkdir) without needing a real MITOS2 installation.
         env.update({"MITOS2_PY": "/bin/true", "MITOS2_REFDIR": str(self.tmp / "ref"),
                     "MITOS2_REFSEQVER": "refseq89m", "MITOS2_EXTRA_PATH": "",
-                    "PROFILE": "test", "CONDA_ROOT": str(self.tmp)})
+                    "PROFILE": "test", "CONDA_ROOT": str(self.tmp),
+                    # 本用例考的是包装脚本的 arg/mkdir 逻辑（stub 解释器），显式关闭环境门禁
+                    "MITO_ENV_GATE": "off"})
         genome = self.tmp / "g.fasta"
         genome.write_text(">g\nACGTACGTACGT\n", encoding="utf-8")
         outdir = self.tmp / "nested" / "mitos2_out"
@@ -105,7 +107,9 @@ class RunMitos2OutdirTests(unittest.TestCase):
         env = dict(os.environ)
         env.update({"MITOS2_PY": "/bin/true", "MITOS2_REFDIR": str(self.tmp / "ref"),
                     "MITOS2_REFSEQVER": "refseq89m", "MITOS2_EXTRA_PATH": "",
-                    "PROFILE": "test", "CONDA_ROOT": str(self.tmp)})
+                    "PROFILE": "test", "CONDA_ROOT": str(self.tmp),
+                    # 本用例考的是包装脚本的 arg/mkdir 逻辑（stub 解释器），显式关闭环境门禁
+                    "MITO_ENV_GATE": "off"})
         genome = self.tmp / "g.fasta"
         genome.write_text(">g\nACGTACGTACGT\n", encoding="utf-8")
         outdir = self.tmp / "long_flag_out"

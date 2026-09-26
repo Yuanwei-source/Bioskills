@@ -80,7 +80,7 @@ def _resolve_in_env_value(name, value):
     return None
 
 
-def probe_command(name, search_dir=None, env_value=None):
+def probe_command(name, search_dir=None, env_value=None, want_version=True):
     """(可执行路径, 版本) 或 (None, None)。
 
     `search_dir`（CLI 的 `--path`）表示**只在该目录内查找**——用于"检查某个 env 的 bin 是否齐"，
@@ -95,11 +95,12 @@ def probe_command(name, search_dir=None, env_value=None):
     if found is None:
         return None, None
     version = None
-    try:
-        proc = subprocess.run([found, '--version'], capture_output=True, text=True, timeout=20)
-        version = _first_version((proc.stdout or '') + (proc.stderr or ''))
-    except (OSError, subprocess.SubprocessError):
-        pass
+    if want_version:
+        try:
+            proc = subprocess.run([found, '--version'], capture_output=True, text=True, timeout=20)
+            version = _first_version((proc.stdout or '') + (proc.stderr or ''))
+        except (OSError, subprocess.SubprocessError):
+            pass
     return found, version
 
 
@@ -140,7 +141,7 @@ def probe_network(host, timeout=4):
         return None, None
 
 
-def probe(entry, search_dir=None, allow_network=False):
+def probe(entry, search_dir=None, allow_network=False, want_version=True):
     """按 probe 规格探测一个依赖，返回 (available: bool, detail: str|None, version: str|None)。"""
     kind = (entry.get('probe') or {}).get('type')
     env_var = (entry.get('probe') or {}).get('env')
@@ -159,7 +160,7 @@ def probe(entry, search_dir=None, allow_network=False):
             return False, interpreter, None
         return True, interpreter, version
     if kind == 'command':
-        path, version = probe_command(entry['probe']['name'], search_dir, env_path)
+        path, version = probe_command(entry['probe']['name'], search_dir, env_path, want_version)
         return bool(path), path, version
     if kind == 'python-module':
         found, version = probe_python_module(entry['probe']['module'], env_path, search_dir,

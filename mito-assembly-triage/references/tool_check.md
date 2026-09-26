@@ -42,7 +42,7 @@
 |---|---|---|
 | `python3` | 运行本 skill 的全部脚本 | 系统包管理器或 conda 安装 python>=3.8 |
 | `jsonschema` | 案例校验（唯一实现路径）；缺失时 `case-validate` 等以退出码 3 失败 | `python3 -m pip install jsonschema` |
-| `biopython` | GenBank/FASTA 解析、密码表、序列统计 | `python3 -m pip install biopython` |
+| `biopython` | GenBank/FASTA 解析、密码表、序列统计。**边界已确定：对 `annot_check.py`、`blast_genes.py`、`circularize.py`、`mitos2_to_genbank.py`、`seq_stats.py` 是必需**；`depth_analysis.py` 不使用 | `python3 -m pip install biopython` |
 | `blastn` | 基因定位与同源检索 | `conda install -c bioconda blast` 或 `apt-get install ncbi-blast+` |
 | `makeblastdb` | 建自比对库 | 随 `blastn` 一同安装 |
 | `samtools` | BAM 排序/索引/深度剖面 | `conda install -c bioconda samtools` |
@@ -67,6 +67,22 @@
 |---|---|---|
 | `network` | 公共参考获取 / COX1 远程查询 / 公共同步 | 无需安装；受限网络下这些步骤不可用，其余步骤不受影响 |
 | `table2asn` | NCBI 提交预检（不在本 skill 自检范围内） | 见 NCBI 官方页面（人工执行） |
+
+### 2.3 脚本前置门禁（每步自己把门）
+
+每个脚本在干活之前调用 `scripts/_deps.py` 的 `require_stage('<stage>')`：它从**同一份清单**取该阶段
+所需依赖并探测，缺失时打印统一说明（用途 + 安装方式 + "该步骤未执行"）并以**退出码 3** 结束。
+脚本 → stage：`seq_stats.py`→`seq_stats`、`annot_check.py`→`annot_check`、`blast_genes.py`→`gene_locating`、
+`depth_analysis.py`→`read_evidence`、`circularize.py`→`circularize`、`mitos2_to_genbank.py`→`mitos2_bridge`、
+`run_mitos2.sh`→`annot_independent`、`run_circular_map.sh`→`circular_plot`。
+
+- **只阻断该步骤**：缺 samtools 不拦住只读 FASTA 的体检；缺 MITOS2 只在跑注释时失败（不再跑到一半才炸）。
+- `cox1_id.py` 与 `reference_registry.py` **不按 stage 门禁**：网络依赖只在具体动作里需要（`acquire`/远程查询），
+  且失败已用退出码 3 表达；给整脚本加门会连离线可用的 `list`/`verify` 一起挡掉。
+- **不为例外开口子**：`--help` 也走门禁（脚本模块级就可能 import Biopython，给 help 放行只会制造
+  "看着能跑、其实缺依赖"的错觉）。
+- `MITO_ENV_GATE=off`：**仅用于测试/自检**（例如用 stub 解释器验证包装脚本自身的 arg/mkdir 行为），
+  会打印告警；不得用于日常诊断——它关掉的正是"缺依赖即失败"这条保护。
 
 阶段与依赖的对应（`stages`）就在同一份清单里：`seq_stats` / `annot_check` / `gene_locating` /
 `read_evidence` / `circularize` / `case_records` / `annot_independent` / `circular_plot` /

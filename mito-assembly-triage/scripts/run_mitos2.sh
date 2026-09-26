@@ -6,6 +6,7 @@
 # 数据库 --refdir/--refseqver 自动取 config/env.sh 的 MITOS2_REFDIR/MITOS2_REFSEQVER
 set -euo pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 source "$SKILL_DIR/config/env.sh"
 
 if [ -z "${MITOS2_PY:-}" ] || [ ! -x "$MITOS2_PY" ]; then
@@ -44,5 +45,14 @@ fi
 
 printf '[run_mitos2.sh] profile=%s python=%s refdir=%s refseqver=%s outdir=%s\n' \
   "$PROFILE" "$MITOS2_PY" "$MITOS2_REFDIR" "$MITOS2_REFSEQVER" "${outdir:-(由 MITOS2 参数决定)}"
+# 前置门禁：参数检查与 mkdir 之后、真正调用 MITOS2 之前（唯一清单来源 config/dependencies.json）。
+# MITO_ENV_GATE=off 仅用于测试/自检（例如用 stub 解释器验证包装脚本自身的 arg/mkdir 行为）。
+if [ "${MITO_ENV_GATE:-}" = "off" ]; then
+  echo "[run_mitos2.sh] ⚠ MITO_ENV_GATE=off：已关闭环境门禁（仅用于测试/自检）" >&2
+elif ! python3 "$SKILL_DIR/tools/env_check.py" --stage annot_independent; then
+  echo "  → 该步骤未执行；完整环境盘点: python3 tools/env_check.py --setup" >&2
+  exit 3
+fi
+
 exec "$MITOS2_PY" -m mitos.scripts.runmitos "$@" \
   --refdir "$MITOS2_REFDIR/" --refseqver "$MITOS2_REFSEQVER"

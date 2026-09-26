@@ -47,6 +47,7 @@ CODE_FILES = (
     'scripts/circularize.py',
     'scripts/mitos2_to_genbank.py',
     'scripts/run_mitos2.sh',
+    'scripts/_deps.py',
     'scripts/run_bg.sh',
     'scripts/check_env.sh',
 )
@@ -88,6 +89,8 @@ RULES = (
     ("异常入口只降基因集/身份", 'scripts/annot_check.py', '--allow-atypical', (r'allow-atypical',)),
     ("cox1_id 退出码 3 = 格式/网络故障", 'scripts/cox1_id.py', 'FORMAT', (r'退出码?\s*3', r'exit\s*3')),
     ("circularize 不匹配不得接受候选", 'scripts/circularize.py', 'accept-candidate', (r'accept-candidate', r'REVIEW')),
+    ("脚本前置门禁：缺依赖即失败，无降级路径", 'scripts/_deps.py', 'require_stage',
+     (r'require_stage', r'退出码?\s*3')),
     ("案例校验单一实现，缺依赖即失败", 'tools/experience.py', 'MissingDependency',
      (r'jsonschema', r'退出码?\s*3')),
     ("案例类型三值", 'tools/experience.py', 'CASE_TYPES', (r'case_type', r'normal_validation_case')),

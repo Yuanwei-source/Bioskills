@@ -234,8 +234,7 @@
     "read_evidence": {
       "tier": "essential",
       "requires": [
-        "samtools",
-        "minimap2"
+        "samtools"
       ],
       "tools": "scripts/depth_analysis.py",
       "capability": "reads 覆盖/深度/碱基支持"
@@ -284,6 +283,23 @@
       ],
       "tools": "scripts/run_circular_map.sh",
       "capability": "论文级环形图"
+    },
+    "read_alignment": {
+      "tier": "essential",
+      "requires": [
+        "minimap2"
+      ],
+      "tools": "(外部命令：minimap2/bwa)",
+      "capability": "reads 回贴生成 BAM（后续证据的前提）"
+    },
+    "mitos2_bridge": {
+      "tier": "essential",
+      "requires": [
+        "python3",
+        "biopython"
+      ],
+      "tools": "scripts/mitos2_to_genbank.py",
+      "capability": "MITOS2 输出转 GenBank（annot_check 的输入）"
     }
   }
 }

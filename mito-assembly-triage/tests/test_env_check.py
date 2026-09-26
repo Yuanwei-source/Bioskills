@@ -127,7 +127,7 @@ class StageGateTests(_Stubs):
         module = load_module('env_check_stage')
         manifest = module.load_manifest()
         deps = module.dependencies_for(manifest, manifest['stages']['read_evidence']['requires'])
-        self.assertEqual(sorted(d[0] for d in deps), ['minimap2', 'samtools'])
+        self.assertEqual(sorted(d[0] for d in deps), ['samtools'])
 
 
 class SetupModeTests(_Stubs):

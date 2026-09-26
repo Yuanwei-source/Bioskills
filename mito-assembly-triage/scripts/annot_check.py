@@ -82,6 +82,13 @@ LOCATION_PART_RE = re.compile(r'([<>]?)(\d+)\s*(?:\.\.|:)\s*([<>]?)(\d+)')
 
 
 # --------------------------------------------------------------------------- names
+# 前置门禁：本步骤所需依赖（唯一清单来源 config/dependencies.json）
+# 注意：必须在任何 Biopython 使用之前——缺依赖时本步骤直接不执行，而不是降级。
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _deps import require_stage  # noqa: E402
+require_stage('annot_check', __file__)
+
 def feature_gene(feature):
     values = feature.qualifiers.get('gene') or feature.qualifiers.get('product') or ['?']
     return str(values[0])
@@ -214,10 +221,11 @@ def _partial_from_location_string(feature):
 
 def _object_partial(parts, strand):
     """Partiality from Biopython position objects, or None when they carry none."""
-    try:
-        from Bio.SeqFeature import AfterPosition, BeforePosition
-    except ImportError:
-        return None
+
+    # Biopython 是必需依赖：由前置门禁 `require_stage('annot_check')` 保证可用，
+    # 不再有 “import 失败就 return None” 的静默降级——那会让 partial/模糊位置语义消失
+    # 却照旧给出注释结论（同一结论不允许两条证据路径）。
+    from Bio.SeqFeature import AfterPosition, BeforePosition
     if not any(isinstance(part.start, (BeforePosition, AfterPosition))
                or isinstance(part.end, (BeforePosition, AfterPosition)) for part in parts):
         return None                      # no fuzzy information in the objects at all

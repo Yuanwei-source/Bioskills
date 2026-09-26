@@ -7,6 +7,12 @@ reads 裁判: 覆盖度剖面 + mate 分布 + soft-clip 分析
 """
 import sys, subprocess, collections, re, os
 
+# 前置门禁：本步骤所需依赖（唯一清单来源 config/dependencies.json）
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _deps import require_stage  # noqa: E402
+require_stage('read_evidence', __file__)
+
 _COMPLEMENT = str.maketrans('ACGTNacgtn', 'TGCANtgcan')
 
 
