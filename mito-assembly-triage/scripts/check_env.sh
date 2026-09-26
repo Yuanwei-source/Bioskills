@@ -9,6 +9,29 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../config/env.sh
 source "$SKILL_DIR/config/env.sh"
 
+# 环境变量未设置时的假阴性提示：工具发现只在 PATH 与 $CONDA_ROOT/envs/*/bin 中搜索，
+# 因此 CONDA_ROOT 为空时会把“装了但找不到”报成“缺失”，把人引向错误的排查方向。
+env_unset_hint=""
+if [ -z "${CONDA_ROOT:-}" ]; then
+  env_unset_hint="CONDA_ROOT"
+fi
+
+if [ -n "$env_unset_hint" ]; then
+  echo "⚠ 未设置 $env_unset_hint —— 工具发现被限制在 PATH 内，下面的“未找到”可能是**假阴性**"
+  echo "  config/env.sh 只读取环境变量、不写死机器路径（设计如此）；请先导出，例如："
+  echo "    export CONDA_ROOT=/path/to/miniforge3"
+  echo "  再重跑本脚本，不要先去安装软件。"
+fi
+
+# 把实际将被使用的可执行文件先报出来，使“检查结果”与“真正执行的路径”一致。
+if [ -n "${MITOS2_PY:-}" ] && [ -x "$MITOS2_PY" ]; then
+  printf '实际将使用: MITOS2_PY=%s\n' "$MITOS2_PY"
+else
+  printf '实际将使用: MITOS2_PY=%s（未设置或不可执行）\n' "${MITOS2_PY:-}"
+fi
+printf '实际将使用: MINIMAP2=%s  MITOS2_REFDIR=%s\n' \
+  "${MINIMAP2:-(未配置；将回退到 PATH/envs)}" "${MITOS2_REFDIR:-(未配置)}"
+
 echo "=== 机器 profile: $PROFILE ==="
 echo "  CONDA_ROOT=$CONDA_ROOT"
 echo "  MITOS2_PY=$MITOS2_PY"
@@ -75,7 +98,11 @@ else
 fi
 
 if [ "$missing" -ne 0 ]; then
-  echo "\n结果: 核心依赖缺失，不能进入依赖这些工具的流程" >&2
+  if [ -n "$env_unset_hint" ]; then
+    echo "\n结果: 核心依赖缺失 —— 但 $env_unset_hint 未设置，本轮“未找到”可能只是假阴性；请先导出环境变量再重跑" >&2
+  else
+    echo "\n结果: 核心依赖缺失（环境变量已设置，未找到即为真实缺失）" >&2
+  fi
   exit 2
 fi
 

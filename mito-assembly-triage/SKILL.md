@@ -133,7 +133,7 @@ reads、read pairs、组装图或长读长证据。不能唯一解析时保留�
 | 缺失基因、重复命中、参考定位 | `python3 scripts/blast_genes.py <ref.gb> <target.fna>`；完整 CDS 不应机械套用短序列策略 |
 | 局部覆盖、碱基、配对或 soft-clip | 定点 reads 比对、`python3 scripts/depth_analysis.py <bam> <fasta>`、samtools |
 | 候选连接及闭环 | 端部重叠、组装图和接缝 reads；必要时 `scripts/circularize.py` |
-| 重新组装或注释 | 按数据和类群选择 GetOrganelle、NOVOPlasty、MitoFinder、MITOS2 等 |
+| 重新组装或注释 | 按数据和类群选择 GetOrganelle、NOVOPlasty、MitoFinder、MITOS2 等；MITOS2 (`runmitos.py`) **不产出 GenBank**，需质检时先用 `scripts/mitos2_to_genbank.py` 把 `result.gff/fas/faa` 转成 GenBank（不新增注释、不推测碱基、不补全缺失基因；`--topology` 只是声明，**MITOS2 circular 模式不等于物理环化**） |
 | 物种线索 | 先本地定位 COX1；远程查询前取得明确授权 |
 
 `cox1_id.py` 不会自动识别 COX1。只有在本地确认坐标、用户明确同意上传后，才使用
