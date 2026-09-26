@@ -1058,6 +1058,159 @@ class TranslExceptRegistryFormatTests(unittest.TestCase):
         self.assertEqual(registry["transl_except"], {})
 
 
+class StartRegistrySelectorTests(unittest.TestCase):
+    """Follow-up P2: start records/CLI must not accept an empty canonical gene selector.
+
+    An empty canonical gene matches the empty canonical gene of a CDS that has
+    neither /gene nor /product, so an unnamed CDS could be reported as "accepted
+    per audited record" -- evidence bound to no gene identity at all.
+    """
+
+    def setUp(self):
+        self.module = load_module("annot_start_selector", Path("scripts") / "annot_check.py")
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+        # the argument validation runs after the GenBank file is read, so the CLI
+        # tests need a readable record rather than a nonexistent path
+        self.genome = self.dir / "genome.gb"
+        code = "CGA" + "AAA" * 20 + "TAA"
+        write_gb_raw(self.genome, code + "A" * 40,
+                     [{"location": "1..%d" % len(code), "type": "CDS", "gene": "cox1"}])
+
+    def _load(self, *entries):
+        path = self.dir / "start.json"
+        path.write_text(json.dumps({"exceptions": list(entries)}, ensure_ascii=False),
+                        encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                self.module.load_exception_registry(str(path))
+        return caught.exception.code
+
+    def _load_ok(self, *entries):
+        path = self.dir / "ok.json"
+        path.write_text(json.dumps({"exceptions": list(entries)}, ensure_ascii=False),
+                        encoding="utf-8")
+        return self.module.load_exception_registry(str(path))
+
+    @staticmethod
+    def _record(**overrides):
+        record = {"gene": "cox1", "codon": "CGA", "taxon": "Lepidoptera",
+                  "source": "DOI 10.1000/example", "rationale": "documented"}
+        record.update(overrides)
+        return record
+
+    def test_empty_canonical_gene_is_rejected(self):
+        for gene in ("", "?", "---", "   ", "(CUN)"):
+            with self.subTest(gene=gene):
+                self.assertEqual(self._load(self._record(gene=gene)), 1)
+
+    def test_empty_codon_is_rejected(self):
+        self.assertEqual(self._load(self._record(codon="")), 1)
+
+    def test_valid_start_record_still_loads(self):
+        registry = self._load_ok(self._record())
+        self.assertIn(("cox1", "CGA"), registry["start"])
+
+    def test_start_records_for_different_taxa_coexist(self):
+        registry = self._load_ok(self._record(taxon="Lepidoptera"), self._record(taxon="Diptera"))
+        self.assertIn(("cox1", "CGA"), registry["start"])
+
+    @unittest.skipUnless(biopython_available(), "Biopython is not installed")
+    def test_cli_rejects_an_empty_gene_selector(self):
+        result = run_annot_check(self.genome, "--tolerate-start", ":CGA")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("基因名归一化后为空", result.stdout)
+
+    @unittest.skipUnless(biopython_available(), "Biopython is not installed")
+    def test_cli_rejects_a_punctuation_only_gene_selector(self):
+        result = run_annot_check(self.genome, "--tolerate-start", "?:CGA")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("基因名归一化后为空", result.stdout)
+
+    @unittest.skipUnless(biopython_available(), "Biopython is not installed")
+    def test_cli_still_rejects_a_missing_codon(self):
+        result = run_annot_check(self.genome, "--tolerate-start", "cox1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("基因:密码子", result.stdout)
+
+    @unittest.skipUnless(biopython_available(), "Biopython is not installed")
+    def test_unnamed_cds_is_not_reported_as_accepted(self):
+        code = "CGA" + "AAA" * 20 + "TAA"
+        genome = self.dir / "unnamed.gb"
+        write_gb_raw(genome, code + "A" * 40,
+                     [{"location": "1..%d" % len(code), "type": "CDS"}])
+        registry = self.dir / "start.json"
+        registry.write_text(json.dumps({"exceptions": [{k: v for k, v in self._record().items()}]}),
+                            encoding="utf-8")
+        # the registry cannot even load with an empty canonical gene, so the CLI fails
+        # closed instead of describing an unidentified CDS as an audited exception
+        result = run_annot_check(genome, "--allow-atypical", REASON,
+                                 "--tolerate-start", ":CGA",
+                                 "--exception-registry", str(registry))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("基因名归一化后为空", result.stdout)
+        self.assertNotIn("按已审计例外记录接受", result.stdout)
+
+    @unittest.skipUnless(biopython_available(), "Biopython is not installed")
+    def test_named_cds_with_a_named_record_is_still_accepted_as_review(self):
+        code = "CGA" + "AAA" * 20 + "TAA"
+        genome = self.dir / "named.gb"
+        write_gb_raw(genome, code + "A" * 40,
+                     [{"location": "1..%d" % len(code), "type": "CDS", "gene": "cox1"}])
+        registry = self.dir / "named.json"
+        registry.write_text(json.dumps({"exceptions": [self._record()]}), encoding="utf-8")
+        result = run_annot_check(genome, "--allow-atypical", REASON,
+                                 "--tolerate-start", "cox1:CGA",
+                                 "--exception-registry", str(registry), "--taxon", "Lepidoptera")
+        self.assertIn("按已审计例外记录接受", result.stdout)
+        self.assertNotIn("EXCEPTION_NOT_REGISTERED", result.stdout)
+
+
+class NullSelectorMessageTests(unittest.TestCase):
+    """Follow-up P3: the null selector message must not misdescribe the record type.
+
+    Only the amino_acid KEY decides that a record is a transl_except record;
+    gene/codon belong to start records too, so their null message must not claim
+    to be about transl_except classification.
+    """
+
+    def setUp(self):
+        self.module = load_module("annot_null_selector", Path("scripts") / "annot_check.py")
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+
+    def _message(self, **overrides):
+        record = {"gene": "cox1", "codon": "CGA", "taxon": "Lepidoptera",
+                  "source": "DOI 10.1000/example", "rationale": "documented"}
+        record.update(overrides)
+        path = self.dir / "registry.json"
+        path.write_text(json.dumps({"exceptions": [record]}), encoding="utf-8")
+        captured = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(captured):
+                self.module.load_exception_registry(str(path))
+        except SystemExit:
+            return captured.getvalue()
+        self.fail("expected the registry load to fail")
+
+    def test_gene_null_message_does_not_claim_transl_except_classification(self):
+        message = self._message(gene=None)
+        self.assertIn("gene 键存在但为 null", message)
+        self.assertNotIn("transl_except 记录", message)
+
+    def test_codon_null_message_does_not_claim_transl_except_classification(self):
+        message = self._message(codon=None)
+        self.assertIn("codon 键存在但为 null", message)
+        self.assertNotIn("transl_except 记录", message)
+
+    def test_amino_acid_null_message_does_mention_the_record_type(self):
+        message = self._message(amino_acid=None)
+        self.assertIn("amino_acid 键存在但为 null", message)
+        self.assertIn("transl_except 记录", message)
+
+
 class SchemaTypeMatrixTests(unittest.TestCase):
     """P1-3: every legal JSON value must yield a verdict, never a traceback.
 

@@ -1081,14 +1081,17 @@ def load_exception_registry(path):
                 print('ERROR: 例外记录 %s 的 exceptions[%d].%s 必须是正整数, 实际为 %r'
                       % (path, index, key, value))
                 sys.exit(1)
-        # Selectors must not be null: the PRESENCE of the key is what makes a record
-        # a transl_except record, so "amino_acid": null is a malformed transl_except
-        # record, not a start-codon record.
+        # Selectors must not be null.  Only the amino_acid KEY decides that a record
+        # is a transl_except record; gene/codon belong to start records too, so a null
+        # there is simply an invalid selector (the presence of the key still counts as
+        # "declared", so it must not be silently treated as an absent key).
         for key in ('gene', 'codon', 'amino_acid'):
             if key in item and item[key] is None:
+                extra = ('; 键存在即表示这是 transl_except 记录, 不得降格为 start 记录'
+                         if key == 'amino_acid' else
+                         '; 键存在即视为已声明, 不得当作键缺失')
                 print('ERROR: 例外记录 %s 的 exceptions[%d].%s 键存在但为 null; selector 必须给出'
-                      '有效值 (键存在即表示这是 transl_except 记录, 不得降格为 start 记录)'
-                      % (path, index, key))
+                      '有效值%s' % (path, index, key, extra))
                 sys.exit(1)
         gene = _canonical_key(item.get('gene', ''))
         codon = str(item.get('codon', '')).upper()
@@ -1134,6 +1137,18 @@ def load_exception_registry(path):
             record['identity'] = identity
             bucket.append(record)
         else:
+            # A start record is selected by (gene, codon) exactly like a transl_except
+            # record is by its own key: an empty canonical gene would bind the record
+            # to "no gene identity", which is how an unnamed CDS (canonical '') could
+            # be presented as "accepted per audited record".
+            if not gene:
+                print('ERROR: 例外记录 %s 的 exceptions[%d].gene 归一化后为空 (%r); start 例外记录'
+                      '必须绑定一个可识别的基因身份' % (path, index, item.get('gene')))
+                sys.exit(1)
+            if not codon:
+                print('ERROR: 例外记录 %s 的 exceptions[%d].codon 不能为空; start 例外记录必须'
+                      '给出具体密码子' % (path, index))
+                sys.exit(1)
             registry['start'][(gene, codon)] = {
                 'taxon': item.get('taxon'), 'source': item.get('source'),
                 'rationale': item.get('rationale')}
@@ -1248,8 +1263,15 @@ def main():
     start_exceptions = set()
     for entry in options['tolerate_start']:
         gene, _, codon = entry.partition(':')
+        if not _canonical_key(gene):
+            # an empty gene selector would match an unnamed CDS (canonical ''), i.e.
+            # declare an exception for an unidentified gene
+            print('ERROR: --tolerate-start 的基因名归一化后为空 (%r); 必须给出可识别的基因, '
+                  '例如 "cox1:CGA"' % gene); sys.exit(1)
         if not codon:
             print('ERROR: --tolerate-start 需要 "基因:密码子" 形式, 收到 %s' % entry); sys.exit(1)
+        if not codon.strip():
+            print('ERROR: --tolerate-start 的密码子不能为空, 收到 %s' % entry); sys.exit(1)
         start_exceptions.add((_canonical_key(gene), codon.strip().upper()))
     used_start_exceptions = set()
     registry = load_exception_registry(options['exception_registry']) \

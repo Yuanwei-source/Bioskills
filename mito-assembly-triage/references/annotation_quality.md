@@ -185,6 +185,9 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
   等于把证据绑到“没有任何基因身份”上。记录类型按**键是否存在**判定（而非真值）：`amino_acid` 键一旦出现就是
   `transl_except` 记录，`""` 或 `null` 均为格式错误，**不得降格为 start 记录**；
   `transl_except` 的 `codon` 必须是三个 IUPAC 碱基，`amino_acid` 必须是合法例外 token；
+- **start selector 不得为空**：`--tolerate-start` 的基因名或 start 记录的 `gene` 归一化后为空
+  （`":CGA"`、`gene:"?"`/`""`/纯标点），或 start 记录的 `codon` 为空 → **参数/加载受控失败**：
+  空 selector 会与缺 `/gene`+`/product` 的 CDS（canonical `""`）精确匹配，等于给“没有基因身份”的 CDS 挂上已审计例外；
 - **同位点、不同 `taxon` 或不同 `transl_table` 的多条记录可以共存**（运行时按 `--taxon`/`--table` 选择）；
   只有 selector 完全相同（gene/codon/amino_acid/位点/taxon/transl_table 全等）的才判为重复并拒绝。
 
