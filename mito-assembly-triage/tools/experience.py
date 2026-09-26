@@ -5,6 +5,8 @@
 命令:
   search --query "关键词"           # 检索历史案例 (按信号/物种/内容)
   add-case --sample X --species Y   # 追加案例 (写入 MITO_KNOWLEDGE_DIR/cases/X.md)
+  case-anomaly <dir> --id A1 --claim '...' --status UNRESOLVED --confidence low \
+      [--reads-support NOT_ASSESSED] [--event-action <ACTION> ...] [--update]
   update-signals --signal S --judgment J --ref 案例   # 追加信号
   update-pitfalls --pitfall P --fix F                # 追加坑
   suggest-promotions                # 模式提炼: 统计重复信号/动作, 建议固化
@@ -381,6 +383,32 @@ def file_sha256(path):
             h.update(block)
     return h.hexdigest()
 
+def _hypothesis_statements(raw):
+    """[(explicit_id|None, explanation)] from --hypothesis values.
+
+    A caller who writes `--hypothesis "H1: boundary error"` has already supplied the
+    id; prepending our own would produce `id=H1` with an explanation starting with
+    `H1:` (the F-05 duplication).  A leading `H<n>:` / `H<n>、` prefix is therefore
+    stripped from the explanation, and when EVERY statement carries an explicit id
+    those ids are honoured as given.
+    """
+    statements = [str(text).strip() for text in (raw or []) if str(text).strip()]
+    parsed, explicit = [], []
+    for text in statements:
+        match = re.match(r'^\s*H(\d+)\s*[:：.、)\]]\s*(.*)$', text)
+        if match:
+            explicit.append('H%s' % match.group(1))
+            parsed.append(match.group(2).strip() or text)
+        else:
+            explicit.append(None)
+            parsed.append(text)
+    if all(explicit):
+        if len(set(explicit)) != len(explicit):
+            raise ValueError('--hypothesis 的显式编号重复: %s' % ','.join(sorted(explicit)))
+        return list(zip(explicit, parsed))
+    return [(None, text) for text in parsed]
+
+
 def case_init(args):
     root = v2_case_root(args.directory)
     inputs = []
@@ -388,13 +416,14 @@ def case_init(args):
         path = pathlib.Path(raw).resolve()
         if not path.is_file(): raise ValueError('输入不存在: %s' % raw)
         inputs.append({'role': role, 'path': str(path), 'sha256': file_sha256(path)})
-    statements = [str(text).strip() for text in (getattr(args, 'hypothesis', None) or []) if str(text).strip()]
-    if not statements:
+    pairs = _hypothesis_statements(getattr(args, 'hypothesis', None))
+    if not pairs:
         raise ValueError('case-init 至少要给出 1 条候选解释: --hypothesis "..." '
                          '(SKILL.md 的 HYPOTHESIZE 步骤建议先列出多条竞争解释)')
-    hypotheses = [{'id': 'H%d' % (index + 1), 'explanation': text,
-                   'support': [], 'against': [], 'unknown': []}
-                  for index, text in enumerate(statements)]
+    hypotheses = []
+    for index, (explicit, text) in enumerate(pairs):
+        hypotheses.append({'id': explicit or 'H%d' % (index + 1), 'explanation': text,
+                           'support': [], 'against': [], 'unknown': []})
     case = {'schema_version': '2.0', 'case_id': args.case_id or root.name,
             'taxon': {'name': args.taxon, 'taxid': None, 'genetic_code': None},
             'inputs': inputs, 'issue': {'type': args.issue, 'user_observation': args.observation},
@@ -505,6 +534,92 @@ def _case_errors_without_jsonschema(case):
     return errors
 
 
+def case_anomaly(args):
+    """Write one anomaly into case.json's anomalies[] -- the format the schema owns.
+
+    Deliberately NOT a second record format: the entry goes into the same
+    schema-validated case.json, and the resulting case is re-validated before the
+    file is replaced.  `--event-action` must name an existing event action, so the
+    anomaly's link to the original tool output is real rather than decorative.
+    """
+    root = pathlib.Path(args.directory).resolve()
+    case_path = root / 'case.json'
+    if not case_path.is_file():
+        raise ValueError('案例不存在: %s' % case_path)
+    with open(case_path, encoding='utf-8') as fh:
+        case = json.load(fh)
+    if not isinstance(case, dict):
+        raise ValueError('case.json 必须是 JSON 对象')
+    anomalies = case.setdefault('anomalies', [])
+    if not isinstance(anomalies, list):
+        raise ValueError('case.json 的 anomalies 必须是数组')
+    anomaly_id = str(args.id).strip()
+    claim = str(args.claim).strip()
+    if not anomaly_id:
+        raise ValueError('--id 不能为空')
+    if not claim:
+        raise ValueError('--claim 不能为空')
+    # enums are read from the single set of constants the schema path also uses
+    if args.status not in DECISION_STATUSES:
+        raise ValueError('--status 取值非法: %s (允许: %s)'
+                         % (args.status, '/'.join(DECISION_STATUSES)))
+    if args.confidence not in CONFIDENCE_LEVELS:
+        raise ValueError('--confidence 取值非法: %s (允许: %s)'
+                         % (args.confidence, '/'.join(CONFIDENCE_LEVELS)))
+    if args.reads_support and args.reads_support not in READS_SUPPORT_LEVELS:
+        raise ValueError('--reads-support 取值非法: %s (允许: %s)'
+                         % (args.reads_support, '/'.join(READS_SUPPORT_LEVELS)))
+
+    actions = [str(a).strip() for a in (args.event_action or []) if str(a).strip()]
+    if actions:
+        events_path = safe_case_member(root, case.get('events_file', 'events.jsonl'),
+                                       'events_file')
+        known = set()
+        if events_path.is_file():
+            for line in events_path.read_text(encoding='utf-8').splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict) and record.get('action'):
+                    known.add(str(record['action']))
+        unknown = [a for a in actions if a not in known]
+        if unknown:
+            raise ValueError('--event-action 引用了不存在的事件: %s '
+                             '(关联必须真实, 不能凭空挂接)' % ', '.join(unknown))
+
+    entry = {'id': anomaly_id, 'claim': claim, 'status': args.status,
+             'confidence': args.confidence}
+    if args.reads_support:
+        entry['reads_support'] = args.reads_support
+    if actions:
+        entry['evidence_events'] = list(dict.fromkeys(actions))
+
+    matches = [index for index, item in enumerate(anomalies)
+               if isinstance(item, dict) and item.get('id') == anomaly_id]
+    if matches and not args.update:
+        raise ValueError('anomaly id 已存在: %s (如需替换请加 --update)' % anomaly_id)
+    if matches:
+        anomalies[matches[0]] = entry
+    else:
+        anomalies.append(entry)
+
+    errors = case_schema_errors(case)
+    if errors:
+        raise ValueError('写回后案例不符合 schema, 已放弃写入: %s' % '; '.join(errors))
+
+    tmp = root / 'case.json.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(case, fh, ensure_ascii=False, indent=2)
+        fh.write('\n')
+    os.replace(tmp, case_path)
+    print('anomaly recorded: %s (%s/%s%s)'
+          % (anomaly_id, entry['status'], entry['confidence'],
+             ', reads_support=%s' % entry['reads_support'] if args.reads_support else ''))
+
+
 def case_schema_errors(case):
     """Enforce schemas/case.schema.json; fall back to an equivalent explicit check."""
     schema_path = CASE_SCHEMA
@@ -608,7 +723,7 @@ def main():
         ap = argparse.ArgumentParser(); ap.add_argument('--manifest', required=True)
         try: sync_public(ap.parse_args(sys.argv[2:]))
         except (ValueError, OSError, json.JSONDecodeError, urllib.error.URLError) as exc: print('✗ 公共知识未同步: %s' % exc, file=sys.stderr); sys.exit(1)
-    elif cmd in ('case-init', 'case-event', 'case-validate', 'case-report'):
+    elif cmd in ('case-init', 'case-event', 'case-anomaly', 'case-validate', 'case-report'):
         ap = argparse.ArgumentParser()
         if cmd == 'case-init':
             ap.add_argument('directory'); ap.add_argument('--case-id'); ap.add_argument('--issue', required=True); ap.add_argument('--observation', required=True); ap.add_argument('--taxon'); ap.add_argument('--input', nargs=2, action='append', default=[], metavar=('ROLE', 'PATH')); ap.add_argument('--hypothesis', action='append', default=[], metavar='TEXT')
@@ -617,6 +732,10 @@ def main():
         elif cmd == 'case-event':
             ap.add_argument('directory'); ap.add_argument('--action', required=True); ap.add_argument('--result', required=True); ap.add_argument('--impact', default=''); ap.add_argument('--command', default=''); ap.add_argument('--tool-version', default=''); ap.add_argument('--motivation', default='')
             case_event(ap.parse_args(sys.argv[2:]))
+        elif cmd == 'case-anomaly':
+            ap.add_argument('directory'); ap.add_argument('--id', required=True); ap.add_argument('--claim', required=True); ap.add_argument('--status', required=True); ap.add_argument('--confidence', required=True); ap.add_argument('--reads-support', dest='reads_support', default=None); ap.add_argument('--event-action', dest='event_action', action='append', default=[], metavar='ACTION'); ap.add_argument('--update', action='store_true')
+            try: case_anomaly(ap.parse_args(sys.argv[2:]))
+            except (ValueError, OSError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
         elif cmd == 'case-validate':
             ap.add_argument('directory'); sys.exit(case_validate(ap.parse_args(sys.argv[2:])))
         else:
