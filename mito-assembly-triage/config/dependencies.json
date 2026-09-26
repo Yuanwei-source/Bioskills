@@ -1,0 +1,289 @@
+{
+  "format": "mito-dependency-manifest-1",
+  "comment": "依赖的唯一来源。env_check.py 读它做盘点与门禁；各脚本只声明自己属于哪个 stage（见 stages），不在脚本里重复写依赖列表——重复的清单就是下一个会漂移的缺陷（参见 #14 删除的双校验实现）。",
+  "tiers": {
+    "essential": "核心诊断能力所需：不全就应当先补齐，或明确报告哪些能力不可用",
+    "extended": "增强能力（注释本体、专用结构预测、绘图等）：缺失不阻断基础诊断",
+    "optional": "按需：联网查询、提交预检等一次性用途"
+  },
+  "python_libs": [
+    {
+      "id": "python3",
+      "tier": "essential",
+      "probe": {
+        "type": "python-interpreter"
+      },
+      "min_version": "3.8",
+      "purpose": "运行本 skill 的全部脚本",
+      "install": "系统包管理器或 conda 安装 python>=3.8"
+    },
+    {
+      "id": "jsonschema",
+      "tier": "essential",
+      "probe": {
+        "type": "python-import",
+        "module": "jsonschema",
+        "distribution": "jsonschema"
+      },
+      "purpose": "案例校验（唯一实现路径；缺失时 case-validate 等以退出码 3 失败）",
+      "install": "python3 -m pip install jsonschema"
+    },
+    {
+      "id": "biopython",
+      "tier": "essential",
+      "probe": {
+        "type": "python-import",
+        "module": "Bio",
+        "distribution": "biopython"
+      },
+      "purpose": "GenBank/FASTA 解析、密码表、序列统计（annot_check/blast_genes/circularize/mitos2_to_genbank/seq_stats）",
+      "install": "python3 -m pip install biopython"
+    }
+  ],
+  "tools": [
+    {
+      "id": "blastn",
+      "tier": "essential",
+      "probe": {
+        "type": "command",
+        "name": "blastn"
+      },
+      "purpose": "基因定位与同源检索（blast_genes / circularize）",
+      "install": "conda install -c bioconda blast  或  apt-get install ncbi-blast+"
+    },
+    {
+      "id": "makeblastdb",
+      "tier": "essential",
+      "probe": {
+        "type": "command",
+        "name": "makeblastdb"
+      },
+      "purpose": "建自比对库（circularize / 重复检查）",
+      "install": "随 blastn 一同安装"
+    },
+    {
+      "id": "samtools",
+      "tier": "essential",
+      "probe": {
+        "type": "command",
+        "name": "samtools"
+      },
+      "purpose": "BAM 排序/索引/深度与覆盖剖面（depth_analysis / circularize）",
+      "install": "conda install -c bioconda samtools"
+    },
+    {
+      "id": "minimap2",
+      "tier": "essential",
+      "probe": {
+        "type": "command",
+        "name": "minimap2",
+        "env": "MINIMAP2"
+      },
+      "purpose": "reads 回贴（深度证据、接缝证据）",
+      "install": "conda install -c bioconda minimap2"
+    },
+    {
+      "id": "seqkit",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "seqkit"
+      },
+      "purpose": "FASTQ/FASTA 快速体检与子集抽取（辅助）",
+      "install": "conda install -c bioconda seqkit"
+    },
+    {
+      "id": "bwa",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "bwa"
+      },
+      "purpose": "备选比对器（仅在 minimap2 不适用时）",
+      "install": "conda install -c bioconda bwa"
+    },
+    {
+      "id": "mitos2",
+      "tier": "extended",
+      "probe": {
+        "type": "python-module",
+        "module": "mitos",
+        "env": "MITOS2_PY",
+        "distribution": "mitos"
+      },
+      "purpose": "线粒体注释（独立第二意见；本 skill 用 mitos2_to_genbank.py 转成 GenBank）",
+      "install": "见 https://mitos2.bioinf.uni-leipzig.de/ （或 conda install -c bioconda mitos）"
+    },
+    {
+      "id": "mitos2_refdir",
+      "tier": "extended",
+      "probe": {
+        "type": "env-dir",
+        "env": "MITOS2_REFDIR",
+        "sub": "MITOS2_REFSEQVER"
+      },
+      "purpose": "MITOS2 参考数据库（数十 GB，通常镜像到本地/NAS）",
+      "install": "设置 MITOS2_REFDIR 与 MITOS2_REFSEQVER（见 config/env.sh）"
+    },
+    {
+      "id": "cmsearch",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "cmsearch",
+        "env": "MITOS2_EXTRA_PATH"
+      },
+      "purpose": "MITOS2 的 rRNA 搜索（Infernal）",
+      "install": "conda install -c bioconda infernal（并加入 MITOS2_EXTRA_PATH）"
+    },
+    {
+      "id": "tRNAscan-SE",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "tRNAscan-SE"
+      },
+      "purpose": "tRNA 结构预测（tRNA 缺失分级的独立证据）",
+      "install": "conda install -c bioconda trnascan-se"
+    },
+    {
+      "id": "mitofinder",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "mitofinder"
+      },
+      "purpose": "第二条独立注释路径（需要近缘参考 GenBank）",
+      "install": "conda install -c bioconda mitofinder"
+    },
+    {
+      "id": "plot_python",
+      "tier": "extended",
+      "probe": {
+        "type": "python-module",
+        "module": "matplotlib",
+        "env": "PLOT_PY",
+        "distribution": "matplotlib"
+      },
+      "purpose": "环形图绘制（run_circular_map.sh）",
+      "install": "在 PLOT_PY 指向的环境里 pip install biopython matplotlib"
+    },
+    {
+      "id": "network",
+      "tier": "optional",
+      "probe": {
+        "type": "network",
+        "host": "eutils.ncbi.nlm.nih.gov"
+      },
+      "purpose": "公共参考获取 / COX1 远程查询 / 公共同步",
+      "install": "无需安装；受限网络下这些步骤不可用，其余步骤不受影响"
+    },
+    {
+      "id": "table2asn",
+      "tier": "optional",
+      "probe": {
+        "type": "command",
+        "name": "table2asn"
+      },
+      "purpose": "NCBI 提交预检（不在本 skill 自检范围内）",
+      "install": "见 NCBI 官方页面（人工执行）"
+    }
+  ],
+  "stages": {
+    "seq_stats": {
+      "tier": "essential",
+      "requires": [
+        "python3",
+        "biopython"
+      ],
+      "tools": "scripts/seq_stats.py",
+      "capability": "序列体检（长度/GC/模糊碱基）"
+    },
+    "annot_check": {
+      "tier": "essential",
+      "requires": [
+        "python3",
+        "biopython"
+      ],
+      "tools": "scripts/annot_check.py",
+      "capability": "注释一致性质检"
+    },
+    "annot_independent": {
+      "tier": "extended",
+      "requires": [
+        "python3",
+        "biopython",
+        "mitos2",
+        "mitos2_refdir",
+        "cmsearch"
+      ],
+      "tools": "scripts/run_mitos2.sh + scripts/mitos2_to_genbank.py",
+      "capability": "独立重新注释（第二意见）"
+    },
+    "gene_locating": {
+      "tier": "essential",
+      "requires": [
+        "python3",
+        "biopython",
+        "blastn",
+        "makeblastdb"
+      ],
+      "tools": "scripts/blast_genes.py",
+      "capability": "参考基因定位与顺序对照"
+    },
+    "read_evidence": {
+      "tier": "essential",
+      "requires": [
+        "samtools",
+        "minimap2"
+      ],
+      "tools": "scripts/depth_analysis.py",
+      "capability": "reads 覆盖/深度/碱基支持"
+    },
+    "circularize": {
+      "tier": "essential",
+      "requires": [
+        "python3",
+        "biopython",
+        "blastn",
+        "minimap2",
+        "samtools"
+      ],
+      "tools": "scripts/circularize.py",
+      "capability": "接缝/环化候选的证据链"
+    },
+    "case_records": {
+      "tier": "essential",
+      "requires": [
+        "python3",
+        "jsonschema"
+      ],
+      "tools": "tools/experience.py",
+      "capability": "结构化案例与参考登记"
+    },
+    "reference_acquisition": {
+      "tier": "optional",
+      "requires": [
+        "network"
+      ],
+      "tools": "scripts/reference_registry.py",
+      "capability": "获取公共参考（不上传样本）"
+    },
+    "cox1_identity": {
+      "tier": "optional",
+      "requires": [
+        "network"
+      ],
+      "tools": "scripts/cox1_id.py",
+      "capability": "COX1 远程查询（会上传片段，须显式授权）"
+    },
+    "circular_plot": {
+      "tier": "extended",
+      "requires": [
+        "plot_python"
+      ],
+      "tools": "scripts/run_circular_map.sh",
+      "capability": "论文级环形图"
+    }
+  }
+}

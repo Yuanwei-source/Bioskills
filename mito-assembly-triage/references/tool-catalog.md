@@ -43,6 +43,7 @@ COX1 多 HSP 出现 query/target 重叠、非共线或混链时不自动汇总�
 | `export-contribution / sync-public` | 预览脱敏贡献 / 同步隔离缓存 | 生成预览与实际上传分开；授权与校验见 [learning-policy.md](learning-policy.md) |
 | `scripts/reference_registry.py` | acquire/register/record-database/list/verify | 固定版本、hash 与用途；不判参考是否可靠，见 [reference-policy.md](reference-policy.md) |
 | 代码↔文档审计：`python3 tools/audit_code_docs.py [--json] [--check-baseline] [--update-baseline]` | skill 目录本身（无需网络） | 代码里的 flag/错误码/枚举值是否仍有文档、规则表是否仍可检索、基线是否同步 | **不判断文档写得对不对**（语义仍须人工评审）；`--update-baseline` 只写豁免清单 | 非 0 = 发现漂移；写 `tools/doc_contract_baseline.json` |
+| 依赖盘点/门禁：`python3 tools/env_check.py --setup|--daily|--stage NAME [--json --strict --network --path DIR --lock PATH]` | skill 目录 + `config/dependencies.json`（无需网络，`--network` 才探测联网依赖） | 三级依赖（essential/extended/optional）是否就绪、某个 stage 能否执行、环境相对上次是否变化 | **不验证数据正确性**；lock 是缓存不是信任凭证（日常仍真实探测） | `0` 就绪 / `2` essential 缺失 / `3` 该 stage 缺依赖；写 `$MITO_KNOWLEDGE_DIR/environment.lock.json` |
 | `bash scripts/check_env.sh` | 全环境盘点，可选 | 0 核心依赖就绪 / 2 核心依赖缺失；只阻断实际依赖缺失工具的步骤 |
 | `bash scripts/run_bg.sh <名> -- <命令...>` | 长任务后台运行 | logs 中记录 log/pid/status；可信 shell 才用 `--trusted-shell` |
 | `bash scripts/check_bg.sh <名> [--tail N]` | 查询实际状态与日志 | running/timeout 不等于完成；正常退出不等于科学验收 |

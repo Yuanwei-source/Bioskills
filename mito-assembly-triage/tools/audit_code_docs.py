@@ -38,6 +38,7 @@ DOC_FILES = ('SKILL.md', 'references')
 # 代码里会被抽取 token 的文件（相对 skill 根）
 CODE_FILES = (
     'tools/experience.py',
+    'tools/env_check.py',
     'scripts/reference_registry.py',
     'scripts/annot_check.py',
     'scripts/cox1_id.py',

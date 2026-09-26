@@ -6,6 +6,14 @@ set -u
 set -o pipefail
 missing=0
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# 新模式（部署一次/日常/单阶段）直通给 tools/env_check.py：依赖清单只有一个来源
+# （config/dependencies.json），不在 shell 里再维护一份工具清单。
+case "${1:-}" in
+  --setup|--daily|--stage|--json|--strict|--network|--path|--lock|--manifest)
+    exec python3 "$SKILL_DIR/tools/env_check.py" "$@"
+    ;;
+esac
 # shellcheck source=../config/env.sh
 source "$SKILL_DIR/config/env.sh"
 
