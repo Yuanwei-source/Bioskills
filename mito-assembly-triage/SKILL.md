@@ -195,6 +195,11 @@ python3 tools/experience.py case-init work/case-001 --issue internal_stop \
   --hypothesis 'H1 边界/读码框错误' --hypothesis 'H2 碱基错误' --hypothesis 'H3 真实生物例外'
 python3 tools/experience.py case-event work/case-001 --action annot_check \
   --result 'table 5 下仍有内部 stop' --impact H1:against
+# 逐异常判定（SKILL.md 第 6 步）写入既有 case.json 的 anomalies[]，经 schema 校验；
+# --event-action 必须引用 events.jsonl 中真实存在的事件，保证异常与原始工具输出可追溯
+python3 tools/experience.py case-anomaly work/case-001 \
+  --id A1 --claim 'nad5 内部 stop 未被解释' --status UNRESOLVED --confidence low \
+  --reads-support NOT_ASSESSED --event-action annot_check        # 替换已有 id 加 --update
 python3 tools/experience.py case-validate work/case-001
 python3 tools/experience.py case-report work/case-001
 
