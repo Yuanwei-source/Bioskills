@@ -560,7 +560,7 @@ class SchemaKeywordCoverageTests(unittest.TestCase):
             "schema_version": "9.9", "case_id": 5, "case_id_empty": "", "taxon": "Diptera",
             "inputs": "x", "issue": "x", "hypotheses": "x", "events_file": 1,
             "decision": "x", "anomalies": "x", "modifications": "x",
-            "validation": "x", "lessons_proposed": "x",
+            "validation": "x", "lessons_proposed": "x", "case_type": "anomalous",
         }
         for key, bad in violations.items():
             with self.subTest(field=key):
@@ -1257,9 +1257,9 @@ class SchemaTypeMatrixTests(unittest.TestCase):
     """
 
     VALUES = (1, 0, -1, "x", "", [], [1], {}, {"a": 1}, None, True, 1.5)
-    FIELDS = ("schema_version", "case_id", "taxon", "inputs", "issue", "hypotheses",
-              "events_file", "decision", "anomalies", "modifications", "validation",
-              "lessons_proposed")
+    FIELDS = ("schema_version", "case_id", "case_type", "taxon", "inputs", "issue",
+              "hypotheses", "events_file", "decision", "anomalies", "modifications",
+              "validation", "lessons_proposed")
 
     def setUp(self):
         self.module = load_module("experience_type_matrix", Path("tools") / "experience.py")

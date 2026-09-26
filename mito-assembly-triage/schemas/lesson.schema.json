@@ -8,6 +8,8 @@
     "validation_status": {"enum": ["candidate", "verified", "rejected", "deprecated", "withdrawn", "superseded"]},
     "version": {"type": "string"},
     "supporting_case_ids": {"type": "array"},
-    "counterexample_case_ids": {"type": "array"}
+    "counterexample_case_ids": {"type": "array"},
+    "generalization_scope": {"enum": ["single_case", "species", "genus", "family", "order", "multi_taxon"]},
+    "transferability": {"enum": ["none", "low", "moderate", "high"]}
   }
 }

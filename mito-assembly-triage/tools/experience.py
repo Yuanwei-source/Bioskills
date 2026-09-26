@@ -30,6 +30,15 @@ LESSON_STATUSES = {'candidate', 'verified', 'rejected', 'deprecated', 'withdrawn
 LESSON_REVIEW_STATUSES = LESSON_STATUSES - {'candidate'}
 LESSON_RETIRED_STATUSES = {'rejected', 'deprecated', 'withdrawn', 'superseded', 'revoked'}
 CASE_SCHEMA = os.path.join(SKILL_DIR, 'schemas', 'case.schema.json')
+# 案例类型：只记"异常"会让经验系统偏向"线粒体一定有问题"（特异性偏差），
+# 因此正常验证案例与工具故障案例都必须可记录。
+CASE_TYPES = ('abnormal_case', 'normal_validation_case', 'tool_failure_case')
+# lesson 的推广上限：默认 fail-closed（single_case / none），防止"一次案例 → 规则"。
+GENERALIZATION_SCOPES = ('single_case', 'species', 'genus', 'family', 'order', 'multi_taxon')
+TRANSFERABILITY_LEVELS = ('none', 'low', 'moderate', 'high')
+# 支持的**独立**案例数下限（独立 = case_id 不同且记录的类群不同；无法证明独立的按不独立处理）。
+SCOPE_MIN_CASES = {'single_case': 1, 'species': 1, 'genus': 2, 'family': 2, 'order': 3, 'multi_taxon': 3}
+TRANSFERABILITY_MIN_CASES = {'none': 0, 'low': 1, 'moderate': 3, 'high': 5}
 SAFE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
 
 
@@ -113,15 +122,89 @@ def detect_lesson_conflicts(lesson, directory=None):
             conflicts.append(str(path))
     return conflicts
 
+def _case_taxon_name(case):
+    """Normalised taxon name of a case, or None when it is not recorded."""
+    taxon = case.get('taxon')
+    if isinstance(taxon, dict):
+        name = taxon.get('name')
+        if isinstance(name, str) and name.strip():
+            return name.strip().lower()
+    return None
+
+
+def _load_related_cases(paths, label):
+    """[(case_dict, path)] for each --supporting-case / --counterexample-case value."""
+    loaded = []
+    for raw in (paths or []):
+        case_path = pathlib.Path(raw) / 'case.json'
+        if not case_path.is_file():
+            raise ValueError('%s 案例不存在: %s' % (label, raw))
+        loaded.append((_json(case_path), str(raw)))
+    return loaded
+
+
+def _lesson_scope_errors(scope, transferability, support, counter):
+    """Fail-closed rules tying a lesson's claim to its INDEPENDENT support.
+
+    Independence is deliberately hard to establish: two cases count as independent
+    only when both record a taxon and the taxa differ.  A case with no recorded taxon
+    contributes nothing, because "we cannot show these are independent" must not be
+    rounded up to "independent" - that rounding is exactly how one case becomes a rule.
+    """
+    errors = []
+    if scope not in GENERALIZATION_SCOPES:
+        errors.append('generalization_scope 取值非法: %s (允许: %s)'
+                      % (scope, '/'.join(GENERALIZATION_SCOPES)))
+    if transferability not in TRANSFERABILITY_LEVELS:
+        errors.append('transferability 取值非法: %s (允许: %s)'
+                      % (transferability, '/'.join(TRANSFERABILITY_LEVELS)))
+    if errors:
+        return errors
+    total = len({c.get('case_id') for c in support if c.get('case_id')}) or 1
+    independent = len({_case_taxon_name(c) for c in support if _case_taxon_name(c)})
+    if scope == 'single_case' and transferability != 'none':
+        errors.append('generalization_scope=single_case 只能配 transferability=none')
+    if counter and transferability != 'none':
+        errors.append('存在反例（counterexample）时不得提高 transferability')
+    if scope != 'single_case':
+        if total < SCOPE_MIN_CASES[scope]:
+            errors.append('generalization_scope=%s 需要至少 %d 个支持案例（当前 %d）'
+                          % (scope, SCOPE_MIN_CASES[scope], total))
+        if independent < SCOPE_MIN_CASES[scope]:
+            errors.append('generalization_scope=%s 需要至少 %d 个不同类群的独立支持案例'
+                          '（无法证明独立的不计数，当前 %d）'
+                          % (scope, SCOPE_MIN_CASES[scope], independent))
+    if independent < TRANSFERABILITY_MIN_CASES[transferability]:
+        errors.append('transferability=%s 需要至少 %d 个不同类群的独立支持案例（当前 %d）'
+                      % (transferability, TRANSFERABILITY_MIN_CASES[transferability], independent))
+    return errors
+
+
 def propose_lesson(args):
     lesson_dirs(); case = _json(pathlib.Path(args.case) / 'case.json')
     if case.get('decision', {}).get('status') == 'UNRESOLVED' and not args.allow_unresolved:
         raise ValueError('未解决案例不能直接提炼；使用 --allow-unresolved 仅生成候选并保留限制')
     lesson_id = safe_identifier(args.lesson_id or case.get('case_id'), 'lesson_id')
+    scope = getattr(args, 'generalization_scope', None) or 'single_case'
+    transferability = getattr(args, 'transferability', None) or 'none'
+    extra_support = _load_related_cases(getattr(args, 'supporting_case', None), '--supporting-case')
+    counter = _load_related_cases(getattr(args, 'counterexample_case', None), '--counterexample-case')
+    support = [(case, str(args.case))] + extra_support
+    support_ids = [item.get('case_id') for item, _ in support if item.get('case_id')]
+    counter_ids = [item.get('case_id') for item, _ in counter if item.get('case_id')]
+    shared = sorted(set(support_ids) & set(counter_ids))
+    if shared:
+        raise ValueError('同一案例不能同时作为支持与反例: %s' % ', '.join(shared))
+    errors = _lesson_scope_errors(scope, transferability, [item for item, _ in support],
+                                 [item for item, _ in counter])
+    if errors:
+        raise ValueError('; '.join(errors))
     lesson = {'lesson_id': lesson_id, 'applicable_when': [case.get('issue', {}).get('type')],
               'not_applicable_when': [], 'diagnostic_clues': [case.get('issue', {}).get('user_observation', '')],
-              'suggested_next_test': args.next_test, 'supporting_case_ids': [case.get('case_id')],
-              'counterexample_case_ids': [], 'sources': [{'case_id': case.get('case_id'), 'path': str(args.case)}],
+              'suggested_next_test': args.next_test, 'supporting_case_ids': support_ids,
+              'counterexample_case_ids': counter_ids,
+              'sources': [{'case_id': item.get('case_id'), 'path': path} for item, path in support],
+              'generalization_scope': scope, 'transferability': transferability,
               'decision_status': case.get('decision', {}).get('status'),
               'validation_status': 'candidate', 'version': '1.0.0', 'last_reviewed': None}
     conflicts = detect_lesson_conflicts(lesson)
@@ -410,6 +493,9 @@ def _hypothesis_statements(raw):
 
 
 def case_init(args):
+    case_type = getattr(args, 'case_type', None) or 'abnormal_case'
+    if case_type not in CASE_TYPES:
+        raise ValueError('--case-type 取值非法: %s (允许: %s)' % (case_type, '/'.join(CASE_TYPES)))
     root = v2_case_root(args.directory)
     inputs = []
     for role, raw in args.input:
@@ -425,6 +511,7 @@ def case_init(args):
         hypotheses.append({'id': explicit or 'H%d' % (index + 1), 'explanation': text,
                            'support': [], 'against': [], 'unknown': []})
     case = {'schema_version': '2.0', 'case_id': args.case_id or root.name,
+            'case_type': case_type,
             'taxon': {'name': args.taxon, 'taxid': None, 'genetic_code': None},
             'inputs': inputs, 'issue': {'type': args.issue, 'user_observation': args.observation},
             'hypotheses': hypotheses, 'events_file': 'events.jsonl',
@@ -478,6 +565,8 @@ def _case_errors_without_jsonschema(case):
         errors.append('case_id 必须是非空字符串 (minLength: 1)')
     if 'events_file' in case and not isinstance(case['events_file'], str):
         errors.append('events_file 必须是字符串')
+    if 'case_type' in case and case['case_type'] not in CASE_TYPES:
+        errors.append('case_type 取值非法: %s' % (case['case_type'],))
     for key in ('inputs', 'hypotheses', 'anomalies', 'modifications',
                 'validation', 'lessons_proposed'):
         if key in case and not isinstance(case[key], list):
@@ -708,7 +797,7 @@ def main():
     elif cmd == 'search-structured':
         ap = argparse.ArgumentParser(); ap.add_argument('--query', required=True); structured_search(ap.parse_args(sys.argv[2:]).query)
     elif cmd == 'propose-lesson':
-        ap = argparse.ArgumentParser(); ap.add_argument('--case', required=True); ap.add_argument('--next-test', required=True); ap.add_argument('--lesson-id'); ap.add_argument('--allow-unresolved', action='store_true')
+        ap = argparse.ArgumentParser(); ap.add_argument('--case', required=True); ap.add_argument('--next-test', required=True); ap.add_argument('--lesson-id'); ap.add_argument('--allow-unresolved', action='store_true'); ap.add_argument('--supporting-case', dest='supporting_case', action='append', default=[], metavar='DIR'); ap.add_argument('--counterexample-case', dest='counterexample_case', action='append', default=[], metavar='DIR'); ap.add_argument('--generalization-scope', dest='generalization_scope', default='single_case', choices=list(GENERALIZATION_SCOPES)); ap.add_argument('--transferability', default='none', choices=list(TRANSFERABILITY_LEVELS))
         try: propose_lesson(ap.parse_args(sys.argv[2:]))
         except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
     elif cmd == 'export-contribution':
@@ -726,7 +815,7 @@ def main():
     elif cmd in ('case-init', 'case-event', 'case-anomaly', 'case-validate', 'case-report'):
         ap = argparse.ArgumentParser()
         if cmd == 'case-init':
-            ap.add_argument('directory'); ap.add_argument('--case-id'); ap.add_argument('--issue', required=True); ap.add_argument('--observation', required=True); ap.add_argument('--taxon'); ap.add_argument('--input', nargs=2, action='append', default=[], metavar=('ROLE', 'PATH')); ap.add_argument('--hypothesis', action='append', default=[], metavar='TEXT')
+            ap.add_argument('directory'); ap.add_argument('--case-id'); ap.add_argument('--case-type', dest='case_type', default='abnormal_case', choices=list(CASE_TYPES)); ap.add_argument('--issue', required=True); ap.add_argument('--observation', required=True); ap.add_argument('--taxon'); ap.add_argument('--input', nargs=2, action='append', default=[], metavar=('ROLE', 'PATH')); ap.add_argument('--hypothesis', action='append', default=[], metavar='TEXT')
             try: case_init(ap.parse_args(sys.argv[2:]))
             except (ValueError, OSError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
         elif cmd == 'case-event':

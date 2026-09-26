@@ -4,6 +4,8 @@
 
 > **适用边界**：针对用户报告的**单个异常**按需诊断，默认不重组装、不跑全部工具。
 > 结构化事实链由 `tools/experience.py` 的 `case-*` 子命令承载（`case.json` / `events.jsonl` / `case.md`）。
+> **先读**：入口路由 `START_HERE.md`；分流（组装 vs 注释）/优先级/停止条件/参考等级/最小证据集
+> `diagnostic-decision-tree.md`；结论层与报告模板 `conclusion-report.md`。
 
 ## INTAKE（先收语境，再动手）
 
@@ -35,9 +37,13 @@
 
 ## CHOOSE_TEST（选能区分假设、且成本低的检查）
 
+- **先分流**：这个异常更像**组装**问题还是**注释**问题（`diagnostic-decision-tree.md` §1）。
+  分流错了，后面的检查再多也不会改变结论：注释工具回答不了组装问题，重组装也修不掉密码表/边界错误。
+- 按**优先级**排：P0 结构真实性 → P1 注释一致性 → P2 生物学解释（`diagnostic-decision-tree.md` §2）。
 - 优先选**能改变假设排序**、成本低、可复现的检查；
 - 即使某项检查不能改变排序，**若它是安全关键修复的验收条件，也不得省略**；
 - 没有可用数据时不循环空跑；无法区分时直接进入 DECIDE 并写 `UNRESOLVED`；
+- 只做**最小充分证据集**里必需的项（`diagnostic-decision-tree.md` §6），不是为了凑齐全套工具；
 - 先查工具目录（`tool-catalog.md`）确认输入要求与"不能证明什么"。
 
 ## EXECUTE
@@ -75,7 +81,21 @@
 （被降级项 + 支持证据 + 判定人）：`NONCANONICAL_START_REVIEW`、`PARTIAL_CDS_5P`、`UNDETERMINED_TRNA`、
 `OVERLAP_LONG`、`OVERLAP_ACCEPTED`、`ORIENTATION`、以及所有由 `--allow-atypical` 降级的基因集差异。
 
-**停止条件**：无法区分时必须停止，清晰指出"最少还需什么证据"，不要为了收尾而猜测。
+**决定级别必须写明**：每条异常除 `status`/`confidence`/`reads_support` 外，还要在 `claim` 或事件里注明
+由谁决定（`AUTO` / `ASSIST` / `EXPERT`，见 `diagnostic-decision-tree.md` §4）。`EXPERT` 级事项
+（真实基因丢失、重排/新结构、环化认定、NUMT 来源归属、"组装是否可用"）未获人工确认时**保持 `UNRESOLVED`**，
+不得因为 AI 自己觉得证据够了就标 `RESOLVED`。
+
+**停止条件（四类，必须给出理由）**：
+
+- **Stop A 关键输入缺失**（无 reads / 无参考 / 无核或竞争参考）→ 该结论 `UNRESOLVED` + `not_assessable`，
+  并写明"缺哪一项输入才能推进"；
+- **Stop B 边际收益为零**（已有证据组合决定了结论，再跑同类工具不会改变置信档位）→ 停止并列出已排除的解释；
+- **Stop C 无法判别**（竞争解释需要不存在的数据才能区分）→ `UNRESOLVED` + 写明"最少还需什么证据"；
+- **Stop D 低功效阴性**（观测区覆盖过低，阴性结果不具判别力）→ 把阴性结果记为**弱证据**，不作独立结论
+  （阴性证据强度表见 `evidence-standard.md` §3.2）。
+
+不要为了收尾而猜测；也不要把"还没跑完所有工具"当成继续的理由。
 
 ## VERIFY
 
@@ -104,8 +124,12 @@
 
 ## 相关文件
 
-- 证据等级与 `raw-read-supported` 要求：`evidence-standard.md`
-- 注释侧硬阈值：`annotation_quality.md`
+- 入口路由（我有什么数据/我被什么现象叫来）：`START_HERE.md`
+- 分流、优先级、停止条件、参考等级、最小证据集、AI/人工边界：`diagnostic-decision-tree.md`
+- 结论层与报告模板（事实/结论/无证据声明/下一步）：`conclusion-report.md`
+- 证据等级、`confidence`、竞争参考与阴性证据强度：`evidence-standard.md`
+- 注释侧硬阈值与 tRNA 缺失分级：`annotation_quality.md`
 - 顺序与坐标约定：`standard_gene_order.md`
 - 工具输入/产出与局限：`tool-catalog.md`；环境：`tool_check.md`
-- 经验晋升与共享边界：`learning-policy.md`
+- 经验晋升、正常案例与共享边界：`learning-policy.md`
+- 实现约束（schema/解析/退出码/原子写入）：`developer-contract.md`
