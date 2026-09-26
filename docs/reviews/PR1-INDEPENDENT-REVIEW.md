@@ -12,7 +12,7 @@
 
 ## 1. 审查范围与版本
 
-- 仓库：`/home/dell/workspace/yuanwei/Bio_project/Bioskills`
+- 仓库：`<repo-root>`（本地绝对路径已在归档时校对为占位符；见 `docs/reviews/README.md`）
 - 模块：`mito-assembly-triage/`
 - 原 BASE / 旧 main：`384b1317511a510378db1836539134b759fdcf06`
 - PR head：`a0272dd41d19c4a08a45321c5d9adee5627566c9`
