@@ -162,3 +162,14 @@
 
 案例 schema、校验路径（唯一实现，缺依赖即失败）和报告生成器的限制见
 [developer-contract.md](developer-contract.md) §1/§7；这些实现要求不构成生物学证据。
+
+**已校验的跨字段关系**（业务规则层，见 developer-contract §1 的表）：
+`DECISION_ANOMALY_CONFLICT`、`ANOMALY_ID_DUPLICATE`、`NORMAL_CASE_HAS_UNRESOLVED_ANOMALY`、
+`ANOMALY_EVENT_UNKNOWN`、`EVENT_HYPOTHESIS_UNKNOWN`、`INPUT_FILE_MISSING`、
+`INPUT_SHA256_MISMATCH`（需 `--verify-inputs`）、`EVENTS_UNPARSABLE`；其中 `INPUT_FILE_MISSING` 为 **note 级**（环境性，不改变判读），其余为 error 级。
+`case-validate` 把 `FORMAT` 与 `BUSINESS` 分开报告，`VALID` **只**表示"格式合法 + 已定义业务规则
+无矛盾"，不等于科学结论。
+
+**仍未校验（明确披露，不是静默漏检）**：① `decision.confidence` 与证据强度的对应——按 §2.1，
+无 reads 不限制与 reads 无关的注释结论，故不作为矛盾；② 案例与外部知识库/文献的一致性；
+③ 多案例之间的一致性。**"未校验"≠"已验证"**，报告里不得混用。

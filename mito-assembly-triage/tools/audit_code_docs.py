@@ -93,6 +93,8 @@ RULES = (
     ("circularize 不匹配不得接受候选", 'scripts/circularize.py', 'accept-candidate', (r'accept-candidate', r'REVIEW')),
     ("脚本前置门禁：缺依赖即失败，无降级路径", 'scripts/_deps.py', 'require_stage',
      (r'require_stage', r'退出码?\s*3')),
+    ("跨字段业务规则层（FORMAT 与 BUSINESS 分开）", 'tools/experience.py', 'BUSINESS_RULES',
+     (r'BUSINESS_RULES', r'BUSINESS:', r'DECISION_ANOMALY_CONFLICT')),
     ("案例校验单一实现，缺依赖即失败", 'tools/experience.py', 'MissingDependency',
      (r'jsonschema', r'退出码?\s*3')),
     ("案例类型三值", 'tools/experience.py', 'CASE_TYPES', (r'case_type', r'normal_validation_case')),

@@ -31,6 +31,36 @@
 若将来要加，必须由 schema 表达（必要时用 `allOf`/`if-then`），**不允许**再引入第二份实现。
 
 
+#### 业务规则层（schema 之外，独立于格式）
+
+`tools/experience.py` 的 `BUSINESS_RULES` 列出一组**跨字段业务关系**，由
+`case_business_errors(case, root, verify_inputs=False)` 检查。它们不是格式，因此不写进 schema——
+把"格式合法"与"科学自洽"混为一谈，正是上一轮被删掉的那种隐患。每条规则有稳定错误码：
+
+| 错误码 | 含义 |
+|---|---|
+| `DECISION_ANOMALY_CONFLICT` | 案例级 `decision.status=RESOLVED`，却存在 `UNRESOLVED` 的异常 |
+| `ANOMALY_ID_DUPLICATE` | `anomalies[].id` 重复，逐异常判定不可区分 |
+| `NORMAL_CASE_HAS_UNRESOLVED_ANOMALY` | `case_type=normal_validation_case` 却挂着未解决异常 |
+| `ANOMALY_EVENT_UNKNOWN` | `anomalies[].evidence_events` 引用了 `events.jsonl` 中不存在的事件 |
+| `EVENT_HYPOTHESIS_UNKNOWN` | 事件 `impact` 引用了 `hypotheses[]` 中不存在的假设编号 |
+| `INPUT_FILE_MISSING` | `inputs[].path` 在磁盘上不存在（**note 级**） |
+| `INPUT_SHA256_MISMATCH` | 只有 `--verify-inputs` 时才比对（大 FASTQ 重哈希代价高），不一致即报 |
+| `EVENTS_UNPARSABLE` | `events.jsonl` 存在无法解析为 JSON 对象的行 |
+
+**严重度**：`error` 级（记录自相矛盾，如案例判 RESOLVED 却挂 UNRESOLVED 异常）才会让 `case-validate` 判为 INVALID；`note` 级只提示环境性事实（例如归档案例的输入文件不在本机、或长度字段缺失导致某项无法核对），**不改变判读**。输出里每条都标 `[代码/严重度]`。
+
+输出与退出码约定：`case-validate` 把 `FORMAT` 与 `BUSINESS` **分开打印**，`VALID` 只表示
+"格式合法 + 已定义业务规则无矛盾"，**不隐含科学正确**；任一层有问题即退出 1，输出里注明是
+`INVALID (format)` 还是 `INVALID (business)`。
+
+**写入口不因业务矛盾阻断**：`case-anomaly` / `case-reference` 只**告警**（`⚠ [CODE] …`）并照常写入。
+理由：目前没有"修改 decision"的命令，阻断会把用户卡死；格式错误仍然拒绝写入（那时的记录不可用）。
+
+**刻意不作为规则的一项**：`decision.confidence=high` 却没有 `reads_support`。按
+`evidence-standard.md` §2.1，无 reads 并不限制与 reads 无关的注释身份结论，因此这**不是**矛盾，
+写成规则会与证据标准冲突。此处记录该决定，避免将来被当成漏检。
+
 ## 2. `/transl_except` 与例外 registry 的加载约束（fail-closed）
 
 生物学含义（何时算已验证）见 `annotation_quality.md` §9；**格式非法即受控失败**的清单如下：
