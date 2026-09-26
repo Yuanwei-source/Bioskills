@@ -16,23 +16,65 @@
 | `MITOS2_EXTRA_PATH` | MITOS2 依赖命令的额外 PATH（`cmsearch`/`RNAplot` 等） | 仅 MITOS2 注释与绘图 |
 | `PLOT_PY` | 含 BioPython + matplotlib 的 Python | 仅环形图 |
 
-## 2. 最小依赖原则（不要过度安装）
+## 2. 依赖分层与两种检查模式
 
-- 只检查当前工具实际依赖：序列体检/注释质检通常需要 Python 与 Biopython，
-  基因定位另需 BLAST，BAM 分析需 samtools；不要求先安装完整 MITOS2。
-- `check_env.sh` 是全环境盘点，不是每次诊断的前置质量门。它的“核心”是脚本分组，
-  不代表所有任务都需要这些工具。缺 bwa 不阻断仅 FASTA/GB 检查；缺 samtools 才阻断依赖它的 BAM 检查。
-- 在报告中说明相关步骤未执行及原因，继续不依赖缺失工具的工作。
+**唯一来源**：`config/dependencies.json`。文档、`tools/env_check.py`、各脚本的门禁都从它出发；
+**不要**在别处再抄一份依赖清单——重复的清单就是下一个会漂移的缺陷（同 #14 删掉的双校验实现）。
 
-### 2.1 Python 库依赖（已声明，不再靠“缺库就换实现”）
+### 2.1 两种模式（部署一次，多次使用）
 
-| 库 | 谁需要 | 缺失时的行为 | 安装 |
-|---|---|---|---|
-| `jsonschema` | **案例校验（唯一实现路径）**：`case-validate` / `case-anomaly` / `case-reference` | **退出码 3 并提示安装**，不降级、不写未校验案例 | `python3 -m pip install jsonschema` |
-| `biopython` | `annot_check.py`、`blast_genes.py`、`circularize.py`、`mitos2_to_genbank.py`、`seq_stats.py` | 各脚本自有报错路径；**逐脚本依赖边界审查中**（仓库 issue），因此这里只声明不预判 | `python3 -m pip install biopython` |
+| 模式 | 何时用 | 行为 |
+|---|---|---|
+| `python3 tools/env_check.py --setup`（或 `bash scripts/check_env.sh --setup`） | 第一次、换机、升级后 | 全量盘点，按 essential/extended/optional 分组；缺失项给出**用途 + 安装方式**；essential 齐全时写入 environment lock |
+| `python3 tools/env_check.py --daily` | 日常每次使用 | 读 lock 做**轻量**检查：只探测本次需要的那一组是否还在。不再让用户面对三十个工具 |
+| `python3 tools/env_check.py --stage <NAME>` | 脚本前置门禁 | 只检查某个 capability 的依赖；缺则**退出码 3**，并注明"该步骤未执行" |
 
-`scripts/check_env.sh` 会逐个检查并给出确切安装命令（`jsonschema` 缺失计入核心依赖缺失）。
+- **lock 位置**：`$MITO_KNOWLEDGE_DIR/environment.lock.json`（环境属于机器，不属于某个任务；**不写进 skill 安装目录**），可用 `--lock` 覆盖。
+- **不变式**：lock 是**缓存，不是信任凭证**。日常模式仍真实探测所需工具，lock 只用来避免重复全量盘点并提供"上次验证版本"用于漂移对比。只信 lock 会退化成"第一次通过、以后永远相信"——正是本 skill 反复清除的静默降级。
+- 退出码：`0` 就绪 / `2` essential 缺失（与 `check_env.sh` 一致）/ `3` 指定 stage 缺依赖 / `1` 用法或清单错误。
+- `--strict` 要求 extended 也齐全（装机/CI 用）；`--path DIR` 只在指定目录内查找可执行文件（检查某个 conda env 的 bin，**不回退 PATH**）；`--network` 才探测联网类依赖（默认不探测，避免慢）。
+
+### 2.2 依赖分层
+
+**essential**（核心诊断能力；缺了应当补齐，或明确报告哪些能力不可用）
+
+| 依赖 | 用途 | 安装 |
+|---|---|---|
+| `python3` | 运行本 skill 的全部脚本 | 系统包管理器或 conda 安装 python>=3.8 |
+| `jsonschema` | 案例校验（唯一实现路径）；缺失时 `case-validate` 等以退出码 3 失败 | `python3 -m pip install jsonschema` |
+| `biopython` | GenBank/FASTA 解析、密码表、序列统计 | `python3 -m pip install biopython` |
+| `blastn` | 基因定位与同源检索 | `conda install -c bioconda blast` 或 `apt-get install ncbi-blast+` |
+| `makeblastdb` | 建自比对库 | 随 `blastn` 一同安装 |
+| `samtools` | BAM 排序/索引/深度剖面 | `conda install -c bioconda samtools` |
+| `minimap2` | reads 回贴（深度与接缝证据） | `conda install -c bioconda minimap2` |
+
+**extended**（增强能力；缺失不阻断基础诊断）
+
+| 依赖 | 用途 | 安装 |
+|---|---|---|
+| `seqkit` | FASTQ/FASTA 快速体检与子集抽取 | `conda install -c bioconda seqkit` |
+| `bwa` | 备选比对器（minimap2 不适用时） | `conda install -c bioconda bwa` |
+| `mitos2` | 线粒体注释（独立第二意见） | 见 https://mitos2.bioinf.uni-leipzig.de/ |
+| `mitos2_refdir` | MITOS2 参考数据库（数十 GB，通常镜像到本地/NAS） | 设置 `MITOS2_REFDIR` 与 `MITOS2_REFSEQVER` |
+| `cmsearch` | MITOS2 的 rRNA 搜索（Infernal） | `conda install -c bioconda infernal`（加入 `MITOS2_EXTRA_PATH`） |
+| `tRNAscan-SE` | tRNA 结构预测（tRNA 缺失分级的独立证据） | `conda install -c bioconda trnascan-se` |
+| `mitofinder` | 第二条独立注释路径（需近缘参考 GenBank） | `conda install -c bioconda mitofinder` |
+| `plot_python` | 环形图绘制（`run_circular_map.sh`） | 在 `PLOT_PY` 环境里 `pip install biopython matplotlib` |
+
+**optional**（按需）
+
+| 依赖 | 用途 | 安装 |
+|---|---|---|
+| `network` | 公共参考获取 / COX1 远程查询 / 公共同步 | 无需安装；受限网络下这些步骤不可用，其余步骤不受影响 |
+| `table2asn` | NCBI 提交预检（不在本 skill 自检范围内） | 见 NCBI 官方页面（人工执行） |
+
+阶段与依赖的对应（`stages`）就在同一份清单里：`seq_stats` / `annot_check` / `gene_locating` /
+`read_evidence` / `circularize` / `case_records` / `annot_independent` / `circular_plot` /
+`reference_acquisition` / `cox1_identity`。**只有该阶段需要的依赖缺失时，才阻断该阶段**——
+缺 bwa 不阻断仅 FASTA/GB 检查；缺 samtools 才阻断依赖它的 BAM 检查。
+
 **设计原则**：关键证据链可以失败，但不能静默降级——同一个结论不允许有第二条实现路径。
+
 
 ## 3. 自检
 

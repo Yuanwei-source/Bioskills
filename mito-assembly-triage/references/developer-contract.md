@@ -127,6 +127,21 @@ python3 tools/experience.py sync-public --manifest <manifest-url-or-file>
 - `--event-action` 必须命中 `events.jsonl` 中真实存在的事件（避免悬空关联）；
 - `mitos2_to_genbank.py` 的拓扑参数只写声明，**MITOS2 的 circular 模式不是物理环化证据**。
 
+## 4b. 依赖与环境的单一来源
+
+依赖清单只有一个来源：`config/dependencies.json`（tier + probe + purpose + install + stage→requires）。
+`tools/env_check.py` 读它做三件事：`--setup` 全量盘点并在 essential 齐全时写
+`$MITO_KNOWLEDGE_DIR/environment.lock.json`、`--daily` 轻量检查、`--stage NAME` 单阶段门禁。
+`scripts/check_env.sh` 把这三个模式的参数**直通**给该工具，不在 shell 里再抄一份工具清单。
+
+**退出码**（不要混用）：`scripts/check_env.sh` / `env_check.py --setup|--daily` 用 `2` 表示
+essential 缺失；`env_check.py --stage` 与**工作脚本**用 `3` 表示"本次所需依赖缺失、该步骤未执行"
+（与 `cox1_id.py` 的 3、以及 `case-validate` 缺 `jsonschema` 的 3 同义）。
+
+**不变式**：lock 是缓存，不是信任凭证。日常模式仍真实探测所需工具；只信 lock 就会退化成
+"第一次通过、以后永远相信"，即本 skill 反复清除的静默降级。`tests/test_env_check.py` 用
+"写 lock 后删掉一个工具，日常模式必须报错"钉住这条。
+
 ## 5. 测试与规则的对应关系
 
 失败复现测试**永久保留**；每条硬规则都要有对应的锁：
