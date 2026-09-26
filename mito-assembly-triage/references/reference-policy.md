@@ -1,9 +1,7 @@
 # 公共参考获取政策（reference policy）
 
-> 为什么需要这份文件：样本 reads 与组装 FASTA 都有 SHA-256，但**诊断所比较的公共参考**
-> 从来没有被固定下来。于是"和近缘物种比较"这种说法无法复现——参考库更新一次
-> （`NC_060773.1` → `.2`），同一案例可能得出不同结论，而证据链上没有任何痕迹。
-> 本文件把参考当成**分析输入**来管理：政策在此，登记与获取由
+> 本文件统一定义参考等级、用途、获取与登记。参考作为分析输入固定版本与 hash，
+> 避免数据库更新后无法复现。登记与获取由
 > `scripts/reference_registry.py` 执行，字段定义在 `schemas/reference-registry.schema.json`。
 
 ## 1. 五条原则
@@ -28,19 +26,22 @@
 
 **不要**设计 `--allow-reference-download` 这类开关：参考下载本身不危险，
 把授权负担放在下载上只会让人绕过它；真正需要把关的是**上传**。
+已有明确授权在其内容、接收方与用途范围内持续有效，无需重复确认；用户限制联网时遵守该限制。
 
 ## 3. 在诊断循环中的位置
 
 | 阶段 | 做什么 | 明确不做 |
 |---|---|---|
 | **INTAKE** | 只记录**需求**：`reference_needed`（true/false）与 `purpose` 列表（如 `gene_order_comparison`）；记录手头已有参考 | **不下载**任何东西 |
-| **CHOOSE_TEST** | 决定**是否需要**参考以及**需要哪一级**：判"nad6 split 是否真实"需要同科参考；判"是否环化"通常**不需要**参考 | 不下载 |
+| **CHOOSE_TEST** | 按具体命题选择等级与用途；同科参考可提供基因身份/注释比较线索，不能独自判定 split 是否真实；闭环验证不依赖参考相似性 | 不下载 |
 | **EXECUTE** | 才执行获取/登记（`acquire`）或用 `register` 登记已有文件；把命令、accession、hash 写进 `events.jsonl` | 不把参考当样本真值 |
 | **DECIDE / 报告** | 用 `case-reference` 把登记项关联进案例，报告引用 `accession.version` + hash | 不写"与近缘物种比较"这类不可复现的说法 |
 
 ## 4. 登记表（registry）
 
-- 位置：**`$MITO_KNOWLEDGE_DIR/references/registry.json`**（与案例同一知识层，**不写进 skill 安装目录**）。
+- 默认位置：`$MITO_KNOWLEDGE_DIR/references/registry.json`。仅做当前任务时，将
+  `MITO_KNOWLEDGE_DIR` 指向任务内目录，或对登记和 `case-reference` 同时给 `--registry`；
+  不因下载参考而隐式启用跨任务经验积累，不写进 skill 安装目录。
 - 格式：`mito-reference-registry-1`，字段定义见 `schemas/reference-registry.schema.json`。
 - 记录字段（每条）：
 
@@ -58,21 +59,23 @@
 | `file_sha256` / `sequence_sha256` / `length_bp` | 完整性固定 |
 
 ```bash
+# 在用户任务工作目录运行；同一任务的命令使用同一环境设置
+export MITO_KNOWLEDGE_DIR="$PWD/work/knowledge"
 # 1) 先看要下载什么（不联网、不写盘）
-python3 scripts/reference_registry.py acquire --accession NC_060773.1 \
-  --purposes gene_order_comparison boundary_validation --level L3 --dry-run
+python3 <skill目录>/scripts/reference_registry.py acquire --accession NC_060773.1 \
+  --purposes gene_order_comparison --level L3 --dry-run
 
 # 2) 获取并登记（公共参考下载无需额外授权）
-python3 scripts/reference_registry.py acquire --accession NC_060773.1 \
+python3 <skill目录>/scripts/reference_registry.py acquire --accession NC_060773.1 \
   --purposes gene_order_comparison --level L3 --source 'NCBI Nucleotide'
 
 # 3) 已手工获取的文件也要登记
-python3 scripts/reference_registry.py register --file refs/NC_060773.1.gb \
+python3 <skill目录>/scripts/reference_registry.py register --file refs/NC_060773.1.gb \
   --accession NC_060773.1 --source 'NCBI Nucleotide' --level L3 \
   --purposes gene_order_comparison
 
 # 4) 随时校验是否缺失或被改动
-python3 scripts/reference_registry.py verify
+python3 <skill目录>/scripts/reference_registry.py verify
 ```
 
 `verify` 会在文件缺失或 hash 变化时报警；**同一 accession 但 hash 不同**的登记会被拒绝
@@ -80,17 +83,25 @@ python3 scripts/reference_registry.py verify
 
 ## 5. 等级限制用途（不是"标个等级"）
 
+这是唯一文档版用途矩阵，与 `scripts/reference_registry.py` 的 `LEVEL_PURPOSES` 对应。
+它是当前工具的保守使用约束，不是按分类阶元定义的普遍生物学定律。等级相同的参考仍需
+审查注释质量和实际可比性；通过登记不等于证据充分。
+
 | 等级 | 参考 | 允许用途 | **禁止**用途 |
 |---|---|---|---|
 | `L1` | 同种 | 全部（边界、变异、结构、顺序、身份） | — |
 | `L2` | 同属 | 全部（边界需谨慎并留证） | — |
-| `L3` | 同科 | `gene_order_comparison`、`annotation_comparison`、`identity_check`、`taxon_screen`、`contamination_screen` | `boundary_validation`（不得用同科参考当边界真值） |
+| `L3` | 同科 | `gene_order_comparison`、`annotation_comparison`、`identity_check`、`taxon_screen`、`contamination_screen` | `boundary_validation`、`structure_check` |
 | `L4` | 同目 | `identity_check`、`taxon_screen`、`contamination_screen` | 顺序、边界、结构判读 |
 | `L5` | 远缘 | `taxon_screen`（**仅定位**） | **tRNA 丢失、基因重排、注释比较**等一切结论 |
 
 用途枚举：`gene_order_comparison`、`annotation_comparison`、`boundary_validation`、
 `identity_check`、`taxon_screen`、`contamination_screen`、`structure_check`。
 **在登记时就要写清用途**；事后扩大使用范围会被 `case-reference` 拒绝（该记录未声明该用途）。
+
+所有等级（包括 L1/L2）都不能把参考当作样本碱基或结构真值。`identity_check` 是身份检查
+用途，不表示单次命中已确认身份；`taxon_screen` 只给筛查线索。探索中发现的差异可以记录，
+但不能以“只是探索”为由绕开矩阵，将远缘线索升级为边界、丢失或重排结论。
 
 ## 6. 版本、漂移与"半年后 top hit 变了"
 
@@ -99,8 +110,8 @@ python3 scripts/reference_registry.py verify
 - **本地库（BLAST/refseq）同样要登记版本**——它不是一个 accession：
 
 ```bash
-python3 scripts/reference_registry.py record-database \
-  --name 'MITOS2 refseq invertebrate' --path /mnt/nas/Database/Refseq/invertebrate \
+python3 <skill目录>/scripts/reference_registry.py record-database \
+  --name 'MITOS2 refseq invertebrate' --path <本地数据库目录> \
   --version refseq89m --taxon-filter Metazoa --purposes taxon_screen
 ```
 
@@ -110,7 +121,7 @@ python3 scripts/reference_registry.py record-database \
 ## 7. 案例如何引用参考（证据链闭合）
 
 ```bash
-python3 tools/experience.py case-reference work/case-001 \
+python3 <skill目录>/tools/experience.py case-reference work/case-001 \
   --reference-id ref-001 --purpose gene_order_comparison
 ```
 
@@ -131,7 +142,7 @@ python3 tools/experience.py case-reference work/case-001 \
 
 ## 9. 与其他文件的关系
 
-- 参考等级与诊断分流：`diagnostic-decision-tree.md` §5（等级）、§5.1（获取与登记）
+- 诊断分流与参考选择入口：[diagnostic-decision-tree.md](diagnostic-decision-tree.md)
 - 证据门槛与独立性：`evidence-standard.md` §1/§3/§4
 - 案例记录与报告：`conclusion-report.md`；命令接口：`tool-catalog.md`
 - 字段定义：`schemas/reference-registry.schema.json`；测试映射：`developer-contract.md`

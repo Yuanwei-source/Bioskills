@@ -1,7 +1,7 @@
 # 证据标准
 
 > 核心原则：**按结论类型定证据门槛，而不是统一要求"两个来源"**。
-> 配套：注释硬阈值见 `annotation_quality.md`；诊断记账见 `diagnostic-playbook.md`；
+> 配套：注释判据与工程预警见 `annotation_quality.md`；诊断记账见 `diagnostic-playbook.md`；
 > 分流/优先级/停止条件/参考等级见 `diagnostic-decision-tree.md`；结论层与报告模板见 `conclusion-report.md`；
 > schema、解析、退出码等**实现约束**见 `developer-contract.md`（不要把实现约束当生物学规则）。
 
@@ -15,7 +15,7 @@
 | 新增接缝 / 环化 | 每个新增与闭合连接的坐标、唯一锚定、支持分子数、竞争路径、重叠裁剪、数据分辨力 | short reads 跨不过重复区时，不能声称唯一闭环 |
 | 真实重排 / 丢失 | 排除漏注释与方向/坐标误差；多参考比较；并有可用的结构或原始数据支持 | 参考与样本不一致**不能单独**证明错误，也不能单独证明演化事件 |
 
-## 2. 置信等级（`decision.confidence`）
+## 2. 置信等级（逐条结论的 `confidence`）
 
 `confidence` 必须**针对具体结论**，不能属于整个样本；禁止用一个 global `high` 覆盖案例中所有问题。
 同一案例里可以同时存在 `high` 的注释身份结论与 `not_assessable` 的结构结论。
@@ -40,10 +40,15 @@
 
 | 缺失的输入 | 限制什么 | **不**限制什么 |
 |---|---|---|
-| 无 FASTQ/BAM | 碱基正确性、接缝/结构闭环类结论（≤ `moderate`，且 `reads_support = NOT_ASSESSED`） | 基因身份、边界、tRNA/rRNA 结构等可由序列/同源/RNA 结构充分支持的注释结论 |
+| 无 FASTQ/BAM | 样本碱基真实性与物理接缝/闭环的 reads 验证无法评估：`UNRESOLVED` / `not_assessable`，`reads_support = NOT_ASSESSED` | 基因身份、边界、tRNA/rRNA 结构等可由序列/同源/RNA 结构充分支持的注释结论 |
 | 无核基因组 | NUMT 排除能力（声明受限，不得称已排除） | 与 NUMT 无关的注释结论 |
 
 并且始终保持两个区分（见 §3）："有 reads 与候选一致" **不等于** "reads 足以排除其他候选结构"。
+
+“候选与同源/图结构等间接证据相容”是另一条命题，可按已有证据给出相应置信度；
+不能将它改写为“样本结构已验证”。文件中可直接观察的 N、断点或注释矛盾也仍可报告。
+缺少该命题必要输入才用 `not_assessable`；已有可评估但不足或冲突的证据时用 `low/moderate`
+并保留 `UNRESOLVED`，不要用一个状态覆盖所有结构相关陈述。
 
 落地位置：每个异常各自把 `status` / `confidence` / `reads_support` 写入 `case.json` 的 `anomalies[]`
 （schema 校验这三个枚举）；案例级 `decision` 只作汇总结论，不能代替逐异常判定。
@@ -98,7 +103,7 @@
 
 | 阴性观测 | 可否定当前候选结构？ | 依据 |
 |---|---|---|
-| 高覆盖区（≫足够深度）内无支持 | **较强**（可以据此降档或否定） | 若候选成立，应有足够 reads 命中 |
+| 可唯一比对且按文库/读长预期有足够跨接支持的区域内无支持 | **较强**（可以据此降档或否定） | 明确该检验在候选成立时的期望支持；平均深度本身不能保证阴性功效 |
 | 低覆盖区（如 <5×，局部末端 <1×）内无支持 | **弱** | 期望命中数本就很少，"没有"在两种假设下都常见 |
 | 重复/低复杂度区内无支持 | **弱** | 多映射被过滤，命中率与环境无关地下降 |
 | 短读长无法跨越的区间（如远长于读长的重复、接缝闭合） | **不可**作为否定依据 | 现有数据原理上不具备分辨力 |
@@ -123,7 +128,8 @@
   不要因为"没有 reads"或"没有核基因组"就把**整个案例**判成 `UNRESOLVED`：
   无 reads 不妨碍注释身份/边界类结论在充分同源、翻译或 RNA 结构证据下定为 `RESOLVED`，
   只是该结论的 `reads_support = NOT_ASSESSED`。
-- 证据冲突、重复无法唯一解析、缺**该结论必需**的关键输入 → `UNRESOLVED`，置信 `low` 或 `not_assessable`；
+- 证据冲突、重复无法唯一解析或缺必要输入时，该命题保持 `UNRESOLVED`；
+  置信度按 §2 的证据档位给出，无法评估时才用 `not_assessable`；
 - 修改与原件分离保存；候选文件**不得覆盖**原始文件；
 - 参考相似度、基因顺序、单软件结果只能作**定位线索**。
 
@@ -152,17 +158,7 @@
 
 引用时写明**该来源覆盖的类群**；跨类群外推时必须标注为外推。
 
-## 7. 已知技术债
+## 7. 实现与格式限制
 
-1. **案例验证有两套实现**：`schemas/case.schema.json` + `jsonschema` 路径，以及无依赖时的显式兜底
-   `_case_errors_without_jsonschema()`。两者遵循**同一份 schema**，差异由固定数据集的等价性测试锁住
-   （`tests/test_evidence_contracts.py::SchemaValidatorEquivalenceTests`：合法 / 缺字段 / 类型错 / 非法枚举 /
-   嵌套对象错 / 跨字段冲突都必须产生相同裁定），并由 `tests/test_pr1_review_regressions.py::SchemaKeywordCoverageTests`
-   对每个顶层关键字做一次“兜底必须拒绝”的扫描。**修改 schema 时必须同时跑这两组测试** —— 否则两条验证路径
-   可能再次静默偏离。该等价性测试已经实际抓出过两次偏差：显式 `decision: null`，以及 `case_id` 的 `minLength: 1`
-   与 `modifications` / `validation` / `lessons_proposed` 三个可选数组（独立审查 P1-5 发现的四例）。
-   CI 已固定安装 `jsonschema`，所以等价性测试在 CI 中真正执行而不是 SKIP；无依赖兜底则由上面的
-   `SchemaKeywordCoverageTests` 与 `test_fallback_verdicts_are_fixed` 直接调用覆盖。
-   实现细节与测试映射见 `developer-contract.md` §1/§5。
-2. **跨字段矛盾不校验**：如案例级 `RESOLVED` 与某异常 `UNRESOLVED` 并存。Schema 不表达此类规则，
-   **两套实现都不拒绝**；若将来要加，必须同时加在两边，否则就制造了第 1 条要防的偏差。
+案例 schema、双路径验证和报告生成器的限制见
+[developer-contract.md](developer-contract.md) §1/§7；这些实现要求不构成生物学证据。

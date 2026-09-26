@@ -1,53 +1,58 @@
-# 现有工具箱（按需调用）
+# 工具目录（按需调用）
 
-> 运行前先做两件事：**① 查是否已有可复用的产出**（`logs/`、既有 BAM/GB/候选目录），避免重算；
-> ② 记录**工具版本、完整命令、参数、输入 hash、输出路径与实际退出状态**。
-> 本文件只描述现有脚本，不引入平行路径。参数以脚本 `--help` 为准；环境见 `tool_check.md`。
+先核对已有产物是否可复用，再选择当前检查所需工具。记录版本、完整命令、参数、输入
+hash、产物路径和实际退出状态。参数以各工具 `--help` 为准，依赖见
+[tool_check.md](tool_check.md)。以下路径相对 skill 根目录；实际输出放在用户任务目录。
 
-| 任务 | 工具 | 输入要求 | 可回答的问题 | **不能**证明的结论 | 产出 / 退出码 |
-|---|---|---|---|---|---|
-| 序列体检 | `scripts/seq_stats.py <assembly.fasta> [--window 500]` | 任意 FASTA | 长度、contig 数、GC/AT（仅以 ACGT 为分母）、模糊碱基数量与**逐 contig 位置（0-based）**、滑窗 GC | 不证明 reads 来源，不证明注释正确 | 只读；退出码 0 |
-| 注释质检 | `scripts/annot_check.py <ann.gb> [--ref <ref.gb>] [--table 5] [--taxon <name>] [--require-circular] [--tolerate-overlap "G1,G2"] [--tolerate-start "GENE:CODON"] [--exception-registry <json>] [--overlap-severity error\|warn] [--allow-atypical "<理由>"]` | 带注释的 GenBank（`--ref` 需**已注释**的近缘记录；获取、等级与登记要求见 `diagnostic-decision-tree.md` §5/§5.1） | 基因数量/身份/重复、tRNA 类型是否可判定、CDS 翻译与起始终止、location 的 5'/3' partial、`/codon_start` 矛盾、`/transl_table` 冲突、`/transl_except` 是否真解释了该内部终止、tRNA/rRNA 长度、**逐对**重叠（分段坐标）、链分布与方向、（可选）环状邻接与长度对比 | 注释内部一致 ≠ 序列被 reads 支持（脚本结尾固定打印该免责声明）；`--require-circular` 只校验 topology 声明 | 只读；`0` 无发现 / `1` 有错误（含参数错误）/ `2` 仅待核查。`/transl_except` 分两层：位置/读框/链方向/语法完整通过只记 `TRANSL_EXCEPT_MATCHED`（不是接受）；还需 `--exception-registry` 中 `gene+codon+amino_acid` 的条目，且**必须显式给 `--taxon` 并与记录一致**、记录**绑定该位点**（`codon_index` 或 `pos`，或显式 `scope="gene_wide"`）、`transl_table` 等于 `--table`、`source`/`rationale` 为非空字符串（错误类型、selector 归一化后为空、位点未绑定均在加载时受控失败；同位点不同 `taxon`/`transl_table` 可共存），才记 `TRANSL_EXCEPT_VALIDATED`，否则记 `TRANSL_EXCEPT_DECLARED_UNVERIFIED`（REVIEW）且内部终止继续作为 ERROR；不引入全局密码子→氨基酸重编码表 |
-| 注释格式桥 | `scripts/mitos2_to_genbank.py <result.gff> <result.fas> <result.faa> <out.gb> [--genome <assembly.fasta>] [--topology linear\|circular] [--locus <name>]` | MITOS2 的 `result.gff`/`result.fas`/`result.faa` + 被注释的组装 FASTA | MITOS2 **不写 GenBank** 时如何得到 `annot_check.py` 可读的注释 | 不新增/合并任何注释，不推测样本碱基，不补全缺失基因；`--topology` 仅为声明（**MITOS2 的 circular 模式不是物理环化证据**）；不导出 partial 标记（MITOS2 不提供，保留不确定性）；输出**不是** NCBI 提交质量记录 | 写 `<out.gb>`（原子写入）；缺文件/坐标越界/`result.fas` 与坐标不一致/未知 feature 类型 → 退出非 0，不留下半成品 |
-| 基因定位 | `scripts/blast_genes.py <ref.gb> <target.fna> [--out gene_order.txt] [--evalue 1e-5] [--min-identity 80] [--min-coverage 0.8]` | 近缘参考 GB + 目标 FASTA；需 `blastn` | 每个参考基因在目标上的**唯一**定位、链与顺序（identity ≥ 80% **且**覆盖 ≥ 80%） | 短/局部命中被刻意排除，故**不能**单独判定真实重排；顺序差异须人工 REVIEW | 写 `gene_order.txt`（1-based）；任一基因无唯一命中或命中歧义即退出 `1` 且**不写部分结果** |
-| reads 裁判 | `scripts/depth_analysis.py <sample.bam> <genome.fasta> [--window 500] [--allow-base-replacement] [<ambiguous.fasta>]` | **已排序并建索引**的 BAM + 参考 FASTA；需 `samtools` | 覆盖度剖面与低覆盖区、mate 分布、soft-clip 比例；对每个模糊碱基给出 `base_support()`：(深度, MAPQ, 碱基质量, 链向, 支持率, 各类排除数) | 低覆盖 ≠ 必然错接；排除 NUMT 需核参考；四项证据任一项不过就**不得**替换碱基 | 只读；输入/BAM 错误 → `1`；存在低覆盖区 → `2` |
-| 环化候选 | `scripts/circularize.py <s1.fa> <s2.fa> <ref.gb> <outdir> --bam <candidate.bam> --reads-validated [--min-junction-support 3] [--min-mapq 20] [--junction-region chr:s-e] [--junction-flank 10] [--accept-candidate]` | 两个 scaffold、参考 GB、候选回贴 BAM；需 BioPython + `blastn` + `minimap2` + **`samtools`** | 4 种拼接组合中**唯一最高分**方向、自动定位的新增接缝、该接缝的 `junction_evidence()`（独立分子数、链向、MAPQ min/median、剔除的重复标记数） | 默认输出 `PUTATIVE_CIRCULAR/REVIEW`：单一区间证据**不能**宣称最终环化；候选顺序/方向与参考不一致时记 **REVIEW** 且**不允许** `--accept-candidate`；`--min-junction-support` 是工程下限；**单 contig 的闭环**（同一序列两端重叠）需 **terminal overlap + 跨接缝 reads**，`topology=circular` 头与 MITOS2 的 circular 模式**均不能**替代（见 `standard_gene_order.md` §3） | 写 `outdir/genome_candidate.fasta` + 验证目录；`2` = REVIEW/需人工，`1` = 接缝证据不足 |
-| COX1 查询 | `scripts/cox1_id.py <genome.fasta> --allow-public-upload --coords start,end [--max-results 5] [--output-json results.json]` | **必须**显式给 `--coords`（不自动识别 COX1）；查询 400–5000 bp；**会向公共 NCBI 上传该片段** | 候选取样片的 identity、**query coverage**（多 HSP query 区间并集）、多个候选与 `provisional_candidate`/`ambiguous`/`insufficient` 判读；请求 `FORMAT_TYPE=XML2` 并**同时**支持 XML2（`-outfmt 16`）与旧版 XML（`-outfmt 5`）；`SearchInfo` 按 NCBI 实际返回的 QBlast 文本（`RID =`/`Status=`）解析；每个 `<Hsp>` 的 query/hit 坐标与 identity/align-len/bit-score 必须完整合法，**任一缺失即判格式故障（退出码 3）**，不得靠“单个 HSP”绕过 subject 坐标验证；原始 HSP 打印在 CLI 上并用 `--output-json` 持久化 | identity/coverage **不等于**物种鉴定；**多 HSP 指标不可靠时不汇总单一 identity**：query 区间重叠 → `overlapping_hsps`；**target 区间重叠**（两条 query 打到目标同一段）→ `subject_overlap`；同一目标链但坐标**逆链方向**推进（负链要求 `hit_from` 递减）→ `non_collinear_hsps` + `CONFLICTING_ALIGNMENT`；正负链混合 → 矛盾证据；跳变触及两端 → `CROSS_ORIGIN_CANDIDATE`（环状参考需额外结构证据）。以上均**不参与自动择优**，但**不等于该 hit 不是有效候选**；覆盖率 <80% 或 top 与次优相差 <1% 不给结论 | 上传到 NCBI；退出码 `0` 得判读 / `1` insufficient 或 no_match / `2` 拒绝执行 / `3` 网络或结果格式故障 |
-| 经验与案例 | `tools/experience.py search \| case-init/case-event/case-anomaly/case-reference/case-validate/case-report \| propose-lesson \| review-lesson \| export-contribution \| sync-public` | 工作目录可写；`MITO_KNOWLEDGE_DIR` 可写 | 检索历史案例/lesson、结构化案例记账（`case-init` **必须**给 `--hypothesis`，`--case-type` 选 `abnormal_case`/`normal_validation_case`/`tool_failure_case`）、逐异常判定写入 `anomalies[]`（`case-anomaly`，`--event-action` 必须引用真实事件，重复 id 默认拒绝，`--update` 才替换）、**`case-report` 按结论层渲染 `case.md`**（观察事实 / 证据矩阵 / 有证据支持的结论 / **无证据支持的声明** / 下一步最小实验 / 假设与未测项）、`case-validate` 按 `schemas/case.schema.json` 校验、候选 lesson（`--lesson-domain tool\|annotation\|biology`，`tool_failure_case` 只产出 `tool`）、可预览贡献（保留 `case_type`）、公共同步 | `case-validate` 只证明**记录格式**合格（schema/字段/枚举），不证明科学结论；`case-report` 只是把已记录内容按契约排版，不新增证据；公共同步只读入隔离缓存，**不执行**远程内容 | 写 `MITO_KNOWLEDGE_DIR`；校验失败 → `1` |
-| 公共参考登记/获取 | `scripts/reference_registry.py register\|acquire\|record-database\|list\|verify` （`--registry` 默认 `$MITO_KNOWLEDGE_DIR/references`） | 已获取的 GenBank/FASTA 文件，或需要下载的 `ACCESSION.VERSION`；`acquire` 需 `efetch`（NCBI edirect） | 参考的来源/版本/hash/用途/等级登记，读取与校验完整性 | **不判断参考是否合适**（等级限制用途见 `reference-policy.md` §5）；参考相似性不是独立证据；`acquire` 只下载公共参考，**不上传任何样本** | 写 `registry.json`（原子）；记录非法/版本漂移/截断下载 → 退出 1 |
-| 环境自检 | `bash scripts/check_env.sh` | `config/env.sh` 可读 | 核心工具、组装/注释工具、MITOS2 模块与数据库是否就位 | 不验证数据正确性 | 只读；`2` = 核心依赖缺失 |
-| 后台化 | `bash scripts/run_bg.sh <名> -- <命令...>` / `--trusted-shell "<命令>"`；`bash scripts/check_bg.sh <名> [--tail N]` | 可信命令/参数 | 长任务（>5 分钟）非阻塞运行与状态轮询 | 默认模式不解析 shell 语法；只有确认可信时才用 `--trusted-shell`；不得把 running/timeout 描述为完成 | 写 `logs/<名>.log/.pid/.status` |
-| 注释（统一入口） | `bash scripts/run_mitos2.sh -i <genome.fasta> -o mitos2_out -c 5`（`--outdir` 不存在时由脚本 `mkdir -p`） | `config/env.sh` 的 `MITOS2_PY`/`MITOS2_REFDIR`/`MITOS2_REFSEQVER` | MITOS2 完整注释（CDS/tRNA/rRNA/起始终止） | 单工具结果不是真值；个别基因失败时需 reads + 蛋白补充 | 写注释输出目录（**不含 GenBank**；需质检时再用 `mitos2_to_genbank.py` 转换） |
-| 环形图 | `bash scripts/run_circular_map.sh <final.gb> <out.png> --title "..."` | GB **必须声明 `topology=circular`**，否则脚本直接退出；需 `PLOT_PY`（BioPython + matplotlib） | 论文级正负链双环基因图 | 不影响序列/注释正确性 | 写 300dpi PNG + SVG |
-| NCBI 提交预检 | `table2asn`（外部工具） | 需自行提供 template；**不在本 skill 的环境自检范围内** | 提交前的本地格式/内部终止等预检 | 通过预检 ≠ 成果已被 NCBI 接受 | 人工执行，不进 `check_env.sh` |
+## 诊断与候选工具
 
-## 退出码接口约定（合并后不要误读）
+| 任务 / 工具 | 必要输入与用途 | 关键限制 | 输出与退出码 |
+|---|---|---|---|
+| 序列体检：`seq_stats.py` | FASTA；长度、GC/AT、模糊碱基和滑窗 | 模糊位置是 0-based；不验证样本真实性 | 统计输出；正常 0 |
+| 注释质检：`annot_check.py` | GenBank；显式传类群确认的 `--table`，必要时 `--taxon`、`--ref` | 无 reads 验证；`--taxon` 不自动切换昆虫阈值，拓扑检查只校声明 | 0 无发现 / 1 错误（含参数错误）/ 2 待核查 |
+| 注释格式桥：`mitos2_to_genbank.py` | MITOS2 GFF/FAS/FAA 与组装 FASTA；生成可质检 GB | 非通用 GFF 转换；不补基因/碱基，不导出未知 partial，不是提交质量记录 | 写 GB；输入/坐标异常非 0，无半成品 |
+| 基因定位：`blast_genes.py` | 已注释参考 GB + 目标 FASTA；需 blastn | 默认 identity ≥80% 且 coverage ≥80%；短/局部命中被排除，不独自判重排或丢失 | 1-based 定位；任一无唯一命中返回 1，不写部分结果 |
+| reads 检查：`depth_analysis.py` | 排序并建索引 BAM + 匹配 FASTA；覆盖、soft-clip、碱基支持 | 单 mt 参考不排除 NUMT；callable 的工程检查不替代全部科学验收 | 0 正常 / 1 输入或 BAM 错误 / 2 低覆盖 |
+| 两 scaffold 候选：`circularize.py` | 两 FASTA、参考 GB；首次可无 BAM 生成候选，回贴后验证需 BAM；需 blastn/minimap2/samtools/Biopython | 只自动验证一个内部接缝，不验证尾首闭合；方向/顺序与参考冲突时拒绝 accept | 0 CANDIDATE_ACCEPTED / 2 REVIEW（含待回贴）/ 1 失败或接缝不足；0 也非物理闭环证明 |
+| COX1 线索：`cox1_id.py` | 本地确定 `--coords start,end`，片段 400–5000 bp；须有上传授权再传 `--allow-public-upload` | 向 NCBI 上传片段；不自动定位 COX1，identity/coverage 不等于物种鉴定 | 0 得判读 / 1 insufficient 或 no_match / 2 拒绝 / 3 网络或格式故障 |
 
-| 现象 | **不是** | 正确读法 |
+所有 Python 工具位于 `scripts/`。注释选项与例外接受条件见
+[annotation_quality.md](annotation_quality.md)；解析细节与测试见
+[developer-contract.md](developer-contract.md) §2/§8/§9。
+
+`circularize.py` 两阶段使用：首次生成候选后回贴 reads，按实际候选构建 BAM；
+再次运行给 `--bam <candidate.bam> --reads-validated`。标记不替代证据。
+`--accept-candidate` 仅在已核对全部新增接缝、重复歧义与组装图且满足采纳授权后使用；
+当前工具提示要求人工核对，不因退出 0 而宣称全部连接已自动验证。
+
+`depth_analysis.py` 的可选模糊碱基支持检查需要额外的 `.fasta` 输入（与 BAM 参考坐标一致）；
+`--allow-base-replacement` 影响替换建议，不自动写入修复 FASTA。其控制区 soft-clip 提示
+仍有“正常长度异质性”等过强措辞，只作为待查解释，不能原样当成结论。
+
+COX1 多 HSP 出现 query/target 重叠、非共线或混链时不自动汇总择优；
+这不等于命中已被证明无效。查看逐 HSP 证据，使用 `--output-json <文件>` 保存详情。
+环状参考跨原点候选另需坐标与结构检查。
+
+## 案例、参考与运行支持
+
+| 工具 | 用途 | 输出与限制 |
 |---|---|---|
-| `annot_check.py` 退出码 `2` | ❌ 注释完全通过 | ✅ 无 ERROR，但**存在待核查项**；每条须逐条入账；只有 `0` 才是"无发现" |
-| `cox1_id.py` 退出码 `3` | ❌ 没有找到相似序列 | ✅ 网络或结果格式**故障**；必须与 `1`（insufficient / no_match，分析结论）严格区分 |
-| 后台任务 "子进程正常退出" | ❌ 结果已通过科学验收 | ✅ 只表示命令执行成功；科学验收由相应的证据标准另行判定 |
+| `tools/experience.py case-init/case-event/case-anomaly` | 案例、事件、逐异常记录；case-init 必须有 hypothesis | 写指定任务目录；例子见 [diagnostic-playbook.md](diagnostic-playbook.md) |
+| `case-validate / case-report` | 格式校验 / 从已有记录生成 case.md | 校验失败 1；报告是草稿，按状态分类有缺陷，见 [conclusion-report.md](conclusion-report.md) §5 |
+| `search-structured / propose-lesson / review-lesson` | 检索、提炼、审核经验 | 写跨任务知识库前需授权；verified 不是通用规则 |
+| `export-contribution / sync-public` | 预览脱敏贡献 / 同步隔离缓存 | 生成预览与实际上传分开；授权与校验见 [learning-policy.md](learning-policy.md) |
+| `scripts/reference_registry.py` | acquire/register/record-database/list/verify | 固定版本、hash 与用途；不判参考是否可靠，见 [reference-policy.md](reference-policy.md) |
+| `bash scripts/check_env.sh` | 全环境盘点，可选 | 0 核心依赖就绪 / 2 核心依赖缺失；只阻断实际依赖缺失工具的步骤 |
+| `bash scripts/run_bg.sh <名> -- <命令...>` | 长任务后台运行 | logs 中记录 log/pid/status；可信 shell 才用 `--trusted-shell` |
+| `bash scripts/check_bg.sh <名> [--tail N]` | 查询实际状态与日志 | running/timeout 不等于完成；正常退出不等于科学验收 |
+| `bash scripts/run_mitos2.sh -i <FASTA> -o <目录> -c <已确认密码表>` | 注释；环境指定 Python 与数据库 | 自动建输出目录，不生成 GB；需要时用格式桥转换 |
+| `bash scripts/run_circular_map.sh <GB> <PNG> --title <标题>` | 正负链基因图 | 需要 GB 声明 circular、Biopython 与 matplotlib；声明/绘图不证明环化 |
+| 外部 `table2asn` | NCBI 提交预检，需 template | 不在 check_env 范围；通过不等于已被 NCBI 接受 |
 
-任何脚本、CI 或 AI 指令都不得把上表左列当成右列。`baseline_report.md` 是 v1 历史审计快照，
-描述的是当时行为，不作为现行接口依据。
+## 执行原则
 
-## 使用原则
-
-1. **工具优先**：优先专业工具（MITOS2 / MitoFinder / GetOrganelle / metaSPAdes / bwa / minimap2 / samtools），
-   只在现成工具无法解决时才写补充代码，且补充代码必须能交叉验证。
-2. **按诊断价值调用**：新增检查必须能改变假设排序或构成验收条件；否则不跑。
-3. **阈值分层**：`>8bp` 重叠、tRNA `60–75bp`、rrnL/rrnS 区间、`9+/4−` 都是本工具的**工程预警**，
-   不是 NCBI 硬性标准；放宽要显式使用对应参数并记录理由。
-4. **不覆盖原始数据**：所有候选写入新目录，原件保持只读。
-5. **不把私有路径写回 skill**：机器路径只存在于 `config/env.sh` / 环境变量。
-
-## 相关文件
-
-- 入口路由：`START_HERE.md`；分流/优先级/停止条件/参考等级/最小证据集：`diagnostic-decision-tree.md`
-- 结论层与报告模板：`conclusion-report.md`
-- 判据与阈值：`annotation_quality.md`；顺序与坐标：`standard_gene_order.md`
-- 证据门槛、`confidence`、竞争参考与阴性证据强度：`evidence-standard.md`
-- 环境变量与依赖自检：`tool_check.md`
-- 实现约束（schema/解析/退出码/原子写入/测试映射）：`developer-contract.md`
-- 已知坑：`MITO_KNOWLEDGE_DIR` 的 `pitfalls.md`
+- 只做能改变判断或属于验收必要条件的检查；无关工具缺失不要求安装。
+- 原始数据只读，候选与产物另存；工具路径来自环境配置，不写回公共技能文件。
+- 阈值是工程预警，不能包装成 NCBI 硬要求或类群通则。
+- 退出码 2 的含义因工具不同，按本表解释；失败/未执行不能写成阴性科学结果。
+- `baseline_report.md` 是历史审计快照，不作为现行接口依据。

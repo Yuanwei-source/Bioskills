@@ -38,14 +38,17 @@
    - 共有基因的邻接关系相同 → 输出"邻接关系一致"（不因起点不同或整体 RC 误报重排）；
    - 邻接关系不同 → `ARRANGEMENT_DIFF`（REVIEW）；
    - **基因缺失/多余单独报告为 `GENE_SET_DIFF`**，不与重排混为一谈（非共有基因不进入邻接比较）。
-5. 数据无法跨越重复区、或没有唯一锚定新增连接时 → 保持候选结构并标记 `UNRESOLVED`。
+6. 数据无法跨越重复区、或没有唯一锚定新增连接时 → 保持候选结构并标记 `UNRESOLVED`。
    `circularize.py` 在候选顺序/方向与参考不一致时记 **REVIEW**、保留候选与诊断记录并退出 2，
    且**不允许**据此 `--accept-candidate`。
    ⚠️ 该脚本目前只自动验证**一个**内部接缝（两 scaffold 场景），**不**验证最终尾部→首部的闭合连接；
-   多接缝/闭环场景必须人工逐接缝取证，不能声称"全部接缝已自动验证"。
-6. **单 contig 的环状候选**（`AA…AA` 两端重叠在同一个 scaffold 内）也必须遵守同一条证据标准：
-   - 合法证据只有两种：**terminal overlap**（两端重复的实际重叠长度与一致性）+ **跨接缝 reads**
+   多接缝/闭环场景需另行逐接缝取证并记录复核，不能声称"全部接缝已自动验证"；
+   工具的 `--accept-candidate` 仍要求完成其人工核对步骤，见工具目录。
+7. **由端部重叠提出的单 contig 环状候选**（`AA…AA`）须同时检查：
+   - **terminal overlap**（两端重复的实际重叠长度与一致性）和 **跨接缝 reads**
      （junction-spanning，给出独立分子数 / MAPQ / 链向）；
+     已裁去冗余重叠的候选需记录裁剪前后坐标与差异，不要求重新制造重复末端。
+     其他构建方式按 `evidence-standard.md` §1 检查闭合连接与竞争路径，不把末端重复当通用必要条件。
    - **不得**用 `topology=circular` 头、MITOS2 的 circular 模式、或 `annot_check.py --require-circular` 的通过
      充当环化证据：前者只是声明，后者只做 `CIRCULAR_DECLARATION_CHECK`（只校声明，不是物理闭环）；
    - 若两端重复长度 ≥ 读长，或末端覆盖不足（如 <5×）而无法期望跨接缝 reads，则该数据**原理上**不具备判别力
@@ -88,7 +91,7 @@
 ⚠️ **隔离要求（内建 ORDER 的用途边界）**：`tests/gb_fixtures.py` 的内建 `ORDER` 只用于
 （a）fixture/回归测试锚定、（b）昆虫样本的**背景警示**（"这个偏差值得看一眼"）。
 **不得**把它当作未知昆虫样本的真实排列参考，也**不得**用它判定顺序异常；
-`annot_check.py` 的**顺序对照只接受显式 `--ref <参考.gb>`**，未提供 `--ref` 时不做顺序比较（只报 `GENE_SET_DIFF`）。
+`annot_check.py` 的**顺序对照只接受显式 `--ref <参考.gb>`**，未提供 `--ref` 时不做参考顺序或参考基因集对照。
 理由：膜翅目 / 半翅目 / 鞘翅目等存在不同程度的真实重排（§6），把果蝇型锚点当标准会大量误报。
 
 ## 5. 鳞翅目参照（与上表并存，不能互相替代）
@@ -98,8 +101,8 @@
 
 - 不要用果蝇型锚点直接否掉鳞翅目的顺序；
 - 鳞翅目样本的顺序差异应优先与**鳞翅目内部参考**比较（可用 `annot_check.py --ref <鳞翅目参考.gb>`）；
-- 这一层背景也解释了为什么该目的 `cox1` 常见非典型起始密码子，
-  参见 `annotation_quality.md` §9 与 §2.4。
+- `cox1` 起始边界是另一个需要类群证据的问题；不能由 tRNA 排列差异推导起始密码子，
+  参见 `annotation_quality.md` §2/§9。
 
 ## 6. 可变位置与常见陷阱
 
@@ -108,16 +111,20 @@
 - `trnL1`/`trnL2`、`trnS1`/`trnS2` 必须保留**反密码子 + 命名映射**；裸名不得自动归类（见 `annotation_quality.md` §3）。
 - CDS 命名两套写法并存：本参照用 `nad*`/`cob`（MITOS2/NCBI 新写法），历史注释常用 `nd*`/`cytb`；
   `annot_check.py` 已归一两者，比较时不要因为它们不同就报错。
-- 控制区（CR，A+T 富集）通常位于 `rrnS` 与 `trnI` 之间，长度与重复结构高度可变；
-  低覆盖 + 大量 soft-clip 往往是**正常长度异质性**，不是错误。
+- 在 §4 典型排列中，控制区位于 `rrnS` 与 `trnI` 之间；重排类群需另核对。
+  低覆盖与大量 soft-clip 可能涉及长度异质性，也可能涉及重复、错接、比对或表示问题；
+  必须比较这些解释，不能直接判正常或错误。
 - `atp8-atp6`、`nad4-nad4l` 的短重叠是真实特征；`atp8-atp6` 之间也可能是间隔区。
   两者都只触发检查（见 `annotation_quality.md` §5）。
 
 ## 7. 来源
 
-- Cameron 2014, *Systematic Entomology* 39:400–411, DOI 10.1111/syen.12071 —
-  昆虫线粒体测序/注释方法、基因排列与重排、"tRNA 数量与结构变异"。
-- Boore/Bernt 等关于泛甲壳类/昆虫近祖排列与保守基因块的工作（§4 锚点作为**假说**使用）。
-- 鳞翅目 `trnM` 位置差异：见 *Hyphantria cunea* 等鳞翅目 mitogenome 论文（§5）。
+- [Cameron 2014, How to sequence and annotate insect mitochondrial genomes for systematic and comparative genomics research](https://doi.org/10.1111/syen.12071)，
+  *Systematic Entomology* 39:400–411：昆虫测序/注释与排列背景，不作为全动物阈值来源。
+- [Boore 1999, Animal mitochondrial genomes](https://pmc.ncbi.nlm.nih.gov/articles/PMC148383/)，
+  *Nucleic Acids Research* 27:1767–1780：动物线粒体排列比较背景，不能替代特定样本的参考。
+- [The complete mitochondrial genome of the fall webworm, Hyphantria cunea](https://pmc.ncbi.nlm.nih.gov/articles/PMC2850540/)，
+  表 2 与 gene arrangement 段：该鳞翅目物种的 `trnM–trnI–trnQ` 排列及与果蝇型的比较。
+  本实例不证明所有鳞翅目均相同。上述来源核对日期：2026-09-26。
 - 完整来源索引与引用管理要求：`evidence-standard.md` §6。
-- 参考选择等级（多远算"近缘"、各等级能支持什么）：`diagnostic-decision-tree.md` §5。
+- 参考等级与用途：[reference-policy.md](reference-policy.md) §5。
