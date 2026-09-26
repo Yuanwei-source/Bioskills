@@ -30,6 +30,12 @@
 落地：`case-init --case-type abnormal_case|normal_validation_case|tool_failure_case`
 （默认 `abnormal_case`；非法值被拒绝且不写案例）。
 
+**向后兼容（必须知道）**：`case_type` 在 `schemas/case.schema.json` 中是**可选**字段，
+历史/手写案例可能缺失；此时**按最保守的方式当 `abnormal_case` 处理**（代码里 `case.get('case_type') or 'abnormal_case'`）。
+因为把这个字段变成 `required` 会让已有案例（包括外部归档记录）一下子变成 `INVALID`，所以选择了
+"可选 + 保守默认 + 新案例一律写入"，而不是强制迁移。声明为 mandatory 的是**本政策的记录要求**，
+不是 schema 的强制项；这一区分见 `developer-contract.md` §7。
+
 ## 2. lesson 生命周期
 
 ```
@@ -52,9 +58,12 @@ case.json (本地案例)
 - **审核人字段是自述**：`review-lesson --reviewer` 由调用者填写，不构成独立验证证据；
   需要独立验证时引用可核查的外部审核记录，并在 `sources` 中留下回溯链接。
 - **矛盾经验并存**，用 `conflicts` 字段显式记录，**不通过频次投票抹除**任一方向。
-- **案例类型不影响 lesson 生命周期，但限制 lesson 的可迁移性**：
+- **案例类型不影响 lesson 生命周期，但限制 lesson 的可迁移性与**领域**：
   只由 `abnormal_case` 支持的 lesson 默认为 `transferability = none`（§3）；
-  `tool_failure_case` 只能产生关于**工具/环境**的 lesson，不能产生关于生物学规律或样本质量的 lesson。
+  `tool_failure_case` 只能产生**领域为 `tool`** 的 lesson（`lesson_domain=tool`）——
+  工具/环境故障不得升为生物学或样本质量结论。该限制已由代码强制：
+  `propose-lesson --lesson-domain {tool,annotation,biology}`，对 `tool_failure_case` 只接受 `tool`，
+  非法/不兼容的请求直接失败（不写候选）。每条 lesson 同时记录 `source_case_type` 以保留来源。
 - "通用规则（general_rule）"不是一个 lesson 状态，而是**人工**把稳定结论提升进 `SKILL.md` 硬规则或 `scripts/` 的动作。
 
 ## 3. lesson 应记录的内容（字段映射）
@@ -72,19 +81,27 @@ case.json (本地案例)
 | 冲突的其他经验 | `conflicts` |
 | **推广范围** | `generalization_scope`：`single_case` / `species` / `genus` / `family` / `order` / `multi_taxon` |
 | **可迁移性** | `transferability`：`none` / `low` / `moderate` / `high` |
+| **领域**（防止把工具故障当生物学结论） | `lesson_domain`：`tool` / `annotation` / `biology`（由 `case_type` 限定，见 §2） |
+| **来源案例类型** | `source_case_type`（保留区分，导出与同步都不丢） |
 | **样本数量**（当前无独立字段） | 写入 `sources`/描述性字段，或在 `case.md` 中说明 |
 
 `generalization_scope` / `transferability` 的目的是**防止"一次案例 → 规则"**（AI 最容易犯的错）。规则：
 
 - **默认 fail closed**：只有一个案例支持时 `generalization_scope = single_case`、`transferability = none`；
 - 只有**多个相互独立的类群/数据集**都支持时才能提高，且必须逐案列出 `supporting_case_ids`；
+- **同一案例不得重复计数**：支持案例的 `case_id` 必须两两不同（重复直接报错），
+  独立数 = “case_id 不同 **且** 记录的类群不同”的案例数；只有一方满足不算独立；
 - 同一实验室、同一物种、同一批数据的多个案例**不算**独立支持（去重规则见 §6.4）；
 - 反例存在时（`counterexample_case_ids` 非空）**不得**提高 `transferability`。
 
 落地：`propose-lesson --generalization-scope ... --transferability ... `
 `--supporting-case <dir>`（可重复）`--counterexample-case <dir>`（可重复）。
-**独立支持**的判定是保守的：只有两个案例都记录了类群且类群不同才算独立；
-未记录类群的案例不计数（"无法证明独立"不得四舍五入成"独立"）。
+**独立支持**的判定是保守的：只有“case_id 不同 **且** 类群不同”才算独立；
+未记录类群的案例不计数（“无法证明独立”不得四舍五入成“独立”），重复 `case_id` 直接报错。
+
+**公共同步/导入的 lesson 同样受约束**：`validate_public_lesson()` 对缺失的 `generalization_scope`/
+`transferability` 补齐为 `single_case`/`none`（而不是当成无限制），并拒绝非法枚举、
+`single_case` + 非 `none` 的组合、以及“声称可迁移但支持案例数不够”的记录。
 
 例："某昆虫样本 `nad6` 断裂一次"只能写成 `single_case`/`none`；
 写成"昆虫 `nad6` 常断裂"需要多个独立类群案例支持，否则就是外推。

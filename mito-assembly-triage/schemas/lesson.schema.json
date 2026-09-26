@@ -10,6 +10,8 @@
     "supporting_case_ids": {"type": "array"},
     "counterexample_case_ids": {"type": "array"},
     "generalization_scope": {"enum": ["single_case", "species", "genus", "family", "order", "multi_taxon"]},
-    "transferability": {"enum": ["none", "low", "moderate", "high"]}
+    "transferability": {"enum": ["none", "low", "moderate", "high"]},
+    "lesson_domain": {"enum": ["tool", "annotation", "biology"]},
+    "source_case_type": {"enum": ["abnormal_case", "normal_validation_case", "tool_failure_case"]}
   }
 }

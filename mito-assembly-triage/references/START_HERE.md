@@ -13,8 +13,9 @@
 | FASTA + GB/GFF | 先 `mitos2_to_genbank.py`（MITOS2 输出）或直接用 GB → `annot_check.py` | 注释内部一致性：基因数量/身份、CDS 翻译与起始终止、tRNA/rRNA、重叠、链分布、（可选）顺序对照 | 注释自洽 **≠** 序列正确；**≠** reads 支持；`--require-circular` 只校验声明 |
 | FASTA + FASTQ（或已有 BAM） | 比对 → 排序去重 → `scripts/depth_analysis.py <sample.bam> <genome.fasta>` | 覆盖剖面、零覆盖缺口、末端低覆盖、soft-clip、mate 分布、逐碱基支持（深度/MAPQ/碱基质量/链向） | 单参考比对**不能排除 NUMT**（除非有竞争参考，见 `evidence-standard.md` §3）；低覆盖 **≠** 必然错接 |
 | FASTA + FASTQ + 核基因组/核组装 | 同上 + **竞争性比对**（mt 候选 vs 核候选） | 可以把 `READS_DISCRIMINATING` 用在 NUMT 相关结论上 | 没有这一步时，NUMT 相关结论只能是 `UNRESOLVED` |
+| 需要一个参考 GenBank | 按参考等级选一条**已注释**公共记录（§5.1）；登记 accession/版本/日期/类群/hash | 顺序、边界、基因身份的对照 | 参考不是真值；**上传样本**才是需要单独授权的动作 |
 | 多个 contig（含 GFA） | `circularize.py`（两 scaffold 场景）+ 端部唯一性检查 | 4 种拼接组合中的唯一最高分方向、新增接缝的 `junction_evidence()` | **单一**接缝证据不能宣称最终闭环；单 contig 的闭环需 terminal overlap + 跨接缝 reads（见 `standard_gene_order.md` §3） |
-| 需要一个近缘参考 | 按 `diagnostic-decision-tree.md` §5 的**参考等级**选；本地库优先 | 顺序/边界/身份的对照线索 | 远缘参考不能用于边界判断；参考注释自身也可疑 |
+| 需要一个近缘参考 | 按 `diagnostic-decision-tree.md` §5 的**参考等级**选；本地库优先；需新取时按 §5.1（**下载公共参考不需要上传授权**，但必须登记 accession/版本/hash） | 顺序/边界/身份的对照线索 | 远缘参考不能用于边界判断；参考注释自身也可疑 |
 
 **先查已有产出**：`logs/`、既有 BAM/GB/候选目录。重跑一遍不增加证据，只增加噪声。
 

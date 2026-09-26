@@ -29,6 +29,11 @@ LESSON_STATUSES = {'candidate', 'verified', 'rejected', 'deprecated', 'withdrawn
 # candidate 以外的状态都是终态/审核结论; 只有 verified 可进入公共同步
 LESSON_REVIEW_STATUSES = LESSON_STATUSES - {'candidate'}
 LESSON_RETIRED_STATUSES = {'rejected', 'deprecated', 'withdrawn', 'superseded', 'revoked'}
+LESSON_DOMAINS = ('tool', 'annotation', 'biology')
+# `tool_failure_case` 只能是关于工具/环境的 lesson，不得升为生物学或样本质量结论。
+CASE_TYPE_LESSON_DOMAINS = {'abnormal_case': ('biology', 'annotation', 'tool'),
+                            'normal_validation_case': ('biology', 'annotation', 'tool'),
+                            'tool_failure_case': ('tool',)}
 CASE_SCHEMA = os.path.join(SKILL_DIR, 'schemas', 'case.schema.json')
 # 案例类型：只记"异常"会让经验系统偏向"线粒体一定有问题"（特异性偏差），
 # 因此正常验证案例与工具故障案例都必须可记录。
@@ -160,7 +165,14 @@ def _lesson_scope_errors(scope, transferability, support, counter):
                       % (transferability, '/'.join(TRANSFERABILITY_LEVELS)))
     if errors:
         return errors
-    total = len({c.get('case_id') for c in support if c.get('case_id')}) or 1
+    ids = [c.get('case_id') for c in support if c.get('case_id')]
+    duplicated = sorted({item for item in ids if ids.count(item) > 1})
+    if duplicated:
+        errors.append('支持案例的 case_id 重复: %s（同一案例不得重复计数；'
+                      '独立性必须同时满足 case_id 不同与类群不同）' % ','.join(duplicated))
+    total = len(set(ids)) or 1
+    if errors:
+        return errors
     independent = len({_case_taxon_name(c) for c in support if _case_taxon_name(c)})
     if scope == 'single_case' and transferability != 'none':
         errors.append('generalization_scope=single_case 只能配 transferability=none')
@@ -185,6 +197,18 @@ def propose_lesson(args):
     if case.get('decision', {}).get('status') == 'UNRESOLVED' and not args.allow_unresolved:
         raise ValueError('未解决案例不能直接提炼；使用 --allow-unresolved 仅生成候选并保留限制')
     lesson_id = safe_identifier(args.lesson_id or case.get('case_id'), 'lesson_id')
+    source_case_type = case.get('case_type') or 'abnormal_case'
+    allowed_domains = CASE_TYPE_LESSON_DOMAINS.get(source_case_type)
+    if allowed_domains is None:
+        raise ValueError('案例的 case_type 非法: %s' % source_case_type)
+    lesson_domain = getattr(args, 'lesson_domain', None) or allowed_domains[0]
+    if lesson_domain not in LESSON_DOMAINS:
+        raise ValueError('lesson_domain 取值非法: %s (允许: %s)'
+                         % (lesson_domain, '/'.join(LESSON_DOMAINS)))
+    if lesson_domain not in allowed_domains:
+        raise ValueError('case_type=%s 的案例只能产出 %s 类 lesson（当前请求 %s）：'
+                         '工具/环境故障不得升为生物学或样本质量结论'
+                         % (source_case_type, '/'.join(allowed_domains), lesson_domain))
     scope = getattr(args, 'generalization_scope', None) or 'single_case'
     transferability = getattr(args, 'transferability', None) or 'none'
     extra_support = _load_related_cases(getattr(args, 'supporting_case', None), '--supporting-case')
@@ -205,6 +229,7 @@ def propose_lesson(args):
               'counterexample_case_ids': counter_ids,
               'sources': [{'case_id': item.get('case_id'), 'path': path} for item, path in support],
               'generalization_scope': scope, 'transferability': transferability,
+              'lesson_domain': lesson_domain, 'source_case_type': source_case_type,
               'decision_status': case.get('decision', {}).get('status'),
               'validation_status': 'candidate', 'version': '1.0.0', 'last_reviewed': None}
     conflicts = detect_lesson_conflicts(lesson)
@@ -232,6 +257,7 @@ def export_contribution(args):
     case = _json(pathlib.Path(args.case) / 'case.json')
     safe_case = {'schema_version': case.get('schema_version'),
                  'case_id': hashlib.sha256(str(case.get('case_id', '')).encode()).hexdigest()[:16],
+                 'case_type': case.get('case_type', 'abnormal_case'),
                  'taxon': case.get('taxon', {}),
                  'inputs': [{'role': item.get('role'), 'sha256': item.get('sha256')} for item in case.get('inputs', [])],
                  'issue': {'type': case.get('issue', {}).get('type')},
@@ -271,6 +297,25 @@ def validate_public_lesson(data, expected_path):
     safe_identifier(lesson['lesson_id'], 'lesson_id')
     if lesson['validation_status'] not in LESSON_STATUSES: raise ValueError('公共知识状态不兼容: %s' % expected_path)
     if lesson['validation_status'] != 'verified': raise ValueError('公共知识必须为 verified: %s' % expected_path)
+    # fail-closed：缺失的推广上限按最保守值补齐，而不是当成"无限制"
+    lesson.setdefault('generalization_scope', 'single_case')
+    lesson.setdefault('transferability', 'none')
+    if lesson['generalization_scope'] not in GENERALIZATION_SCOPES:
+        raise ValueError('公共知识 generalization_scope 非法: %s (%s)'
+                         % (lesson['generalization_scope'], expected_path))
+    if lesson['transferability'] not in TRANSFERABILITY_LEVELS:
+        raise ValueError('公共知识 transferability 非法: %s (%s)'
+                         % (lesson['transferability'], expected_path))
+    if lesson['generalization_scope'] == 'single_case' and lesson['transferability'] != 'none':
+        raise ValueError('公共知识 single_case 只能配 transferability=none: %s' % expected_path)
+    if lesson['transferability'] != 'none':
+        case_ids = {item for item in (lesson.get('supporting_case_ids') or []) if item}
+        needed = max(SCOPE_MIN_CASES[lesson['generalization_scope']],
+                     TRANSFERABILITY_MIN_CASES[lesson['transferability']])
+        if len(case_ids) < needed:
+            raise ValueError('公共知识声明了 transferability=%s，需要至少 %d 个可区分支持案例'
+                             '（当前 %d）: %s'
+                             % (lesson['transferability'], needed, len(case_ids), expected_path))
     return lesson
 
 def sync_public(args):
@@ -753,13 +798,89 @@ def case_validate(args):
 def case_report(args):
     root = pathlib.Path(args.directory).resolve()
     with open(root / 'case.json', encoding='utf-8') as fh: case = json.load(fh)
-    lines = ['# 诊断案例 %s' % case['case_id'], '', '## 事件', '']
-    with open(safe_case_member(root, case.get('events_file', 'events.jsonl'), 'events_file'), encoding='utf-8') as fh:
+    events = []
+    events_path = safe_case_member(root, case.get('events_file', 'events.jsonl'), 'events_file')
+    with open(events_path, encoding='utf-8') as fh:
         for line in fh:
-            e = json.loads(line)
-            lines.append('- `%s`：%s；影响：%s' % (e.get('action'), e.get('result'), e.get('impact') or '未记录'))
-    d = case['decision']
-    lines += ['', '## 当前判定', '', '- 状态：`%s`' % d['status'], '- 置信等级：`%s`' % d['confidence'], '- 理由：%s' % d['rationale'], '', '## 证据边界', '', '缺少 reads 时不得写成 raw-read-supported。']
+            if line.strip():
+                events.append(json.loads(line))
+    anomalies = case.get('anomalies') or []
+    supported = [a for a in anomalies if a.get('status') in ('RESOLVED', 'NO_CHANGE')]
+    unsupported = [a for a in anomalies if a.get('status') == 'UNRESOLVED']
+    decision = case['decision']
+
+    lines = ['# 诊断案例 %s' % case['case_id'], '',
+             '- 案例类型：`%s`' % case.get('case_type', 'abnormal_case'), '']
+    lines += ['## 1. 观察事实（事件）', '']
+    if events:
+        for event in events:
+            lines.append('- `%s`：%s；影响：%s' % (event.get('action'), event.get('result'),
+                                            event.get('impact') or '未记录'))
+    else:
+        lines.append('- 尚无事件记录')
+
+    lines += ['', '## 2. 证据矩阵（逐异常结论）', '']
+    if anomalies:
+        lines += ['| 异常 | claim | 状态 | 置信 | reads 支持 | 证据事件 |',
+                  '|---|---|---|---|---|---|']
+        for item in anomalies:
+            lines.append('| `%s` | %s | `%s` | `%s` | `%s` | %s |'
+                         % (item.get('id'), item.get('claim'), item.get('status'),
+                            item.get('confidence'), item.get('reads_support') or 'NOT_ASSESSED',
+                            ', '.join('`%s`' % action
+                                      for action in (item.get('evidence_events') or [])) or '—'))
+    else:
+        lines.append('尚无逐异常判定：请用 `case-anomaly` 逐条写入 `anomalies[]`；'
+                     '案例级 `decision` 不能代替逐异常结论。')
+
+    lines += ['', '## 3. 有证据支持的结论', '']
+    if supported:
+        for item in supported:
+            lines.append('- `%s`：%s（`%s`/`%s`，reads=`%s`）'
+                         % (item.get('id'), item.get('claim'), item.get('status'),
+                            item.get('confidence'), item.get('reads_support') or 'NOT_ASSESSED'))
+    else:
+        lines.append('- 目前没有达到 `RESOLVED`/`NO_CHANGE` 的逐异常结论。')
+
+    lines += ['', '## 4. 无证据支持的声明（不得当作结论使用）', '']
+    if unsupported:
+        for item in unsupported:
+            lines.append('- `%s`：%s（`UNRESOLVED`/`%s`）'
+                         % (item.get('id'), item.get('claim'), item.get('confidence')))
+        lines += ['', '以上条目**尚缺**能改变判定或置信档位的证据；不得在报告或结论中写成\u201c已排除\u201d。']
+    else:
+        lines.append('- 无（当前没有 `UNRESOLVED` 的逐异常记录）')
+
+    lines += ['', '## 5. 下一步最小实验', '']
+    if unsupported:
+        for item in unsupported:
+            lines.append('- `%s`：需要能改变该结论或置信档位的最小检查'
+                         '（缺什么输入见 `diagnostic-decision-tree.md` §3/§6）'
+                         % item.get('id'))
+    elif not anomalies:
+        lines.append('- 先完成逐异常判定（`case-anomaly`）后再确定下一步。')
+    else:
+        lines.append('- 无：当前异常均已判定。')
+
+    lines += ['', '## 6. 当前判定（案例级汇总，不代替逐异常结论）', '',
+              '- 状态：`%s`' % decision['status'],
+              '- 置信等级：`%s`' % decision['confidence'],
+              '- 理由：%s' % decision['rationale']]
+    hypotheses = case.get('hypotheses') or []
+    if hypotheses:
+        lines += ['', '## 7. 假设与未测项', '']
+        for item in hypotheses:
+            lines.append('- `%s`：%s（支持 %d / 反证 %d / 未测 %d）'
+                         % (item.get('id'), item.get('explanation'),
+                            len(item.get('support') or []), len(item.get('against') or []),
+                            len(item.get('unknown') or [])))
+            for unknown in (item.get('unknown') or []):
+                lines.append('  - 未测：%s' % unknown)
+
+    lines += ['', '## 8. 证据边界', '',
+              '缺少 reads 时不得写成 raw-read-supported；`case-validate` 只校验记录格式，'
+              '不证明科学结论；阴性结果的强度取决于覆盖与读长'
+              '（见 `evidence-standard.md` §3.2）。']
     (root / 'case.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     print('report written')
 
@@ -797,7 +918,7 @@ def main():
     elif cmd == 'search-structured':
         ap = argparse.ArgumentParser(); ap.add_argument('--query', required=True); structured_search(ap.parse_args(sys.argv[2:]).query)
     elif cmd == 'propose-lesson':
-        ap = argparse.ArgumentParser(); ap.add_argument('--case', required=True); ap.add_argument('--next-test', required=True); ap.add_argument('--lesson-id'); ap.add_argument('--allow-unresolved', action='store_true'); ap.add_argument('--supporting-case', dest='supporting_case', action='append', default=[], metavar='DIR'); ap.add_argument('--counterexample-case', dest='counterexample_case', action='append', default=[], metavar='DIR'); ap.add_argument('--generalization-scope', dest='generalization_scope', default='single_case', choices=list(GENERALIZATION_SCOPES)); ap.add_argument('--transferability', default='none', choices=list(TRANSFERABILITY_LEVELS))
+        ap = argparse.ArgumentParser(); ap.add_argument('--case', required=True); ap.add_argument('--next-test', required=True); ap.add_argument('--lesson-id'); ap.add_argument('--allow-unresolved', action='store_true'); ap.add_argument('--lesson-domain', dest='lesson_domain', default=None, choices=list(LESSON_DOMAINS)); ap.add_argument('--supporting-case', dest='supporting_case', action='append', default=[], metavar='DIR'); ap.add_argument('--counterexample-case', dest='counterexample_case', action='append', default=[], metavar='DIR'); ap.add_argument('--generalization-scope', dest='generalization_scope', default='single_case', choices=list(GENERALIZATION_SCOPES)); ap.add_argument('--transferability', default='none', choices=list(TRANSFERABILITY_LEVELS))
         try: propose_lesson(ap.parse_args(sys.argv[2:]))
         except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
     elif cmd == 'export-contribution':

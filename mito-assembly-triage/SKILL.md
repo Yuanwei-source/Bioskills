@@ -220,6 +220,8 @@ python3 tools/experience.py case-anomaly work/case-001 \
   --id A1 --claim 'nad5 内部 stop 未被解释' --status UNRESOLVED --confidence low \
   --reads-support NOT_ASSESSED --event-action annot_check        # 替换已有 id 加 --update
 python3 tools/experience.py case-validate work/case-001
+# case-report 按结论层渲染 case.md：观察事实 / 证据矩阵 / 有证据支持的结论 /
+# 无证据支持的声明 / 下一步最小实验 / 假设与未测项（见 references/conclusion-report.md §6）
 python3 tools/experience.py case-report work/case-001
 
 # 检索、提炼和审核；候选经验不能直接进入稳定规则
@@ -230,7 +232,9 @@ python3 tools/experience.py propose-lesson --case work/case-001 --next-test '检
 # 有 --counterexample-case 时 transferability 必须为 none
 python3 tools/experience.py propose-lesson --case work/case-001 \
   --supporting-case work/case-002 --generalization-scope family --transferability low \
-  --next-test '复核边界'
+  --lesson-domain annotation --next-test '复核边界'
+# case_type=tool_failure_case 的案例只能产出 --lesson-domain tool 的 lesson（工具/环境故障
+# 不得升为生物学或样本质量结论）；case_type 与领域都会随 lesson 传递（source_case_type）
 python3 tools/experience.py review-lesson --lesson-id lesson-001 --status verified \
   --reviewer human --reason '记录可核查的独立证据核验'
 
