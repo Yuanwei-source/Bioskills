@@ -44,7 +44,7 @@ bash scripts/check_env.sh
 
 | 现象 | 处置 |
 |---|---|
-| MITOS2 报 `no such directory` | 显式设置 `MITOS2_REFDIR`（目录**尾斜杠**）与 `MITOS2_REFSEQVER` |
+| MITOS2 报 `no such directory <path>` | 先看路径指到哪里：指向 **`--outdir`** 时说明输出目录不存在——`run_mitos2.sh` 现在会自己 `mkdir -p`，绕过它直接调 MITOS2 时需自己建；只有路径指向参考库时才设置 `MITOS2_REFDIR`（目录**尾斜杠**）与 `MITOS2_REFSEQVER` |
 | MITOS2 报 `cmsearch` / `plotprot.R` / `RNAplot` / `drawmitos` 找不到 | 在 `MITOS2_EXTRA_PATH` 补齐依赖 PATH；重装后需修复 `drawmitos` wrapper |
 | MitoFinder 报 `install.sh.ok` / `Mitofinder.config` 缺失 | 手动创建/复制对应文件，路径加**尾斜杠** |
 | `depth_analysis.py` 报 BAM 相关错误 | 确认 BAM 已 `samtools sort` + `samtools index`，且参考名与 BAM 头一致 |
