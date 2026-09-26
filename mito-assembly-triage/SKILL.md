@@ -25,19 +25,28 @@ description: >-
 
 `INTAKE → HYPOTHESIZE → CHOOSE_TEST → EXECUTE → UPDATE → DECIDE → VERIFY → LEARN`
 
+**不知道从哪开始**：先读 `references/START_HERE.md`（按"我有什么数据"与"我被哪个现象叫来"路由）；
+**不清楚该怀疑组装还是注释**：读 `references/diagnostic-decision-tree.md` §1 —— 分流错了，后面所有检查都不会改变结论。
+
 1. **INTAKE**：记录用户观察、目标、类群、遗传密码表、组装/注释状态、软件与数据库版本、
-   输入文件和 SHA-256。把观察事实与用户猜测分开；没有 reads 时明确记录证据缺口。
+   输入文件和 SHA-256；并用 `--case-type` 标注案例类型（默认 `abnormal_case`，已核实无异常用
+   `normal_validation_case`，工具/环境层面的失败用 `tool_failure_case`）。把观察事实与用户猜测分开；没有 reads 时明确记录证据缺口。
 2. **HYPOTHESIZE**：列出所有与当前证据相容且会影响决策的重要解释，并为每项写预期观测、
    反证和适用范围。假设数量随问题复杂度变化，不强制至少三个；新证据可新增、合并或恢复假设。
 3. **CHOOSE_TEST**：优先检索已验证且类群适用的本地经验，再按证据质量、方法和适用范围查权威资料。
-   选择能有效区分竞争假设、成本较低且风险较小的最小检查；无关检查标记 `NOT_APPLICABLE`。
+   先按优先级层选（P0 结构真实性 → P1 注释一致性 → P2 生物学解释），只做**最小充分证据集**里必需的项；
+   选能有效区分竞争假设、成本较低且风险较小的最小检查；无关检查标记 `NOT_APPLICABLE`。
+   参考选择按 **L1 同种 → L5 远缘** 的等级表（`references/diagnostic-decision-tree.md` §5），并记录参考 accession/版本。
 4. **EXECUTE**：优先使用现有脚本和成熟工具；记录实际命令、版本、数据库、输入哈希、退出状态和日志。
    只有现有工具不足时才写补充程序，并为其增加测试和独立交叉验证。
 5. **UPDATE**：逐项记录结果对假设的支持、反对或无法区分。只有当下一项检查预期会改变判定、修复选择或置信度时继续。
 6. **DECIDE**：每个异常分别判为 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED`，并各自携带证据范围、局限与
    `high`/`moderate`/`low`/`not_assessable` 置信度。逐个异常的判定写入 `case.json` 的 `anomalies[]`
-   （schema 校验 `id`/`claim`/`status`/`confidence`，可选 `reads_support`）；`decision` 仅是案例级汇总，
-   不代替逐异常的判定。一个样本可有多个不同状态的异常。
+   （schema 校验 `id`/`claim`/`status`/`confidence`，可选 `reads_support`；用 `case-anomaly` 写入）；
+   `decision` 仅是案例级汇总，不代替逐异常的判定。一个样本可有多个不同状态的异常。
+   每条异常还要写明**决定级别**（`AUTO`/`ASSIST`/`EXPERT`）与判定人：`EXPERT` 级事项（真实基因丢失、
+   重排/新结构、环化认定、NUMT 来源归属、"组装是否可用"）未获人工确认时保持 `UNRESOLVED`。
+   停止要给出理由（四类停止条件见 `references/diagnostic-decision-tree.md` §3），不要为了凑齐检查而继续。
 7. **VERIFY**：把修复建议与修复验证分开。验证标准必须匹配修改类型，不能用候选来源本身证明候选正确。
 8. **LEARN**：仅在用户允许持久化时保存结构化案例、尝试和反例。新经验先是候选，不因重复次数自动成为规则或修改本文件。
 
@@ -47,14 +56,20 @@ description: >-
 
 ## 按异常加载资料
 
+（新人/无头绪：先读 `references/START_HERE.md`）
+
 | 任务 | 按需读取 |
 |---|---|
+| **不知道从哪开始 / 按数据或现象选路线** | `references/START_HERE.md` |
+| **分流（组装 vs 注释）、优先级、停止条件、参考等级、最小证据集、AI/人工边界** | `references/diagnostic-decision-tree.md` |
+| **写结论与报告（结论层 / 证据矩阵 / 输出模板）** | `references/conclusion-report.md` |
 | 设计竞争假设或处理陌生异常 | `references/diagnostic-playbook.md` |
-| 作出序列、接缝或注释可信度判断 | `references/evidence-standard.md` |
+| 作出序列、接缝或注释可信度判断（含竞争参考与阴性证据强度） | `references/evidence-standard.md` |
 | 基因身份、CDS/tRNA/rRNA、边界或重叠 | `references/annotation_quality.md` |
 | 基因顺序、旋转或方向 | `references/standard_gene_order.md` |
 | 选择工具或检查环境 | `references/tool-catalog.md`、运行前再读 `references/tool_check.md` |
 | 保存、提炼、审核、同步或贡献经验 | `references/learning-policy.md` |
+| 改脚本 / schema / 测试 / 解析与退出码 | `references/developer-contract.md` |
 
 ## 证据与修复底线
 
@@ -193,6 +208,10 @@ bit-score 都必须存在且数值合法**：缺任一必需字段时整份结�
 python3 tools/experience.py case-init work/case-001 --issue internal_stop \
   --observation 'nad5 出现内部 stop' --input assembly_fasta assembly.fasta \
   --hypothesis 'H1 边界/读码框错误' --hypothesis 'H2 碱基错误' --hypothesis 'H3 真实生物例外'
+# 案例类型：默认 abnormal_case；已核实无异常的正常样本用 normal_validation_case
+# （学习系统的特异性来源，见 references/learning-policy.md §1.1）
+python3 tools/experience.py case-init work/case-002 --case-type normal_validation_case \
+  --issue none --observation '复核未发现异常' --hypothesis 'H1 组装与注释均正常'
 python3 tools/experience.py case-event work/case-001 --action annot_check \
   --result 'table 5 下仍有内部 stop' --impact H1:against
 # 逐异常判定（SKILL.md 第 6 步）写入既有 case.json 的 anomalies[]，经 schema 校验；
@@ -206,6 +225,12 @@ python3 tools/experience.py case-report work/case-001
 # 检索、提炼和审核；候选经验不能直接进入稳定规则
 python3 tools/experience.py search-structured --query 'internal_stop nad5'
 python3 tools/experience.py propose-lesson --case work/case-001 --next-test '检查 table 与 CDS 边界'
+# 推广上限默认 fail-closed：single_case + none（防"一次案例 → 规则"）；
+# 提高 generalization-scope/transferability 需要多个**不同类群**的 --supporting-case，
+# 有 --counterexample-case 时 transferability 必须为 none
+python3 tools/experience.py propose-lesson --case work/case-001 \
+  --supporting-case work/case-002 --generalization-scope family --transferability low \
+  --next-test '复核边界'
 python3 tools/experience.py review-lesson --lesson-id lesson-001 --status verified \
   --reviewer human --reason '记录可核查的独立证据核验'
 
@@ -223,3 +248,8 @@ python3 tools/experience.py sync-public --manifest <manifest-url-or-file>
 结束时提供：观察事实；竞争假设和关键检查；证据支持、冲突和未测试项；每个异常的状态与置信度；
 执行命令、版本和输入哈希（如适用）；候选文件及验证结论；未解决事项。用户未明确允许持久化时不写经验。
 仅要求注释修正时不自动重新组装；不能证明环化时不输出伪装为最终结果的闭环 FASTA。
+
+输出结构固定四段（模板见 `references/conclusion-report.md` §5）：**观察事实 → 有证据支持的结论 → 无证据支持的声明 → 下一步最小实验**；
+每条结论标明 `conclusion_type`（`assembly_quality` / `annotation_quality` / `gene_identity` / `sequence_accuracy` /
+`biological_interpretation`）与 `decided_by`。第三段不得省略：把"不能排除 NUMT""不足以证明不相接"这类
+限制写清楚，正是为了防过度解释。报告首页给出证据矩阵（问题 / 证据 / 结论 / 限制）。

@@ -43,6 +43,13 @@
    且**不允许**据此 `--accept-candidate`。
    ⚠️ 该脚本目前只自动验证**一个**内部接缝（两 scaffold 场景），**不**验证最终尾部→首部的闭合连接；
    多接缝/闭环场景必须人工逐接缝取证，不能声称"全部接缝已自动验证"。
+6. **单 contig 的环状候选**（`AA…AA` 两端重叠在同一个 scaffold 内）也必须遵守同一条证据标准：
+   - 合法证据只有两种：**terminal overlap**（两端重复的实际重叠长度与一致性）+ **跨接缝 reads**
+     （junction-spanning，给出独立分子数 / MAPQ / 链向）；
+   - **不得**用 `topology=circular` 头、MITOS2 的 circular 模式、或 `annot_check.py --require-circular` 的通过
+     充当环化证据：前者只是声明，后者只做 `CIRCULAR_DECLARATION_CHECK`（只校声明，不是物理闭环）；
+   - 若两端重复长度 ≥ 读长，或末端覆盖不足（如 <5×）而无法期望跨接缝 reads，则该数据**原理上**不具备判别力
+     → 保持 `UNRESOLVED`（阴性证据强度见 `evidence-standard.md` §3.2）。
 
 ## 4. 典型昆虫排列参照（锚点，仅六足为主）
 
@@ -78,6 +85,12 @@
 自检：CDS = 13（正链 9 / 负链 4）；tRNA = 22；rRNA = 2。
 参照来源与讨论见 §7；`tests/gb_fixtures.py` 的 `ORDER` 与本表逐项一致（已由回归测试锚定）。
 
+⚠️ **隔离要求（内建 ORDER 的用途边界）**：`tests/gb_fixtures.py` 的内建 `ORDER` 只用于
+（a）fixture/回归测试锚定、（b）昆虫样本的**背景警示**（"这个偏差值得看一眼"）。
+**不得**把它当作未知昆虫样本的真实排列参考，也**不得**用它判定顺序异常；
+`annot_check.py` 的**顺序对照只接受显式 `--ref <参考.gb>`**，未提供 `--ref` 时不做顺序比较（只报 `GENE_SET_DIFF`）。
+理由：膜翅目 / 半翅目 / 鞘翅目等存在不同程度的真实重排（§6），把果蝇型锚点当标准会大量误报。
+
 ## 5. 鳞翅目参照（与上表并存，不能互相替代）
 
 许多鳞翅目物种的 `trnM` 位置**与昆虫近祖排列不同**，常见为 `trnM–trnI–trnQ`
@@ -107,3 +120,4 @@
 - Boore/Bernt 等关于泛甲壳类/昆虫近祖排列与保守基因块的工作（§4 锚点作为**假说**使用）。
 - 鳞翅目 `trnM` 位置差异：见 *Hyphantria cunea* 等鳞翅目 mitogenome 论文（§5）。
 - 完整来源索引与引用管理要求：`evidence-standard.md` §6。
+- 参考选择等级（多远算"近缘"、各等级能支持什么）：`diagnostic-decision-tree.md` §5。

@@ -94,6 +94,7 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 1. 统一命名并保留反密码子、位置、链方向、结构工具分数、同源性与相邻基因。
 2. **裸名 `trnL` / `trnS` 不得自动归一到 `trnL1`/`trnS1`**：裸名不足以判定类型。
    代码记 `UNDETERMINED_TRNA`（REVIEW），并**放弃该组"是否缺失"的判定**，等待反密码子 / 结构 / 同源证据。
+
 3. 类型可由反密码子解析（动物线粒体标准写法）：`tag`→`trnL1(CUN)`、`taa`→`trnL2(UUR)`、
    `gct`→`trnS1(AGN)`、`tga`→`trnS2(UCN)`。反密码子与裸名所指氨基酸不一致时**不解析**，保留待确定。
 4. `/gene` 写 `trnL2(UUR)` 这类带括号形式是常见写法，代码会去掉括号后归一；但**反密码子应放在 `/anticodon`**。
@@ -107,6 +108,19 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
    - metazoa 线粒体 tRNA **数量本身可变**（缺失/重复，缺失可由核编码 tRNA 补偿），因此"22"是预期不是定律。
 6. 代码的长度规则：`< 50 bp` 且无 `note` → ERROR（坐标级硬性可疑）；有 `note` → WARN；`60–75 bp` 之外 → WARN。
    **长度只触发检查，不用于判定身份或假基因。**
+
+### 3.1 "缺失"必须分级（不要把三种 missing 混成一个）
+
+同一声称"少了 tRNA"，证据强度可以差很多。报告前先归级：
+
+| 等级 | 观测组合 | 允许的结论 | 证据要求 |
+|---|---|---|---|
+| **A** `candidate loss` | **多个**独立机制均未发现（如 MITOS2 + tRNAscan + 同源检索），且邻域结构支持该位点不再容纳该 tRNA（有 reads 时 reads 也支持该区被覆盖） | 可为"候选丢失"，仍需讨论核编码补偿与类群对照 | 多机制独立（不是同一数据库的两次输出） |
+| **B** `not detected` | **只有一个**工具未发现（典型：MITOS2 报 19/22，而 tRNAscan 只认 5/22） | **只能记"未检出"**，**不得**写“缺失” | —（升级需补机制） |
+| **C** `unresolved` | 该区**序列不可解析**：富含 `N`、低复杂度/重复、低覆盖、跨组装断点 | `UNRESOLVED` + `not_assessable`（先解决可解析性） | 需先修复可解析性 |
+
+真实案例正是被这一项坑到：MITOS2 报 19/22、tRNAscan 只认 5/22，若两种都写成 `missing`，
+就等于把"工具灵敏度差异"直接升为"生物学丢失"。**数量 22 是预期，不是定律**（见 §9 类群例外）。
 
 ## 4. rRNA
 
@@ -172,34 +186,17 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 
 例外不是"加一个开关"：代码侧用 `--tolerate-start "基因:密码子"` 选择，
 **生物学理由放在已审计记录** `--exception-registry <json>` 中（每条含 `gene`/`codon`/`taxon`/`source`/`rationale`）。
-登记检查是逐项匹配：
 
-- 未引用任何 registry → `EXCEPTION_NOT_REGISTERED`（仍是 REVIEW，可用但不得当作已验证结论）；
-- 记录缺 `taxon`/`source`/`rationale` → `EXCEPTION_RECORD_INCOMPLETE`；
-- 提供了 `--taxon` 且与记录的 `taxon` 不一致 → `EXCEPTION_TAXON_MISMATCH`；
-- **未提供 `--taxon`** → `EXCEPTION_TAXON_UNVERIFIED`：记录存在但无法确认其类群适用于本样本；
-- 证据字段类型错误（数组/对象/整数冒充字符串）→ **加载时受控失败**（退出码 1），不做部分生效；
-- **selector 归一化后为空或显式为 `null`** → 加载失败：`gene` 为 `""`/`"?"`/纯标点/`"(CUN)"`、
-  `codon`/`amino_acid` 为空字符串，或 `gene`/`codon`/`amino_acid` 键**存在但值为 `null`**；
-  空 selector 会与另一个空 selector（如缺 `/gene`/`/product` 的 CDS 归一化为 `""`）精确匹配，
-  等于把证据绑到“没有任何基因身份”上。记录类型按**键是否存在**判定（而非真值）：`amino_acid` 键一旦出现就是
-  `transl_except` 记录，`""` 或 `null` 均为格式错误，**不得降格为 start 记录**；
-  `transl_except` 的 `codon` 必须是三个 IUPAC 碱基，`amino_acid` 必须是合法例外 token；
-- **start selector 不得为空**：`--tolerate-start` 的基因名或 start 记录的 `gene` 归一化后为空
-  （`":CGA"`、`gene:"?"`/`""`/纯标点）→ **参数/加载受控失败**：
-  空 selector 会与缺 `/gene`+`/product` 的 CDS（canonical `""`）精确匹配，等于给“没有基因身份”的 CDS 挂上已审计例外；
-- **密码子统一规则**（start 记录、`transl_except` 记录与 `--tolerate-start` 共用同一函数）：先 `.strip().upper()`，
-  再要求**恰好三个 IUPAC 碱基**（`[ACGTURYKMSWBDHVN]{3}`）；`""` / `"   "` / `"CG"` / `"XXXX"` / `"C1A"` 均在
-  加载/参数阶段受控失败，`"cga"` 与 `" CGA "` 归一化为 `"CGA"`。否则一个笔误会变成“永不匹配”的静默条目，
-  或产生与 `"CGA"` 不同的键；
-- **start 记录按 `(gene, codon)` 唯一**：运行时只按这一对选择记录，因此重复（包括仅 `taxon` 不同）会**加载失败**
-  而不是后一条静默覆盖前一条；若确需多类群共存，必须先扩展 start registry 结构并定义选择规则；
-- **`transl_except` 记录同位点、不同 `taxon` 或不同 `transl_table` 可以共存**（它已按 record list + 显式选择实现）；
-  只有 selector 完全相同（gene/codon/amino_acid/位点/taxon/transl_table 全等）的才判为重复并拒绝。
+本文件关心的**生物学**边界只有两条：
 
-**未引用 registry / 记录缺字段 / taxon 不符 / 未提供 `--taxon` 这四种情形都只维持 REVIEW**，
-不会把例外升级为已验证；**字段类型错误、selector 归一化后为空、位点未绑定属于格式非法，
-导致 registry 加载失败并退出 1**，不进入 REVIEW 也不做部分生效。
+- 未引用 registry / 记录缺 `taxon`/`source`/`rationale` / `--taxon` 与记录不一致 / **未提供 `--taxon`**
+  → **只维持 REVIEW**（`EXCEPTION_NOT_REGISTERED` / `EXCEPTION_RECORD_INCOMPLETE` /
+  `EXCEPTION_TAXON_MISMATCH` / `EXCEPTION_TAXON_UNVERIFIED`），**不得把例外当作已验证结论**；
+- 只有同时满足全部约束（显式且一致的 `--taxon`、记录**绑定该位点**、`transl_table` 匹配、
+  `source`/`rationale` 非空）才能记 `TRANSL_EXCEPT_VALIDATED`——**生物学上是否成立仍需类群文献支持**。
+
+>(d) 层实现约束（selector 归一化后为空即加载失败、`null` 拒绝、密码子统一规则、`(gene, codon)` 唯一性、
+>位点未绑定即失败）**不是生物学判据**，已集中到 `developer-contract.md` §2，本文件不再重复。
 
 | 类群 | 已报告的特殊情况 | 对判据的意义 |
 |---|---|---|
@@ -212,6 +209,9 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 
 ## 10. 交叉引用与来源
 
-- 证据门槛、`confidence` 判据、来源索引：`evidence-standard.md` §1–§6
+- 证据门槛、`confidence` 判据、`reads_support` 与**阴性证据强度**：`evidence-standard.md` §1–§3
+- 分流（组装 vs 注释）、优先级、停止条件、参考等级、最小证据集：`diagnostic-decision-tree.md`
+- 结论层与报告模板：`conclusion-report.md`
 - 顺序、旋转、方向与坐标约定：`standard_gene_order.md`
 - 工具输入/产出/退出码：`tool-catalog.md`；环境：`tool_check.md`
+- schema、selector 归一化、原子写入等**实现约束**：`developer-contract.md`
