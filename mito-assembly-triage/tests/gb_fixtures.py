@@ -67,12 +67,15 @@ def sha256(path):
 
 
 def write_gb(path, sequence, features, topology="circular", accession=None):
-    """Write a GenBank record.
+    """Write a GenBank record (features as plain coordinates).
 
     features: list of dicts with keys
       name (str), type (str), strand ('+'/'-'),
       and either start/end (0-based half-open) or segments=[(s,e), ...],
       plus optional codon_start, anticodon, note, transl_except, product, gene.
+
+    NOTE: partial markers (``<``/``>``) cannot be expressed through this API.
+    Use :func:`write_gb_raw` when partiality matters.
     """
     from Bio.Seq import Seq
     from Bio.SeqFeature import CompoundLocation, FeatureLocation, SeqFeature
@@ -109,6 +112,43 @@ def write_gb(path, sequence, features, topology="circular", accession=None):
                        annotations=annotations)
     record.features = seq_features
     SeqIO.write(record, path, "genbank")
+    return Path(path)
+
+
+def origin_block(sequence, width=60, group=10):
+    lines = []
+    for start in range(0, len(sequence), width):
+        chunk = sequence[start:start + width]
+        groups = " ".join(chunk[offset:offset + group]
+                           for offset in range(0, len(chunk), group))
+        lines.append("%-9d %s" % (start + 1, groups))
+    return "\n".join(lines)
+
+
+def write_gb_raw(path, sequence, features, topology="circular", locus="test"):
+    """Write GenBank with **explicit location strings**, so partial markers survive.
+
+    features: list of dicts with keys
+      location (str, e.g. '<1..100', '200..>300', 'complement(<250..>350)',
+                'join(350..400,1..50)'), type (str)
+      plus any of gene / product / note / codon_start / anticodon /
+      transl_except / transl_table (written as qualifiers).
+
+    This is the only reliable way to build partial-CDS fixtures: Biopython keeps
+    the ``<``/``>`` markers when *reading*, but cannot express them when writing.
+    """
+    lines = ["LOCUS       %-22s %7d bp    DNA     %-7s PLN 01-JAN-2020"
+             % (locus[:22], len(sequence), "circular" if topology == "circular" else "linear"),
+             "FEATURES             Location/Qualifiers"]
+    for spec in features:
+        lines.append("     %-15s %s" % (spec["type"], spec["location"]))
+        for key in ("gene", "product", "note", "codon_start", "transl_table",
+                    "anticodon", "transl_except"):
+            if spec.get(key) is not None:
+                value = str(spec[key]).replace('"', '""')
+                lines.append('                     /%s="%s"' % (key, value))
+    lines += ["ORIGIN", origin_block(sequence), "//"]
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return Path(path)
 
 

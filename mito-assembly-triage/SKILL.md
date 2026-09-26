@@ -72,7 +72,27 @@ FASTA、同源性、翻译、RNA 结构和比较基因组证据可以支持候�
 需给出理由，且不放松起始密码子、重叠、长度与链分布。
 
 类群特异的**非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不得靠伪造 5' 端缺失或改碱基绕过；
-用 `--tolerate-start "基因:密码子"` 逐条声明为已知例外，保留证据等级与不确定性。
+用 `--tolerate-start "基因:密码子"` 逐条声明，并用 `--exception-registry <json>` 引用**已审计记录**
+（taxon/source/rationale）—— 未登记时输出 `EXCEPTION_NOT_REGISTERED`，不得当作已验证结论。
+同一个 `--exception-registry` 也用于 `/transl_except`（见下）。
+
+**5'/3' partial 由 GenBank location 的 `<`/`>` 决定**，不由 `/codon_start` 决定：location 完整却设
+`/codon_start=2` 是注释自相矛盾（`CODON_START_CONFLICT`）。
+
+**`/transl_except` 分语法与证据两层**：声明的位置集合必须**恰好**是某个真实内部终止密码子（含读框、链方向、
+跨 `join()` 边界的密码子；负链必须写 `pos:complement(a..b)`），整个 qualifier 必须被完整消费，`aa` 不得是 `TERM`
+—— 通过只记 `TRANSL_EXCEPT_MATCHED`（位置事实），**MATCHED 不等于已接受**。接受还需 `--exception-registry` 中键为
+`gene + codon + amino_acid` 的条目，且必须同时满足三个 fail-closed 约束：
+（a）**显式给 `--taxon`** 且与记录 `taxon` 一致（未给 `--taxon` 时不得升为已验证）；
+（b）**位点绑定**：给 `codon_index` 或 `pos` 之一，或**显式** `scope="gene_wide"`（不绑定位点的记录在加载时受控失败）；
+（c）`transl_table` 为正整数且等于 `--table`，`source`/`rationale` 为非空字符串（类型错误在加载时受控失败）。
+三者均满足才记 `TRANSL_EXCEPT_VALIDATED`（并输出 `scope=`）。registry 的 **selector 归一化后不得为空**：
+`gene` 为空/`"?"`/纯标点（如缺 `/gene`/`/product` 的 CDS）或 `gene`/`codon`/`amino_acid` 键存在但为 `null` 时，
+均在**加载时**受控失败（记录类型按键是否存在判定，`amino_acid: null` 不得降格为 start 记录）；`codon` 须为三个 IUPAC 碱基、
+`amino_acid` 须为合法例外 token；同位点但不同 `taxon`/`transl_table` 的记录**可共存**（运行时按 `--taxon`/`--table`
+选择），只有 selector 全等的才判重复。**不引入全局密码子→氨基酸重编码表**：任意合法 token
+（如 `TAA -> Gln`）即使位置匹配也只记 `TRANSL_EXCEPT_DECLARED_UNVERIFIED`（REVIEW），**内部终止继续作为 ERROR**。
+语法无法完整解析记 `TRANSL_EXCEPT_UNPARSED`（整条作废）；未解释的内部终止始终是错误。
 
 **重叠**只记录与分级（`≤8bp` INFO，`>8bp` 默认 REVIEW，`--overlap-severity error` 可升级），
 `--tolerate-overlap` 的含义是"已人工审核并保留该注释"，不代表已证明功能真实性；
@@ -80,6 +100,7 @@ FASTA、同源性、翻译、RNA 结构和比较基因组证据可以支持候�
 
 `annot_check.py` 退出码：`0` 无发现 / `1` 有错误（含参数错误）/ `2` 仅待核查。
 **退出码 2 不等于通过**：每条待核查项必须在案例中逐条入账（被降级项 + 支持证据 + 判定人）。
+`--require-circular` 打印 `CIRCULAR_DECLARATION_CHECK`，只校验 GB 的拓扑声明，不等于物理闭环。
 
 内部终止、模糊碱基、基因缺失、重复、反向块、控制区 soft-clip 或低覆盖都只是异常信号。
 至少比较密码表、边界/阅读框、测序或组装错误、真实生物学变异、NUMT 和结构重复等相容解释。
@@ -112,8 +133,26 @@ reads、read pairs、组装图或长读长证据。不能唯一解析时保留�
 | 物种线索 | 先本地定位 COX1；远程查询前取得明确授权 |
 
 `cox1_id.py` 不会自动识别 COX1。只有在本地确认坐标、用户明确同意上传后，才使用
-`python3 scripts/cox1_id.py <genome.fasta> --allow-public-upload --coords <start>,<end>`；
-查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。
+`python3 scripts/cox1_id.py <genome.fasta> --allow-public-upload --coords <start>,<end> [--output-json results.json]`；
+查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。它请求 `FORMAT_TYPE=XML2`，并**同时**能读
+XML2（`-outfmt 16`）与旧版 XML（`-outfmt 5`）两种方言；`FORMAT_OBJECT=SearchInfo` 按 NCBI 实际返回的
+QBlast 文本（`RID =` / `Status=`）解析，XML 形式也兼容。**每个 `<Hsp>` 的 query/hit 坐标、identity、align-len、
+bit-score 都必须存在且数值合法**：缺任一必需字段时整份结果按**格式故障**（退出码 3）处理 ——
+缺少 subject 坐标就无法做方向/共线性/目标重用检查，不能靠“只剩单个 HSP”绕过验证。它报告每个候选的 **query coverage**（多 HSP 并集）与 identity，并把 RID 轮询与结果下载分开。
+退出码把任务状态与判读状态分开：`0` 得判读 / `1` insufficient 或 no_match（分析结论）/ `2` 拒绝执行 /
+`3` 网络或结果格式故障。多 HSP 的指标只有同时满足**不重叠**与**目标共线**才回总，检查分开做：
+① 全部 HSP 必须同一目标链（真正的正负链混合属矛盾证据）；
+② 按 `query_from` 排序后，`hit_from` 必须**沿目标链方向单调推进**（正链递增、**负链递减**）；
+③ **query 侧与 target 侧都不能复用同一批碱基**：query 区间重叠记 `overlapping_hsps`，target 区间重叠记
+`subject_overlap`（两条 query 分别打到目标同一段的重复/塌缩情形，仍不是两条独立比对）；
+其中 **`max_span_ratio=3.0`（目标跨度 ≤ 3 倍比对长度）是额外的工程预警，不是 COX1 生物学标准，也不能代替方向检查**。
+坐标约定经本地真实 `blastn` 实测锁定：连续负链 `q1..400→s1800..1401`、`q501..900→s1400..1001`（应**接受**）；
+同两段但顺序倒置 `q1..400→s1400..1001`、`q500..900→s1801..1401`（应**拒绝**）。
+回总失败时记 `overlapping_hsps` / `subject_overlap` / `non_collinear_hsps` + `CONFLICTING_ALIGNMENT`；若跳变同时触及目标两端，
+另记 `CROSS_ORIGIN_CANDIDATE` —— 环状参考下可能是跨原点排列，但**必须**有明确坐标与结构证据，不得直接按连续线性比对接受。
+这些情形都**不参与自动择优**，但 `AMBIGUOUS_ALIGNMENT` 的含义是“**多 HSP 指标无法可靠汇总**”，
+**不是**“该 hit 不是有效候选”：CLI 会逐条打印被阻断候选的 HSP 明细（`q.. → s..  identity bits`），
+并用 `--output-json` 把每个候选的全部 HSP 与 blocker 持久化；该文件无论判读结果如何都会写出。最优 accession 不等于已完成物种鉴定。
 
 超过 5 分钟的任务使用现有 `scripts/run_bg.sh` 和 `scripts/check_bg.sh`，必须检查真实退出状态，
 不能把仍在运行、超时或失败的任务描述为完成。

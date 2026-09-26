@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gb_fixtures import (  # noqa: E402
     ROOT, ORDER, biopython_available, build_synthetic_ref, cds_block, load_module,
-    run_annot_check, write_gb,
+    run_annot_check, write_gb, write_gb_raw,
 )
 REASON = "合成测试: 单基因记录, 基因集差异已逐项确认"
 
@@ -61,17 +61,17 @@ class NoncanonicalStartTests(unittest.TestCase):
                 self.assertIn("[ERROR]", result.stdout)
                 self.assertIn("未匹配任何起始密码子", result.stdout)
 
-    def test_real_partial_cds_codon_start_is_not_a_start_error(self):
-        # 5' partial: one base is dropped by /codon_start=2, so the first codon is GAT
-        sequence = "G" + "GAT" + "AAA" * 20 + "TAA"
+    def test_real_partial_cds_from_the_location_is_not_a_start_error(self):
+        # 5' partial must come from the GenBank location (<), not from /codon_start:
+        # a complete location with /codon_start=2 is an annotation contradiction.
+        sequence = "GAT" + "AAA" * 20 + "TAA"
         path = self.dir / "partial.gb"
-        write_gb(path, sequence, [
-            {"gene": "cox1", "type": "CDS", "start": 0, "end": len(sequence),
-             "strand": "+", "codon_start": 2},
+        write_gb_raw(path, sequence, [
+            {"location": "<1..%d" % len(sequence), "type": "CDS", "gene": "cox1"},
         ])
         result = run_annot_check(path, "--allow-atypical", REASON)
         self.assertNotIn("[ERROR]", result.stdout)
-        self.assertIn("5' 端不完整", result.stdout)
+        self.assertIn("PARTIAL_CDS_5P", result.stdout)
         self.assertNotEqual(result.returncode, 1)
 
 
@@ -288,8 +288,8 @@ class OrientationAndAliasTests(unittest.TestCase):
         SeqIO.write(record, aliased, "genbank")
 
         result = run_annot_check(ref, "--ref", aliased)
-        self.assertIn("基因顺序匹配(CDS): 一致", result.stdout)
-        self.assertNotIn("基因顺序与参考不同", result.stdout)
+        self.assertIn("邻接关系一致", result.stdout)
+        self.assertNotIn("ARRANGEMENT_DIFF", result.stdout)
 
     def test_rrna_aliases_use_the_correct_length_range(self):
         for name, length, forbidden in (("lrrna", 1300, "600-850"), ("srrna", 750, "1100-1500")):

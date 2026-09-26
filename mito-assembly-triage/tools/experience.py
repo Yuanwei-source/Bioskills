@@ -419,6 +419,92 @@ def case_event(args):
         fh.write(json.dumps(record, ensure_ascii=False) + '\n')
     print('event recorded')
 
+DECISION_STATUSES = ('RESOLVED', 'NO_CHANGE', 'UNRESOLVED')
+CONFIDENCE_LEVELS = ('high', 'moderate', 'low', 'not_assessable')
+READS_SUPPORT_LEVELS = ('NOT_ASSESSED', 'READS_CONSISTENT', 'READS_DISCRIMINATING')
+
+
+def _case_errors_without_jsonschema(case):
+    """Explicit equivalent of schemas/case.schema.json.
+
+    This is what runs when ``jsonschema`` is unavailable.  CI installs jsonschema,
+    so the primary path runs there and the two cross-comparison tests are skipped;
+    this fallback is therefore covered by the tests that call it DIRECTLY
+    (``test_fallback_verdicts_are_fixed``, ``SchemaKeywordCoverageTests`` and the
+    Schema-keyword x JSON-basic-type matrix).  It **must not be weaker than the
+    schema**: a weaker fallback would silently skip the ``anomalies[]`` enum checks
+    while the docs claim they are validated, and it must never raise on a legal
+    JSON value.  That is exactly the failure mode this project keeps hitting.
+    """
+    if not isinstance(case, dict):
+        return ['case.json 必须是 JSON 对象']
+    errors = []
+    required = ('schema_version', 'case_id', 'inputs', 'issue', 'hypotheses', 'decision', 'events_file')
+    for key in required:
+        if key not in case:
+            errors.append('缺少必需字段: %s' % key)
+    if case.get('schema_version') != '2.0':
+        errors.append('schema_version 必须是 "2.0"')
+    if 'case_id' in case and (not isinstance(case['case_id'], str) or not case['case_id']):
+        errors.append('case_id 必须是非空字符串 (minLength: 1)')
+    if 'events_file' in case and not isinstance(case['events_file'], str):
+        errors.append('events_file 必须是字符串')
+    for key in ('inputs', 'hypotheses', 'anomalies', 'modifications',
+                'validation', 'lessons_proposed'):
+        if key in case and not isinstance(case[key], list):
+            errors.append('%s 必须是数组' % key)
+    hypotheses = case.get('hypotheses')
+    if isinstance(hypotheses, list):
+        if not hypotheses:
+            errors.append('hypotheses 不能为空 (至少 1 条候选解释)')
+        for index, item in enumerate(hypotheses):
+            if not isinstance(item, dict) or \
+                    not {'id', 'explanation', 'support', 'against', 'unknown'} <= set(item):
+                errors.append('hypotheses[%d] 缺少必需字段 '
+                              '(id/explanation/support/against/unknown)' % index)
+    inputs = case.get('inputs')
+    if isinstance(inputs, list):
+        for index, item in enumerate(inputs):
+            if not isinstance(item, dict) or not {'role', 'path', 'sha256'} <= set(item):
+                errors.append('inputs[%d] 缺少必需字段 (role/path/sha256)' % index)
+    decision = case.get('decision')
+    if 'decision' in case:
+        if not isinstance(decision, dict):
+            # explicit null/str is NOT the same as an absent key
+            errors.append('decision 必须是对象')
+        else:
+            if not {'status', 'confidence', 'rationale'} <= set(decision):
+                errors.append('decision 缺少必需字段 (status/confidence/rationale)')
+            if decision.get('status') not in DECISION_STATUSES:
+                errors.append('decision.status 取值非法: %s' % decision.get('status'))
+            if decision.get('confidence') not in CONFIDENCE_LEVELS:
+                errors.append('decision.confidence 取值非法: %s' % decision.get('confidence'))
+    if 'issue' in case:
+        issue = case['issue']
+        if not isinstance(issue, dict):
+            errors.append('issue 必须是对象')
+        elif 'type' not in issue:
+            errors.append('issue 缺少必需字段 (type)')
+    if 'taxon' in case and not isinstance(case['taxon'], dict):
+        errors.append('taxon 必须是对象')
+    anomalies = case.get('anomalies')
+    if isinstance(anomalies, list):
+        for index, item in enumerate(anomalies):
+            if not isinstance(item, dict):
+                errors.append('anomalies[%d] 必须是对象' % index)
+                continue
+            if not {'id', 'claim', 'status', 'confidence'} <= set(item):
+                errors.append('anomalies[%d] 缺少必需字段 (id/claim/status/confidence)' % index)
+            if item.get('status') not in DECISION_STATUSES:
+                errors.append('anomalies[%d].status 取值非法: %s' % (index, item.get('status')))
+            if item.get('confidence') not in CONFIDENCE_LEVELS:
+                errors.append('anomalies[%d].confidence 取值非法: %s' % (index, item.get('confidence')))
+            if 'reads_support' in item and item['reads_support'] not in READS_SUPPORT_LEVELS:
+                errors.append('anomalies[%d].reads_support 取值非法: %s'
+                              % (index, item['reads_support']))
+    return errors
+
+
 def case_schema_errors(case):
     """Enforce schemas/case.schema.json; fall back to an equivalent explicit check."""
     schema_path = CASE_SCHEMA
@@ -433,35 +519,26 @@ def case_schema_errors(case):
             location = '/'.join(str(part) for part in exc.absolute_path) or '<root>'
             return ['schema 校验失败: %s (%s)' % (exc.message, location)]
         return []
-    errors = []
-    required = ('schema_version', 'case_id', 'inputs', 'issue', 'hypotheses', 'decision', 'events_file')
-    for key in required:
-        if key not in case:
-            errors.append('缺少必需字段: %s' % key)
-    hypotheses = case.get('hypotheses')
-    if isinstance(hypotheses, list):
-        if not hypotheses:
-            errors.append('hypotheses 不能为空 (至少 1 条候选解释)')
-        for index, item in enumerate(hypotheses):
-            if not isinstance(item, dict) or not {'id', 'explanation', 'support', 'against', 'unknown'} <= set(item):
-                errors.append('hypotheses[%d] 缺少必需字段 (id/explanation/support/against/unknown)' % index)
-    elif hypotheses is not None:
-        errors.append('hypotheses 必须是数组')
-    inputs = case.get('inputs')
-    if isinstance(inputs, list):
-        for index, item in enumerate(inputs):
-            if not isinstance(item, dict) or not {'role', 'path', 'sha256'} <= set(item):
-                errors.append('inputs[%d] 缺少必需字段 (role/path/sha256)' % index)
-    return errors
+    return _case_errors_without_jsonschema(case)
 
 
 def case_validate(args):
     root = pathlib.Path(args.directory).resolve()
     with open(root / 'case.json', encoding='utf-8') as fh: case = json.load(fh)
+    if not isinstance(case, dict):
+        print('INVALID'); print('- case.json 必须是 JSON 对象'); return 1
     errors = case_schema_errors(case)
     if case.get('schema_version') != '2.0': errors.append('schema_version must be 2.0')
-    if case.get('decision', {}).get('status') not in {'RESOLVED', 'NO_CHANGE', 'UNRESOLVED'}: errors.append('invalid decision.status')
-    if case.get('decision', {}).get('confidence') not in {'high', 'moderate', 'low', 'not_assessable'}: errors.append('invalid decision.confidence')
+    # An explicit "decision": null is not the same as an absent key: the default in
+    # case.get('decision', {}) does NOT apply, so the value must be type-checked
+    # before any field is read.  These redundant business checks run after the
+    # schema so the CLI still reports INVALID instead of raising AttributeError.
+    decision = case.get('decision')
+    if not isinstance(decision, dict):
+        decision = {}
+        errors.append('decision 必须是对象')
+    if decision.get('status') not in {'RESOLVED', 'NO_CHANGE', 'UNRESOLVED'}: errors.append('invalid decision.status')
+    if decision.get('confidence') not in {'high', 'moderate', 'low', 'not_assessable'}: errors.append('invalid decision.confidence')
     try: events_path = safe_case_member(root, case.get('events_file', 'events.jsonl'), 'events_file')
     except ValueError as exc: errors.append(str(exc)); events_path = None
     if events_path is not None and not events_path.is_file(): errors.append('events file missing')

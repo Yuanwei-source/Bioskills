@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<BlastXML2
+    xmlns="http://www.ncbi.nlm.nih.gov"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema-instance"
+    xs:schemaLocation="http://www.ncbi.nlm.nih.gov http://www.ncbi.nlm.nih.gov/data_specs/schema_alt/NCBI_BlastOutput2.xsd"
+>
+<BlastOutput2>
+  <report>
+    <Report>
+      <program>blastn</program>
+      <version>BLASTN 2.12.0+</version>
+      <reference>Zheng Zhang, Scott Schwartz, Lukas Wagner, and Webb Miller (2000), &quot;A greedy algorithm for aligning DNA sequences&quot;, J Comput Biol 2000; 7(1-2):203-14.</reference>
+      <search-target>
+        <Target>
+          <db>/tmp/tmp982oiekm/sdb</db>
+        </Target>
+      </search-target>
+      <params>
+        <Parameters>
+          <expect>10</expect>
+          <sc-match>1</sc-match>
+          <sc-mismatch>-2</sc-mismatch>
+          <gap-open>0</gap-open>
+          <gap-extend>0</gap-extend>
+          <filter>m;</filter>
+        </Parameters>
+      </params>
+      <results>
+        <Results>
+          <search>
+            <Search>
+              <query-id>Query_1</query-id>
+              <query-title>cox1_query</query-title>
+              <query-len>800</query-len>
+              <hits>
+                <Hit>
+                  <num>1</num>
+                  <description>
+                    <HitDescr>
+                      <id>gnl|BL_ORD_ID|0</id>
+                      <accession>0</accession>
+                      <title>s_mitochondrion</title>
+                    </HitDescr>
+                  </description>
+                  <len>1200</len>
+                  <hsps>
+                    <Hsp>
+                      <num>1</num>
+                      <bit-score>1478.44</bit-score>
+                      <score>800</score>
+                      <evalue>0</evalue>
+                      <identity>800</identity>
+                      <query-from>1</query-from>
+                      <query-to>800</query-to>
+                      <query-strand>Plus</query-strand>
+                      <hit-from>201</hit-from>
+                      <hit-to>1000</hit-to>
+                      <hit-strand>Plus</hit-strand>
+                      <align-len>800</align-len>
+                      <gaps>0</gaps>
+                      <qseq>TCCACAGCTCATTGTACCGAGTGTAGAGAGGGGCTTGTCCTTCCAGATAGCGTTTCTGTTTCGGTGTAGGTGCTAATCGACTATGCTACTGCGGTTAACGGGGATGGCAAGTACATTTTTTCGTAGATGTGCCTTGCTAACGAAAGTATTAAACACGTCCCTCACAATAGAATCATAGTTGGACGCGCGACGGCCGTTCCAGAAAATCTTTGAATACTCAATCCTGCGGGTTCGGTGACCTAAAACCCATTGATTGTGTTACCCAGTTCGAGCGCATAGGGAATTCAGGTCCACACATGGCTGGATCCCCATGATATTCAAGAACTATACATTAAGTTGAACCTCCAGAACACATGTTTCAGTCACGTAGTGCCATCATCGATCACGGAATGTAGCATCAATGATCGAGCCGTGGAAAAAACGTGACTCGCGGACCAGCCTTTAGGTCTTCTACTTAACTACAACTGTTCCGCGGCGGCATTGCCCTTAACTAGCGTTACTAACTAGAGTTTTACTGACGGAAAGTGAGCAAAGGCTAACGTTATTCCGTGAGCACGGGACATCCATTCTTCGTGAGCTACAGCTCGAGAATCAGCTTCTAACCAAGCGATGCAGAACCGGCTACTTTAAGCATTGATGAATGCGTCGTAAGTGATACTCGACGATTCTCATGCAACGAAGTTAACCTATAGTAACTTACATTTTACGCGCTAGCTTCGCTGGAACTAATATCCATGTCTCAGAACTAGCGGCCGAGAATGGGTTCCGAATCCTAAACTCCGACATGAGTTAAGGTTGCA</qseq>
+                      <hseq>TCCACAGCTCATTGTACCGAGTGTAGAGAGGGGCTTGTCCTTCCAGATAGCGTTTCTGTTTCGGTGTAGGTGCTAATCGACTATGCTACTGCGGTTAACGGGGATGGCAAGTACATTTTTTCGTAGATGTGCCTTGCTAACGAAAGTATTAAACACGTCCCTCACAATAGAATCATAGTTGGACGCGCGACGGCCGTTCCAGAAAATCTTTGAATACTCAATCCTGCGGGTTCGGTGACCTAAAACCCATTGATTGTGTTACCCAGTTCGAGCGCATAGGGAATTCAGGTCCACACATGGCTGGATCCCCATGATATTCAAGAACTATACATTAAGTTGAACCTCCAGAACACATGTTTCAGTCACGTAGTGCCATCATCGATCACGGAATGTAGCATCAATGATCGAGCCGTGGAAAAAACGTGACTCGCGGACCAGCCTTTAGGTCTTCTACTTAACTACAACTGTTCCGCGGCGGCATTGCCCTTAACTAGCGTTACTAACTAGAGTTTTACTGACGGAAAGTGAGCAAAGGCTAACGTTATTCCGTGAGCACGGGACATCCATTCTTCGTGAGCTACAGCTCGAGAATCAGCTTCTAACCAAGCGATGCAGAACCGGCTACTTTAAGCATTGATGAATGCGTCGTAAGTGATACTCGACGATTCTCATGCAACGAAGTTAACCTATAGTAACTTACATTTTACGCGCTAGCTTCGCTGGAACTAATATCCATGTCTCAGAACTAGCGGCCGAGAATGGGTTCCGAATCCTAAACTCCGACATGAGTTAAGGTTGCA</hseq>
+                      <midline>||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||</midline>
+                    </Hsp>
+                  </hsps>
+                </Hit>
+              </hits>
+              <stat>
+                <Statistics>
+                  <db-num>1</db-num>
+                  <db-len>1200</db-len>
+                  <hsp-len>13</hsp-len>
+                  <eff-space>934169</eff-space>
+                  <kappa>0.46</kappa>
+                  <lambda>1.28</lambda>
+                  <entropy>0.85</entropy>
+                </Statistics>
+              </stat>
+            </Search>
+          </search>
+        </Results>
+      </results>
+    </Report>
+  </report>
+</BlastOutput2>
+</BlastXML2>

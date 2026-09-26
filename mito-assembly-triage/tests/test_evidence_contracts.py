@@ -244,5 +244,108 @@ class Cox1VerdictTests(unittest.TestCase):
         self.assertIn("query coverage", source.lower())
 
 
+def _fixed_case(**overrides):
+    """A valid case dict; overrides produce the fixed equivalence data set."""
+    case = {
+        "schema_version": "2.0", "case_id": "fixed-case",
+        "inputs": [{"role": "assembly_fasta", "path": "/tmp/x.fa", "sha256": "a" * 64}],
+        "issue": {"type": "internal_stop", "user_observation": "nad5 stop"},
+        "hypotheses": [{"id": "H1", "explanation": "frame/boundary",
+                        "support": [], "against": [], "unknown": []}],
+        "events_file": "events.jsonl",
+        "decision": {"status": "RESOLVED", "confidence": "moderate", "rationale": "homology"},
+        "anomalies": [{"id": "A1", "claim": "boundary fix", "status": "RESOLVED",
+                       "confidence": "moderate", "reads_support": "NOT_ASSESSED"}],
+    }
+    case.update(overrides)
+    return case
+
+
+class SchemaValidatorEquivalenceTests(unittest.TestCase):
+    """The jsonschema path and the no-dependency fallback must follow ONE schema.
+
+    Technical debt being managed here: the two validators are separate code, so a
+    schema change can drift them apart silently.  This fixed data set pins the
+    verdicts; ``test_both_paths_agree`` additionally requires identical results
+    wherever jsonschema is installed.  If a future schema edit only touches one
+    implementation, one of these two tests fails.
+
+    Note: a cross-field contradiction (a case-level RESOLVED decision next to an
+    UNRESOLVED anomaly) is deliberately NOT rejected by either validator -- the
+    schema does not express it, and adding the rule to only one implementation
+    would create exactly the divergence this test guards against.
+    """
+
+    FIXED_CASES = {
+        "legal": (_fixed_case(), True),
+        "missing_field": (_fixed_case(decision=None), False),
+        "wrong_field_type": (_fixed_case(inputs="not-an-array"), False),
+        "illegal_enum": (_fixed_case(decision={"status": "DONE", "confidence": "moderate",
+                                                "rationale": "x"}), False),
+        "illegal_nested_enum": (_fixed_case(anomalies=[
+            {"id": "A1", "claim": "x", "status": "RESOLVED", "confidence": "high",
+             "reads_support": "raw-read-supported"}]), False),
+        "conflicting_status": (_fixed_case(anomalies=[
+            {"id": "A1", "claim": "x", "status": "UNRESOLVED",
+             "confidence": "not_assessable"}]), True),
+        "nested_object_error": (_fixed_case(anomalies=[
+            {"id": "A1", "status": "RESOLVED", "confidence": "high"}]), False),
+        "empty_hypotheses": (_fixed_case(hypotheses=[]), False),
+        "inputs_missing_sha256": (_fixed_case(inputs=[{"role": "assembly_fasta"}]), False),
+        # The four divergences an independent review found between
+        # schemas/case.schema.json and the no-jsonschema fallback (minLength and
+        # the three optional arrays).  Keeping them here makes both paths answer
+        # for them forever.
+        "empty_case_id": (_fixed_case(case_id=""), False),
+        "modifications_null": (_fixed_case(modifications=None), False),
+        "validation_not_array": (_fixed_case(validation="not-an-array"), False),
+        "lessons_proposed_not_array": (_fixed_case(lessons_proposed={}), False),
+    }
+
+    def setUp(self):
+        self.module = load_module("experience_schema_equiv", Path("tools") / "experience.py")
+
+    def test_fallback_verdicts_are_fixed(self):
+        for name, (case, expected_valid) in self.FIXED_CASES.items():
+            with self.subTest(case=name):
+                errors = self.module._case_errors_without_jsonschema(case)
+                self.assertEqual(not errors, expected_valid,
+                                 "%s -> %s" % (name, errors))
+
+    def test_both_paths_agree(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest("jsonschema is not installed; the fallback is covered by "
+                          "test_fallback_verdicts_are_fixed")
+        schema = json.loads((ROOT / "schemas" / "case.schema.json").read_text(encoding="utf-8"))
+        for name, (case, _expected) in self.FIXED_CASES.items():
+            with self.subTest(case=name):
+                try:
+                    jsonschema.validate(case, schema)
+                    schema_ok = True
+                except jsonschema.ValidationError:
+                    schema_ok = False
+                fallback_ok = not self.module._case_errors_without_jsonschema(case)
+                self.assertEqual(schema_ok, fallback_ok,
+                                 "%s: jsonschema=%s fallback=%s" % (name, schema_ok, fallback_ok))
+
+    def test_public_entry_point_matches_the_fixed_verdicts(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.module.KNOWLEDGE = str(root / "knowledge")
+        for index, (name, (case, expected_valid)) in enumerate(self.FIXED_CASES.items()):
+            with self.subTest(case=name):
+                directory = root / ("case-%d" % index)
+                directory.mkdir()
+                data = dict(case)
+                data.pop("decision", None) if case.get("decision") is None else None
+                (directory / "case.json").write_text(json.dumps(data), encoding="utf-8")
+                (directory / "events.jsonl").touch()
+                verdict = self.module.case_validate(SimpleNamespace(directory=str(directory)))
+                self.assertEqual(verdict == 0, expected_valid, "%s" % name)
+
+
 if __name__ == "__main__":
     unittest.main()

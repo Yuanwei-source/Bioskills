@@ -32,17 +32,55 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 ## 2. CDS
 
 1. 用类群确认的 `transl_table` 重译每条 CDS，核对链方向与跨环（跨原点）坐标。
-   代码按 `/codon_start` 定位读码框，并支持 `join()` 分段位置。
+   代码按 `/codon_start` 偏移读码框并支持 `join()` 分段位置，但**不**从 `/codon_start` 推断 partial
+   （partial 只看 location，见下条）。
 2. 逐条记录：起始密码子、终止密码子（完整 / 不完整 `T`/`TA`）、内部终止数、同源蛋白覆盖度、边界证据。
 3. **内部终止必须解释**，排查顺序：密码表选错 → 边界/阅读框错误 → 碱基错误（测序或组装）→ 真实生物学例外。
-   声明 `/transl_except` 时降为 REVIEW，仍需独立证据。不允许只改结论文字。
-4. **非典型起始密码子**（如 `CGA`）不再被无条件判错：
-   - 无法定起始 → `INVALID_CDS`（ERROR），并提示 `NONCANONICAL_START_REVIEW`；
-   - 用 `--tolerate-start "基因:密码子"`（可重复，逐条给出）声明类群已知例外 → 记 `NONCANONICAL_START_REVIEW`（REVIEW），
-     保留证据等级与不确定性。
+   - `/transl_except` **分三层，存在不等于豁免**：
+     **① 语法层**：代码按 CDS 转录顺序建立每个密码子的**精确基因组位置集合**；整个 qualifier 必须被
+     **完整消费**（一个或多个 `(pos:...,aa:...)`），语法不完整就记 `TRANSL_EXCEPT_UNPARSED` 并**整条作废，
+     不沿用合法前缀**（尾随逗号、尾随损坏文本、缺 `pos:` token、模糊位置、括号不配对都属此类）。
+     `pos` 支持 `a..b`、`complement(a..b)`、`join(..)`/`order(..)`（密码子可跨 `join()` 边界）；
+     同一 `pos` 内**不同链方向的片段混用直接拒绝**（整段位置不得由 OR 合并成单链）。
+     `aa` 须是合法三字母代码且**不是 `TERM`**；`pos` 方向须与 CDS 一致（**负链 CDS 必须 `pos:complement(a..b)`**，
+     正链不得写 `complement`）；位置集合必须**恰好**等于某个真实内部终止密码子。通过只记
+     `TRANSL_EXCEPT_MATCHED`（位置/读框事实），**MATCHED 本身不等于已接受**。
+     **② 生物学层**：语法匹配后还必须有审计证据才能接受。证据来自 `--exception-registry` 的
+     `transl_except` 条目，键为 `gene + codon + amino_acid`，且必须满足三个 fail-closed 约束：
+     （a）**样本绑定**：必须显式给出 `--taxon` 并与记录 `taxon` 一致 —— 未提供 `--taxon` 时无法把记录绑定到本样本，
+     **不得**升为已验证；
+     （b）**位点绑定**：记录必须说明它覆盖**哪个** stop —— 给 `codon_index`（CDS 转录顺序上的 1-based 密码子序号）
+     或 `pos`（该密码子的基因组位置，如 `10..12`）之一；只有**显式** `scope="gene_wide"` 的记录才允许复用多个位点。
+     不绑定位点的记录在**加载时**受控失败（否则一条记录会静默变成基因范围的重编码规则）；
+     （c）**字段完整且类型正确**：`transl_table`（正整数，须等于 `--table`）、`source`、`rationale` 必须为非空字符串；
+     数组/对象/整数等错误 JSON 类型在**加载时**受控失败（`str(value)` 非空不等于已审计）。
+     三者均满足才记 `TRANSL_EXCEPT_VALIDATED`（并输出 `scope=`）并扣除该项。
+     **不引入全局密码子→氨基酸重编码表**：密码子含义随类群与密码表变化，把“合法 INSDC token”当成
+     “已验证例外”会把类群特异的例外伪装成普遍规律。因此 `TAA -> Gln` 这类任意声明即使位置匹配，
+     也只能得到 `TRANSL_EXCEPT_DECLARED_UNVERIFIED`（REVIEW），**内部终止仍保留 ERROR**。
+     **③ 结果层**：因此**一条声明不能吸收两个内部终止**；一条未绑定该位点的记录也不能验证别处的同类 stop；
+     未验证、未解释的内部终止仍是 ERROR。
+     registry 的最小 transl_except 记录：
+     `{"gene":"cox1","codon":"TAA","amino_acid":"Trp","pos":"10..12",`
+     `"transl_table":5,"taxon":"Lepidoptera","source":"DOI ...","rationale":"..."}`
+     （或用 `"codon_index":4`，或 `"scope":"gene_wide"` 且不给位点）。
+   - `/transl_table` 逐条与 `--table` 比对，不一致记 `TABLE_CONFLICT`（代码按 `--table` 翻译）。
+   - 不允许只改结论文字。
+4. **非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不再被无条件判错：
+   - 没有合法起始 → `INVALID_CDS`（ERROR），并提示 `NONCANONICAL_START_REVIEW`；
+   - 用 `--tolerate-start "基因:密码子"`（可重复、逐条）声明类群已知例外 → `NONCANONICAL_START_REVIEW`（REVIEW）。
+     **例外必须引用已审计记录**：`--exception-registry <json>`，每条含 gene/codon/taxon/source/rationale。
+     未引用已审计记录时额外输出 `EXCEPTION_NOT_REGISTERED`，**不得**把它当成已验证结论。
    - **不得**为了让检查通过而伪造 5' 端缺失、随意改 `/codon_start` 或改碱基。
-5. **真实 partial CDS**：`/codon_start = 2/3` 表示 5' 端不完整，代码记 `PARTIAL_CDS_5P` 且**不检查起始密码子**；
-   这是与"非典型起始密码子"**不同**的问题，不要混为一谈。
+5. **partial 来自 GenBank location，不来自 `/codon_start`**：
+   - 代码直接读 Biopython 的 `BeforePosition`/`AfterPosition` **位置对象**（不解析 location 字符串），
+     按链方向解释生物学的 5'/3' 端；**负链的 5' 端在高坐标**，跨原点 `join()` 的各段按转录顺序排列；
+     位置对象**始终优先于**字符串兜底（仅当 parts 完全不带 fuzzy 信息时才用字符串），
+     两者矛盾时以对象为准**并报** `PARTIAL_SOURCE_CONFLICT`，不静默取值；
+   - `<1..N` → `PARTIAL_CDS_5P`（不检查起始密码子）；`N..>M` → `PARTIAL_CDS_3P`（**不要求**终止密码子）；
+     两端同时 partial 时两者都记；
+   - `location` 标注为**完整**却设 `/codon_start=2` → `CODON_START_CONFLICT`（注释自相矛盾），需先确认 5' 端是否真的缺失；
+   - 这是与“非典型起始密码子”**不同**的问题，不要混为一谈。
 6. **不完整终止（`T`/`TA`）**：只有在末端确实是 `T` 或 `TA` 前缀时才算；与转录后多聚腺苷酸化相容，
    但没有转录证据时不得宣称已实验验证，且**`note` 属自述、须交叉核验**。
    末端是普通 sense codon（例如 `GAT`）时是 ERROR，**`note` 不能豁免**。
@@ -59,8 +97,10 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 3. 类型可由反密码子解析（动物线粒体标准写法）：`tag`→`trnL1(CUN)`、`taa`→`trnL2(UUR)`、
    `gct`→`trnS1(AGN)`、`tga`→`trnS2(UCN)`。反密码子与裸名所指氨基酸不一致时**不解析**，保留待确定。
 4. `/gene` 写 `trnL2(UUR)` 这类带括号形式是常见写法，代码会去掉括号后归一；但**反密码子应放在 `/anticodon`**。
-   基因身份检查只读 `/gene`（缺失时读 `/product`）的**首个值**；NCBI 自然语言 `product` 名
-   （如 "cytochrome c oxidase subunit 1"）会被判为非标准身份，需先补 `/gene`。
+   没有 `/gene` 时会读 `/product`，并识别常见自然语言写法：
+   `NADH dehydrogenase subunit 5`→`nd5`、`cytochrome c oxidase subunit 1/III`→`cox1/cox3`、
+   `cytochrome b`→`cytb`、`ATP synthase F0 subunit 6`→`atp6`、`16S/12S ribosomal RNA`→`rrnL/rrnS`、
+   `tRNA-Leu`→**裸名** `trnL`（仍待反密码子/结构证据）。无法识别的 `ribosomal RNA` → `rrna`（未确定）。
 5. 部分动物线粒体 tRNA 天然结构不完整，**不能仅凭三叶草结构不完整判为假基因**：
    - `trnS1(AGN)` 常见 DHU 臂不能形成稳定茎环（*Hyphantria cunea*、*Cnaphalocrocis medinalis* 等鳞翅目）；
    - 蜘蛛（*Tetragnatha*）中 `trnS1` 与 `trnS2` 均缺 DHU 臂，且多数 tRNA 丢失 TΨC 臂；
@@ -101,27 +141,56 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 
 | 检查项 | 触发条件 | 默认等级 |
 |---|---|---|
-| 环状拓扑 | `--require-circular` 且 topology ≠ circular | ERROR |
+| 环状拓扑 | `--require-circular` 且 topology ≠ circular | ERROR（并打印 `CIRCULAR_DECLARATION_CHECK`：只校验声明，不等于物理闭环） |
 | 基因数量 | CDS≠13 / tRNA≠22 / rRNA≠2 | ERROR（`--allow-atypical "<理由>"` → REVIEW） |
 | 基因身份 | 缺失 / 非标准名 / 重复（`nad*`↔`nd*`、`cob`↔`cytb`、`coi/ii/iii`↔`cox1/2/3`、`12S/16S`↔`rrnS/rrnL` 已归一） | ERROR（`--allow-atypical` → REVIEW） |
 | tRNA 类型 | 裸名 `trnL`/`trnS` 或反密码子与裸名不一致 | REVIEW（`UNDETERMINED_TRNA`） |
-| 起始密码子 | 不在密码表合法起始集 | ERROR（`--tolerate-start "基因:密码子"` → REVIEW） |
-| 5' partial | `/codon_start = 2/3` | INFO（不检查起始密码子） |
-| 内部终止 | 翻译含内部 `*` | ERROR（有 `/transl_except` → REVIEW） |
+| 起始密码子 | 不在密码表合法起始集 | ERROR（`--tolerate-start "基因:密码子"` + `--exception-registry` → REVIEW） |
+| 5' partial | location 带 `<` | INFO（不检查起始密码子） |
+| 3' partial | location 带 `>` | INFO（不要求终止密码子） |
+| codon_start 矛盾 | location 完整却设 `/codon_start=2/3` | REVIEW（`CODON_START_CONFLICT`） |
+| 遗传密码表 | `/transl_table` 与 `--table` 不一致 | REVIEW（`TABLE_CONFLICT`） |
+| 内部终止 | 翻译含内部 `*` 且未被 `transl_except` 对应 | ERROR（对应时记 `TRANSL_EXCEPT_MATCHED`） |
+| `/transl_except` | 声明位置未对应任何内部终止 | REVIEW（`TRANSL_EXCEPT_UNEXPLAINED`） |
 | 不完整终止 | 末端为 `T`/`TA` 前缀 | REVIEW（`note` 记为自述，需交叉核验） |
 | 非 `T`/`TA` 末端 | 末端是普通 sense codon | ERROR（`note` 不能豁免） |
 | tRNA 长度 | `<50`（有/无 `note`）/ 60–75 之外 | ERROR / WARN / WARN |
 | 反密码子 | 缺 `anticodon` qualifier | REVIEW |
 | rRNA 长度 | 超出类群区间 | REVIEW（WARN） |
+| rRNA 身份未确定 | 名称无法识别（如 `rrna`） | REVIEW（`UNDETERMINED_RRNA`，不套用区间） |
 | 重叠 | `≤8bp` / `>8bp` | INFO / REVIEW（`--overlap-severity error` → ERROR） |
+| 重叠豁免无法定位 | 同名基因重复时只用名字豁免 | REVIEW（`TOLERATE_OVERLAP_AMBIGUOUS`） |
 | 链分布 | 正链 ≠ 9 且反向互补后也 ≠ 9 | REVIEW（整体反向互补只记 INFO） |
-| 基因顺序（需 `--ref`） | 与参考 CDS 顺序不同（按归一身份比较；**不给 `--ref` 时不做顺序对照**） | REVIEW（顺序差异不自动失败） |
+| 基因集 | 与 `--ref` 相比有缺失/多余 | REVIEW（`GENE_SET_DIFF`，与顺序差异分开） |
+| 基因排列（需 `--ref`） | 共有基因的**环状邻接**与参考不同（已归一旋转与整链反向互补） | REVIEW（`ARRANGEMENT_DIFF`；不给 `--ref` 时不做顺序对照） |
 | CDS 长度（需 `--ref`） | 与参考差 > 20%（按分段长度） | REVIEW |
 
 退出码：`0` 无任何发现；`1` 有错误（含参数错误）；`2` 仅有待核查/警告。
 **退出码 2 不等于通过质量门**：每条 REVIEW 必须逐条入账（被降级项 + 支持证据 + 判定人）。
 
 ## 9. 允许的类群例外（按类群文献确认，不可外推）
+
+例外不是"加一个开关"：代码侧用 `--tolerate-start "基因:密码子"` 选择，
+**生物学理由放在已审计记录** `--exception-registry <json>` 中（每条含 `gene`/`codon`/`taxon`/`source`/`rationale`）。
+登记检查是逐项匹配：
+
+- 未引用任何 registry → `EXCEPTION_NOT_REGISTERED`（仍是 REVIEW，可用但不得当作已验证结论）；
+- 记录缺 `taxon`/`source`/`rationale` → `EXCEPTION_RECORD_INCOMPLETE`；
+- 提供了 `--taxon` 且与记录的 `taxon` 不一致 → `EXCEPTION_TAXON_MISMATCH`；
+- **未提供 `--taxon`** → `EXCEPTION_TAXON_UNVERIFIED`：记录存在但无法确认其类群适用于本样本；
+- 证据字段类型错误（数组/对象/整数冒充字符串）→ **加载时受控失败**（退出码 1），不做部分生效；
+- **selector 归一化后为空或显式为 `null`** → 加载失败：`gene` 为 `""`/`"?"`/纯标点/`"(CUN)"`、
+  `codon`/`amino_acid` 为空字符串，或 `gene`/`codon`/`amino_acid` 键**存在但值为 `null`**；
+  空 selector 会与另一个空 selector（如缺 `/gene`/`/product` 的 CDS 归一化为 `""`）精确匹配，
+  等于把证据绑到“没有任何基因身份”上。记录类型按**键是否存在**判定（而非真值）：`amino_acid` 键一旦出现就是
+  `transl_except` 记录，`""` 或 `null` 均为格式错误，**不得降格为 start 记录**；
+  `transl_except` 的 `codon` 必须是三个 IUPAC 碱基，`amino_acid` 必须是合法例外 token；
+- **同位点、不同 `taxon` 或不同 `transl_table` 的多条记录可以共存**（运行时按 `--taxon`/`--table` 选择）；
+  只有 selector 完全相同（gene/codon/amino_acid/位点/taxon/transl_table 全等）的才判为重复并拒绝。
+
+**未引用 registry / 记录缺字段 / taxon 不符 / 未提供 `--taxon` 这四种情形都只维持 REVIEW**，
+不会把例外升级为已验证；**字段类型错误、selector 归一化后为空、位点未绑定属于格式非法，
+导致 registry 加载失败并退出 1**，不进入 REVIEW 也不做部分生效。
 
 | 类群 | 已报告的特殊情况 | 对判据的意义 |
 |---|---|---|
