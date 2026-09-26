@@ -44,6 +44,12 @@ import re
 import sys
 from pathlib import Path
 
+
+# 前置门禁：本步骤所需依赖（唯一清单来源 config/dependencies.json）
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _deps import require_stage  # noqa: E402
+require_stage('mitos2_bridge', __file__)
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqFeature import FeatureLocation, SeqFeature

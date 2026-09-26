@@ -138,6 +138,11 @@ python3 tools/experience.py sync-public --manifest <manifest-url-or-file>
 essential 缺失；`env_check.py --stage` 与**工作脚本**用 `3` 表示"本次所需依赖缺失、该步骤未执行"
 （与 `cox1_id.py` 的 3、以及 `case-validate` 缺 `jsonschema` 的 3 同义）。
 
+**脚本门禁**：每个脚本干活前调用 `scripts/_deps.py` 的 `require_stage('<stage>')`，缺依赖即退出 3
+（与 `--stage` 同义），**不允许**任何 `except ImportError` 式的降级路径；探测逻辑与 stage→requires
+只有一份（`tools/env_check.py` + 清单）。`tests/test_dependency_gates.py` 用"缺 Biopython / 缺 samtools"
+两种合成环境钉住它，并断言脚本里不再出现 `except ImportError`。
+
 **不变式**：lock 是缓存，不是信任凭证。日常模式仍真实探测所需工具；只信 lock 就会退化成
 "第一次通过、以后永远相信"，即本 skill 反复清除的静默降级。`tests/test_env_check.py` 用
 "写 lock 后删掉一个工具，日常模式必须报错"钉住这条。

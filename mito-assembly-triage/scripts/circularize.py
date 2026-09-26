@@ -11,6 +11,13 @@
 import sys, os, subprocess, tempfile, itertools, re
 
 
+
+# 前置门禁：本步骤所需依赖（唯一清单来源 config/dependencies.json）
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _deps import require_stage  # noqa: E402
+require_stage('circularize', __file__)
+
 def select_unique_candidate(candidates):
     if not candidates:
         return None
@@ -129,6 +136,9 @@ def junction_spanning_reads(bam, region, min_mapq=20):
 
 
 def main():
+    # Biopython 由前置门禁保证（require_stage('circularize')），不再有 try/except 降级
+    from Bio import SeqIO
+    from Bio.Seq import Seq
     if len(sys.argv) < 5:
         print(__doc__); sys.exit(1)
     s1, s2, ref_gb, outdir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -141,11 +151,6 @@ def main():
     os.makedirs(outdir, exist_ok=True)
     out_fa = os.path.join(outdir, 'genome_candidate.fasta')
     accept_candidate = '--accept-candidate' in sys.argv
-    try:
-        from Bio import SeqIO
-        from Bio.Seq import Seq
-    except ImportError:
-        print('需要 BioPython'); sys.exit(1)
 
     def load_seq(fn):
         rec = next(SeqIO.parse(fn, 'fasta'))
