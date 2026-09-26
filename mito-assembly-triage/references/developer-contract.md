@@ -81,6 +81,7 @@ CI 固定安装 `jsonschema`，因此等价性测试在 CI 中真正执行而不
 | 两条校验路径等价 | `tests/test_evidence_contracts.py`、`tests/test_pr1_review_regressions.py` |
 | 工具链桥（MITOS2→GenBank、`run_mitos2` outdir、`check_env` 提示） | `tests/test_toolchain_fixes.py` |
 | 案例 CLI（`case-anomaly`、假设编号） | `tests/test_case_anomaly_cli.py` |
+| 公共参考登记（accession.version、等级→用途、漂移、截断） | `tests/test_reference_registry.py` |
 | 案例类型与 lesson 范围/领域（复审核 R-1…R-8） | `tests/test_case_type_and_lesson_scope.py`、`tests/test_review_round_lesson_domain_and_report.py` |
 | 注释策略与类群例外 | `tests/test_annotation_policy.py` |
 | 数据与路径保护（未发表数据不进公共库） | `.gitignore` 规则 + `git check-ignore`/`git add -n` 人工核验（见 `REAL-DATA` 审计记录） |

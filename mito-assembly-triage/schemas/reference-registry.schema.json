@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mito-assembly-triage reference registry",
+  "type": "object",
+  "required": ["format", "references"],
+  "properties": {
+    "format": {"const": "mito-reference-registry-1"},
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "source", "retrieved", "purposes", "file_sha256"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^ref-[0-9]{3}$"},
+          "kind": {"enum": ["sequence", "database"]},
+          "accession": {"type": "string", "description": "必须含版本号（ACCESSION.VERSION），如 NC_060773.1"},
+          "organism": {"type": ["string", "null"]},
+          "taxon": {"type": ["string", "null"]},
+          "name": {"type": "string"},
+          "path": {"type": "string"},
+          "version": {"type": ["string", "null"], "description": "库版本/构建时间戳；BLAST/refseq 库必填"},
+          "source": {"type": "string", "minLength": 1},
+          "retrieved": {"type": "string", "minLength": 1},
+          "registered": {"type": "string"},
+          "level": {"enum": ["L1", "L2", "L3", "L4", "L5"]},
+          "taxon_filter": {"type": ["string", "null"]},
+          "purposes": {"type": "array", "minItems": 1, "items": {"enum": ["gene_order_comparison", "annotation_comparison", "boundary_validation", "identity_check", "taxon_screen", "contamination_screen", "structure_check"]}},
+          "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "sequence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "length_bp": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}

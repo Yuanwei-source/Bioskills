@@ -29,7 +29,8 @@ description: >-
 **不清楚该怀疑组装还是注释**：读 `references/diagnostic-decision-tree.md` §1 —— 分流错了，后面所有检查都不会改变结论。
 
 1. **INTAKE**：记录用户观察、目标、类群、遗传密码表、组装/注释状态、软件与数据库版本、
-   输入文件和 SHA-256；并用 `--case-type` 标注案例类型（默认 `abnormal_case`，已核实无异常用
+   输入文件和 SHA-256；记下 `reference_needed` 与用途（**此阶段不下载任何参考**）；
+   并用 `--case-type` 标注案例类型（默认 `abnormal_case`，已核实无异常用
    `normal_validation_case`，工具/环境层面的失败用 `tool_failure_case`）。把观察事实与用户猜测分开；没有 reads 时明确记录证据缺口。
 2. **HYPOTHESIZE**：列出所有与当前证据相容且会影响决策的重要解释，并为每项写预期观测、
    反证和适用范围。假设数量随问题复杂度变化，不强制至少三个；新证据可新增、合并或恢复假设。
@@ -38,6 +39,7 @@ description: >-
    选能有效区分竞争假设、成本较低且风险较小的最小检查；无关检查标记 `NOT_APPLICABLE`。
    参考选择按 **L1 同种 → L5 远缘** 的等级表（`references/diagnostic-decision-tree.md` §5），并记录参考 accession/版本。
 4. **EXECUTE**：优先使用现有脚本和成熟工具；记录实际命令、版本、数据库、输入哈希、退出状态和日志。
+   需要公共参考时才在此阶段获取并**登记**（`scripts/reference_registry.py acquire/register`，参考政策见 `references/reference-policy.md`）；参考与样本是不同事件：**下载参考不需要额外授权，上传样本才需要**。
    只有现有工具不足时才写补充程序，并为其增加测试和独立交叉验证。
 5. **UPDATE**：逐项记录结果对假设的支持、反对或无法区分。只有当下一项检查预期会改变判定、修复选择或置信度时继续。
 6. **DECIDE**：每个异常分别判为 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED`，并各自携带证据范围、局限与
@@ -62,6 +64,7 @@ description: >-
 |---|---|
 | **不知道从哪开始 / 按数据或现象选路线** | `references/START_HERE.md` |
 | **分流（组装 vs 注释）、优先级、停止条件、参考等级、最小证据集、AI/人工边界** | `references/diagnostic-decision-tree.md` |
+| **用参考序列（能不能下载、怎么登记、等级限制用途、版本固定）** | `references/reference-policy.md` |
 | **写结论与报告（结论层 / 证据矩阵 / 输出模板）** | `references/conclusion-report.md` |
 | 设计竞争假设或处理陌生异常 | `references/diagnostic-playbook.md` |
 | 作出序列、接缝或注释可信度判断（含竞争参考与阴性证据强度） | `references/evidence-standard.md` |
@@ -219,6 +222,12 @@ python3 tools/experience.py case-event work/case-001 --action annot_check \
 python3 tools/experience.py case-anomaly work/case-001 \
   --id A1 --claim 'nad5 内部 stop 未被解释' --status UNRESOLVED --confidence low \
   --reads-support NOT_ASSESSED --event-action annot_check        # 替换已有 id 加 --update
+# 引用已登记的公共参考（未登记 id / 未声明用途会直接失败，避免"和近缘物种比较"这类不可复现说法）
+python3 scripts/reference_registry.py register --file refs/NC_060773.1.gb \
+  --accession NC_060773.1 --source 'NCBI Nucleotide' --level L3 \
+  --purposes gene_order_comparison
+python3 tools/experience.py case-reference work/case-001 \
+  --reference-id ref-001 --purpose gene_order_comparison
 python3 tools/experience.py case-validate work/case-001
 # case-report 按结论层渲染 case.md：观察事实 / 证据矩阵 / 有证据支持的结论 /
 # 无证据支持的声明 / 下一步最小实验 / 假设与未测项（见 references/conclusion-report.md §6）
