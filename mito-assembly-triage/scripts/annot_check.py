@@ -131,6 +131,20 @@ def canonical_gene(feature):
     return _canonical_key(feature_gene(feature))
 
 
+_CODON_PATTERN = re.compile(r'[ACGTURYKMSWBDHVN]{3}')
+
+
+def normalise_codon(value):
+    """``' cga ' -> 'CGA'``; None when it is not exactly three IUPAC bases.
+
+    ONE rule for both registry kinds and for the CLI.  Without it a typo such as
+    ``'CG'`` / ``'XXXX'`` / ``'   '`` is stored as a codon that silently matches
+    nothing, and an unstripped ``' CGA '`` becomes a different key from ``'CGA'``.
+    """
+    codon = str(value if value is not None else '').strip().upper()
+    return codon if _CODON_PATTERN.fullmatch(codon) else None
+
+
 def parse_anticodon(feature):
     raw = feature.qualifiers.get('anticodon')
     if not raw:
@@ -1094,7 +1108,7 @@ def load_exception_registry(path):
                       '有效值%s' % (path, index, key, extra))
                 sys.exit(1)
         gene = _canonical_key(item.get('gene', ''))
-        codon = str(item.get('codon', '')).upper()
+        codon = normalise_codon(item.get('codon'))
         # Classify by KEY PRESENCE, not truthiness: an explicit amino_acid of "" or
         # null is a malformed transl_except record, not a start-codon record.
         has_amino_acid = 'amino_acid' in item
@@ -1108,9 +1122,10 @@ def load_exception_registry(path):
                       'transl_except 证据必须绑定一个可识别的基因身份'
                       % (path, index, item.get('gene')))
                 sys.exit(1)
-            if not re.fullmatch(r'[ACGTURYKMSWBDHVN]{3}', codon):
-                print('ERROR: 例外记录 %s 的 exceptions[%d].codon 必须是三个 IUPAC 碱基, '
-                      '实际为 %r' % (path, index, item.get('codon')))
+            if codon is None:
+                print('ERROR: 例外记录 %s 的 exceptions[%d].codon 必须是三个 IUPAC 碱基 '
+                      '(两端空白会被去掉并转大写), 实际为 %r'
+                      % (path, index, item.get('codon')))
                 sys.exit(1)
             amino_key = str(amino_acid).strip().lower()
             if amino_key not in TRANSL_EXCEPT_AA_TOKENS:
@@ -1145,9 +1160,21 @@ def load_exception_registry(path):
                 print('ERROR: 例外记录 %s 的 exceptions[%d].gene 归一化后为空 (%r); start 例外记录'
                       '必须绑定一个可识别的基因身份' % (path, index, item.get('gene')))
                 sys.exit(1)
-            if not codon:
-                print('ERROR: 例外记录 %s 的 exceptions[%d].codon 不能为空; start 例外记录必须'
-                      '给出具体密码子' % (path, index))
+            if codon is None:
+                print('ERROR: 例外记录 %s 的 exceptions[%d].codon 必须是三个 IUPAC 碱基 '
+                      '(两端空白会被去掉并转大写), 实际为 %r'
+                      % (path, index, item.get('codon')))
+                sys.exit(1)
+            # start records are SELECTED by (gene, codon) at run time, so two records
+            # for the same pair cannot both be represented -- the second would
+            # silently overwrite the first.  Fail closed instead; supporting several
+            # taxa would require turning the start registry into a record list with
+            # an explicit selection rule.
+            if (gene, codon) in registry['start']:
+                print('ERROR: 例外记录 %s 的 exceptions[%d] 与已有 start 记录重复 '
+                      '(同一 gene/codon): %s/%s -> 后一条会静默覆盖前一条; '
+                      '如需按类群区分, 必须先扩展 start registry 结构并定义选择规则'
+                      % (path, index, gene, codon))
                 sys.exit(1)
             registry['start'][(gene, codon)] = {
                 'taxon': item.get('taxon'), 'source': item.get('source'),
@@ -1270,9 +1297,11 @@ def main():
                   '例如 "cox1:CGA"' % gene); sys.exit(1)
         if not codon:
             print('ERROR: --tolerate-start 需要 "基因:密码子" 形式, 收到 %s' % entry); sys.exit(1)
-        if not codon.strip():
-            print('ERROR: --tolerate-start 的密码子不能为空, 收到 %s' % entry); sys.exit(1)
-        start_exceptions.add((_canonical_key(gene), codon.strip().upper()))
+        codon_value = normalise_codon(codon)
+        if codon_value is None:
+            print('ERROR: --tolerate-start 的密码子必须是三个 IUPAC 碱基 (两端空白会被去掉并'
+                  '转大写), 收到 %s' % entry); sys.exit(1)
+        start_exceptions.add((_canonical_key(gene), codon_value))
     used_start_exceptions = set()
     registry = load_exception_registry(options['exception_registry']) \
         if options['exception_registry'] else {}

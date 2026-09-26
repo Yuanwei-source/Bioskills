@@ -1112,9 +1112,46 @@ class StartRegistrySelectorTests(unittest.TestCase):
         registry = self._load_ok(self._record())
         self.assertIn(("cox1", "CGA"), registry["start"])
 
-    def test_start_records_for_different_taxa_coexist(self):
-        registry = self._load_ok(self._record(taxon="Lepidoptera"), self._record(taxon="Diptera"))
-        self.assertIn(("cox1", "CGA"), registry["start"])
+    def test_codon_must_be_three_iupac_bases(self):
+        for codon in ("", "   ", "CG", "XXXX", "C1A"):
+            with self.subTest(codon=codon):
+                self.assertEqual(self._load(self._record(codon=codon)), 1)
+
+    def test_codon_is_stripped_and_upper_cased(self):
+        for codon in ("CGA", "cga", " CGA ", "\tcga\n"):
+            with self.subTest(codon=codon):
+                registry = self._load_ok(self._record(codon=codon))
+                self.assertIn(("cox1", "CGA"), registry["start"])
+
+    def test_duplicate_gene_codon_is_rejected(self):
+        # Two records for the same (gene, codon) cannot both be represented: the
+        # second silently OVERWROTE the first, so this fails closed now.  The old
+        # test only asserted the key existed and therefore passed on the overwrite.
+        self.assertEqual(self._load(self._record(taxon="Lepidoptera"),
+                                    self._record(taxon="Diptera")), 1)
+        self.assertEqual(self._load(self._record(), self._record()), 1)
+
+    def test_distinct_gene_or_codon_still_coexist(self):
+        registry = self._load_ok(self._record(codon="CGA"), self._record(codon="CGG"))
+        self.assertEqual(sorted(registry["start"]), [("cox1", "CGA"), ("cox1", "CGG")])
+        registry = self._load_ok(self._record(codon="CGA"),
+                                 self._record(gene="cox2", codon="CGA"))
+        self.assertEqual(sorted(registry["start"]), [("cox1", "CGA"), ("cox2", "CGA")])
+
+    @unittest.skipUnless(biopython_available(), "Biopython is not installed")
+    def test_cli_rejects_a_malformed_codon(self):
+        for token in ("cox1:CG", "cox1:XXXX", "cox1:   "):
+            with self.subTest(token=token):
+                result = run_annot_check(self.genome, "--tolerate-start", token)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("三个 IUPAC 碱基", result.stdout)
+
+    @unittest.skipUnless(biopython_available(), "Biopython is not installed")
+    def test_cli_accepts_a_stripped_upper_cased_codon(self):
+        result = run_annot_check(self.genome, "--allow-atypical", REASON,
+                                 "--tolerate-start", "cox1:cga")
+        self.assertNotIn("三个 IUPAC 碱基", result.stdout)
+        self.assertIn("已按 --tolerate-start 接受", result.stdout)
 
     @unittest.skipUnless(biopython_available(), "Biopython is not installed")
     def test_cli_rejects_an_empty_gene_selector(self):
