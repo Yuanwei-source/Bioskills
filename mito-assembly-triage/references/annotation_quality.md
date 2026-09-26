@@ -185,7 +185,16 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
   等于把证据绑到“没有任何基因身份”上。记录类型按**键是否存在**判定（而非真值）：`amino_acid` 键一旦出现就是
   `transl_except` 记录，`""` 或 `null` 均为格式错误，**不得降格为 start 记录**；
   `transl_except` 的 `codon` 必须是三个 IUPAC 碱基，`amino_acid` 必须是合法例外 token；
-- **同位点、不同 `taxon` 或不同 `transl_table` 的多条记录可以共存**（运行时按 `--taxon`/`--table` 选择）；
+- **start selector 不得为空**：`--tolerate-start` 的基因名或 start 记录的 `gene` 归一化后为空
+  （`":CGA"`、`gene:"?"`/`""`/纯标点）→ **参数/加载受控失败**：
+  空 selector 会与缺 `/gene`+`/product` 的 CDS（canonical `""`）精确匹配，等于给“没有基因身份”的 CDS 挂上已审计例外；
+- **密码子统一规则**（start 记录、`transl_except` 记录与 `--tolerate-start` 共用同一函数）：先 `.strip().upper()`，
+  再要求**恰好三个 IUPAC 碱基**（`[ACGTURYKMSWBDHVN]{3}`）；`""` / `"   "` / `"CG"` / `"XXXX"` / `"C1A"` 均在
+  加载/参数阶段受控失败，`"cga"` 与 `" CGA "` 归一化为 `"CGA"`。否则一个笔误会变成“永不匹配”的静默条目，
+  或产生与 `"CGA"` 不同的键；
+- **start 记录按 `(gene, codon)` 唯一**：运行时只按这一对选择记录，因此重复（包括仅 `taxon` 不同）会**加载失败**
+  而不是后一条静默覆盖前一条；若确需多类群共存，必须先扩展 start registry 结构并定义选择规则；
+- **`transl_except` 记录同位点、不同 `taxon` 或不同 `transl_table` 可以共存**（它已按 record list + 显式选择实现）；
   只有 selector 完全相同（gene/codon/amino_acid/位点/taxon/transl_table 全等）的才判为重复并拒绝。
 
 **未引用 registry / 记录缺字段 / taxon 不符 / 未提供 `--taxon` 这四种情形都只维持 REVIEW**，

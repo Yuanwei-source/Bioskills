@@ -74,6 +74,10 @@ FASTA、同源性、翻译、RNA 结构和比较基因组证据可以支持候�
 类群特异的**非典型起始密码子**（如鳞翅目 `cox1` 的 `CGA`）不得靠伪造 5' 端缺失或改碱基绕过；
 用 `--tolerate-start "基因:密码子"` 逐条声明，并用 `--exception-registry <json>` 引用**已审计记录**
 （taxon/source/rationale）—— 未登记时输出 `EXCEPTION_NOT_REGISTERED`，不得当作已验证结论。
+**基因名不得为空**：`--tolerate-start ":CGA"` 与 registry 中 `gene` 归一化后为空的 start 记录都会被拒绝 ——
+空 selector 会与缺 `/gene`+`/product` 的 CDS（canonical `""`）精确匹配，等于给没有基因身份的 CDS 挂上已审计例外。
+密码子先 `.strip().upper()`、再要求恰好三个 IUPAC 碱基（`"CG"`/`"XXXX"`/`"   "` 都会被拒绝）；start 记录按
+`(gene, codon)` 唯一，重复（含仅 `taxon` 不同）直接加载失败，不允许隐式覆盖。
 同一个 `--exception-registry` 也用于 `/transl_except`（见下）。
 
 **5'/3' partial 由 GenBank location 的 `<`/`>` 决定**，不由 `/codon_start` 决定：location 完整却设
