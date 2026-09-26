@@ -326,6 +326,9 @@ class BlastXmlParsingTests(unittest.TestCase):
         # independent alignments (see test_pr1_review_regressions).
         if hit_from is None:
             hit_from = q_from
+        # 合成的 HSP 必须物理自洽：带 gap 时 align-len >= query 跨度，
+        # 否则会触发 cox1_id 的格式故障规则（那条规则本身是对的）。
+        align_len = max(align_len, abs(q_to - q_from) + 1)
         hit_to = hit_from + align_len - 1
         return ("<Hsp><Hsp_bit-score>%d</Hsp_bit-score>"
                 "<Hsp_query-from>%d</Hsp_query-from><Hsp_query-to>%d</Hsp_query-to>"

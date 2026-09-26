@@ -274,6 +274,9 @@ class HspCollinearityTests(unittest.TestCase):
 
     @staticmethod
     def _hsp(query_from, query_to, hit_from, hit_to, identity, align_len, bitscore=500):
+        # 合成的 HSP 必须物理自洽：带 gap 时 align-len >= query 跨度，
+        # 否则会触发 cox1_id 的格式故障规则（那条规则本身是对的）。
+        align_len = max(align_len, abs(query_to - query_from) + 1)
         return ("<Hsp><Hsp_bit-score>%d</Hsp_bit-score>"
                 "<Hsp_query-from>%d</Hsp_query-from><Hsp_query-to>%d</Hsp_query-to>"
                 "<Hsp_hit-from>%d</Hsp_hit-from><Hsp_hit-to>%d</Hsp_hit-to>"
@@ -545,6 +548,9 @@ class BlastIdentityAggregationTests(unittest.TestCase):
         if hit_from is None:
             hit_from = query_from
         hit_to = hit_from + align_len - 1
+        # 合成的 HSP 必须物理自洽：带 gap 时 align-len >= query 跨度，
+        # 否则会触发 cox1_id 的格式故障规则（那条规则本身是对的）。
+        align_len = max(align_len, abs(query_to - query_from) + 1)
         return ("<Hsp><Hsp_bit-score>%d</Hsp_bit-score>"
                 "<Hsp_query-from>%d</Hsp_query-from><Hsp_query-to>%d</Hsp_query-to>"
                 "<Hsp_hit-from>%d</Hsp_hit-from><Hsp_hit-to>%d</Hsp_hit-to>"

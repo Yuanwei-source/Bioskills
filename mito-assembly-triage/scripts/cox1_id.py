@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """
 COX1 物种鉴定: 提取 COX1 (或给定区域), 提交 NCBI blastn, 解析**结构化**结果
 
@@ -23,8 +24,12 @@ COX1 物种鉴定: 提取 COX1 (或给定区域), 提交 NCBI blastn, 解析**�
 
 --output-json 会把每个候选的 accession、逐 HSP 原始坐标/identity/bitscore 与
 blocker 原因持久化; 无论最终判读是什么都会写出。
+
+坐标与数值边界（#5）：越界/非有限/方向矛盾 = 格式故障（退出码 3）；
+长度字段缺失只记 unchecked；identity==0 记为 blocker（zero_identity）而不是格式故障。
 """
 import json
+import math
 import sys
 import re
 import time
@@ -327,9 +332,79 @@ def _hsp_numbers(hsp):
         raise ValueError('BLAST XML 的 <Hsp> align-len 必须 > 0: %r' % numbers)
     if not 0 <= numbers['identity'] <= numbers['align-len']:
         raise ValueError('BLAST XML 的 <Hsp> identity 必须在 0..align-len 之间: %r' % numbers)
+    if not math.isfinite(numbers['bit-score']):
+        raise ValueError('BLAST XML 的 <Hsp> bit-score 必须是有限数值（nan/inf 不可用）: %r'
+                         % numbers)
     if numbers['bit-score'] < 0:
         raise ValueError('BLAST XML 的 <Hsp> bit-score 不能为负: %r' % numbers)
+    span = abs(numbers['query-to'] - numbers['query-from']) + 1
+    if span > numbers['align-len']:
+        # 带 gap 时 align-len >= query 跨度；反过来说明同一份记录内部矛盾。
+        raise ValueError('BLAST XML 的 <Hsp> query 跨度(%d) 大于 align-len(%d)，记录自相矛盾: %r'
+                         % (span, numbers['align-len'], numbers))
     return numbers
+
+
+_STRAND_FIELDS = (('query', ('Hsp_query-strand', 'query-strand'), ('Hsp_query-frame', 'query-frame')),
+                  ('hit', ('Hsp_hit-strand', 'hit-strand'), ('Hsp_hit-frame', 'hit-frame')))
+
+
+def _hsp_orientation(hsp, numbers):
+    """坐标方向与文本方向（*-strand / *-frame）必须自洽。
+
+    文本字段在旧实现里完全没被使用；既然回复里给了它，就让它与坐标方向对账——
+    同一事实的两种表述互相矛盾属于格式故障（退出码 3）。字段缺失不算错误，
+    但会记入 unchecked，使"未校验"可见而不是默认正确。
+    """
+    unchecked = []
+    seen = False
+    for side, strand_names, frame_names in _STRAND_FIELDS:
+        if side == 'query':
+            increasing = numbers['query-to'] >= numbers['query-from']
+        else:
+            increasing = numbers['hit-to'] >= numbers['hit-from']
+        text = _value(hsp, *strand_names)
+        if text:
+            seen = True
+            expected = 'plus' if increasing else 'minus'
+            if text.strip().lower() != expected:
+                raise ValueError('BLAST XML 的 <%s-strand>=%r 与坐标方向不符（坐标是 %s）'
+                                 % (side, text, expected))
+            continue
+        frame = _value(hsp, *frame_names)
+        if frame:
+            seen = True
+            try:
+                sign = int(frame)
+            except ValueError:
+                raise ValueError('BLAST XML 的 <%s-frame> 无法解析: %r' % (side, frame))
+            expected_sign = 1 if increasing else -1
+            if sign != expected_sign:
+                raise ValueError('BLAST XML 的 <%s-frame>=%r 与坐标方向不符（坐标方向应为 %+d）'
+                                 % (side, frame, expected_sign))
+    if not seen:
+        unchecked.append('strand_absent')
+    return unchecked
+
+
+def _hsp_ranges(numbers, query_len, hit_len):
+    """坐标是否落在声明的长度内。长度缺失时不报错，但记入 unchecked。"""
+    unchecked = []
+    if query_len:
+        if max(numbers['query-from'], numbers['query-to']) > query_len:
+            raise ValueError('BLAST XML 的 query 坐标(%d..%d) 超出 query-len=%d'
+                             % (numbers['query-from'], numbers['query-to'], query_len))
+    else:
+        unchecked.append('query_len_absent')
+    if hit_len is not None and hit_len <= 0:
+        raise ValueError('BLAST XML 的 Hit_len 必须 > 0（声明为 %d 属格式故障）' % hit_len)
+    if hit_len:
+        if max(numbers['hit-from'], numbers['hit-to']) > hit_len:
+            raise ValueError('BLAST XML 的 hit 坐标(%d..%d) 超出 Hit_len=%d'
+                             % (numbers['hit-from'], numbers['hit-to'], hit_len))
+    else:
+        unchecked.append('hit_len_absent')
+    return unchecked
 
 
 def parse_blast_xml(text):
@@ -364,6 +439,8 @@ def parse_blast_xml(text):
         query_len = _int_descendant(root, name)
         if query_len is not None:
             break
+    if query_len is not None and query_len <= 0:
+        raise ValueError('BLAST XML 的 query-len 必须 > 0（声明为 %d 属格式故障）' % query_len)
 
     hit_elements = _find_all(root, 'Hit')
     hits = []
@@ -380,8 +457,11 @@ def parse_blast_xml(text):
             description = description or ' '.join(_value(item, 'title', 'def').split())
         hit_len = _int_value(hit, 'Hit_len', 'len')
         intervals, hsps, identity_total, align_total, best_bits, hsp_count = [], [], 0, 0, 0.0, 0
+        unchecked = []
         for hsp in _find_all(hit, 'Hsp'):
             numbers = _hsp_numbers(hsp)
+            unchecked.extend(_hsp_orientation(hsp, numbers))
+            unchecked.extend(_hsp_ranges(numbers, query_len, hit_len))
             hsp_count += 1
             intervals.append((numbers['query-from'], numbers['query-to']))
             hsps.append({'query_from': numbers['query-from'], 'query_to': numbers['query-to'],
@@ -403,6 +483,10 @@ def parse_blast_xml(text):
         target_reuse = subject_overlap_bases(hsps)
         collinearity = hsp_collinearity(hsps, hit_len=hit_len)
         blockers = []
+        if any(hsp['identity'] == 0 for hsp in hsps):
+            # 有长度却没有一个匹配碱基：这是"弱到无用的命中"，不是格式故障；
+            # 它不得被汇总成 identity，也不得参与自动择优。
+            blockers.append('zero_identity')
         if redundant_bases > 0:
             blockers.append('overlapping_hsps')
         if target_reuse > 0:
@@ -437,6 +521,8 @@ def parse_blast_xml(text):
             'coverage': (aligned_bases / query_len) if query_len else 0.0,
             'bitscore': best_bits,
             'hsp_count': hsp_count,
+            'ranges_checked': bool(query_len) and bool(hit_len),
+            'unchecked': sorted(set(unchecked)),
             'hsps': hsps,
         })
     if hit_elements and not any(item['hsp_count'] for item in hits):

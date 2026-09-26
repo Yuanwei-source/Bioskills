@@ -87,6 +87,8 @@ RULES = (
     ("基因集差异与顺序差异分开", 'scripts/annot_check.py', 'GENE_SET_DIFF', (r'GENE_SET_DIFF', r'ARRANGEMENT_DIFF')),
     ("顺序对照需显式 --ref", 'scripts/annot_check.py', '--ref', (r'--ref',)),
     ("异常入口只降基因集/身份", 'scripts/annot_check.py', '--allow-atypical', (r'allow-atypical',)),
+    ("BLAST HSP 边界策略（越界/非有限/方向矛盾=格式故障；弱命中=blocker）", 'scripts/cox1_id.py',
+     '_hsp_ranges', (r'越界', r'nan', r'zero_identity')),
     ("cox1_id 退出码 3 = 格式/网络故障", 'scripts/cox1_id.py', 'FORMAT', (r'退出码?\s*3', r'exit\s*3')),
     ("circularize 不匹配不得接受候选", 'scripts/circularize.py', 'accept-candidate', (r'accept-candidate', r'REVIEW')),
     ("脚本前置门禁：缺依赖即失败，无降级路径", 'scripts/_deps.py', 'require_stage',
