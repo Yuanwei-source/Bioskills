@@ -91,7 +91,11 @@
 
 ### 5.1 参考从哪来、要登记什么
 
-**下载公共参考 ≠ 上传样本**：拉取公共参考序列不需要单独的上传授权，但每条参考都必须可回溯。
+> **完整政策见 `reference-policy.md`**（五条原则、登记字段、等级→用途限制、版本漂移、数据库版本管理）。
+> 这里只保留流程位置：INTAKE 只记需求 → CHOOSE_TEST 定等级 → EXECUTE 才下载并登记。
+
+**下载公共参考 ≠ 上传样本**：拉取公共参考序列不需要单独的上传授权，但每条参考都必须可回溯，
+由 `scripts/reference_registry.py` 写入 `$MITO_KNOWLEDGE_DIR/references/registry.json`。
 
 1. 优先用**已有**资源：`MITOS2_REFDIR` 的 RefSeq 库、上次案例用过的参考、单位内部参考（记录来源）；
 2. 需要新取时，按 §5 等级从公共库（NCBI Nucleotide/RefSeq、Ensembl Metazoa 等）选一条**已注释**记录
@@ -122,3 +126,4 @@
 - 环化与坐标约定：`standard_gene_order.md` §2/§3
 - 结论层与报告模板：`conclusion-report.md`
 - 入口路由：`START_HERE.md`；工具参数：`tool-catalog.md`
+- 公共参考政策（获取/登记/等级限制/版本固定）：`reference-policy.md`

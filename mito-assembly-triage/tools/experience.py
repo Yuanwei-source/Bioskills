@@ -24,6 +24,9 @@ STATS = os.path.join(KNOWLEDGE, 'stats.md')
 LESSON_CANDIDATES = os.path.join(KNOWLEDGE, 'lessons', 'candidates')
 LESSON_VERIFIED = os.path.join(KNOWLEDGE, 'lessons', 'verified')
 PUBLIC_KNOWLEDGE = os.path.join(KNOWLEDGE, 'public')
+# 公共参考登记表：与案例同属证据链，但落在知识目录（不进 skill 安装目录）
+REFERENCE_REGISTRY_DIR = os.path.join(KNOWLEDGE, 'references')
+REFERENCE_REGISTRY_FILE = 'registry.json'
 MAX_PUBLIC_ITEM_BYTES = 2 * 1024 * 1024
 LESSON_STATUSES = {'candidate', 'verified', 'rejected', 'deprecated', 'withdrawn', 'superseded'}
 # candidate 以外的状态都是终态/审核结论; 只有 verified 可进入公共同步
@@ -613,9 +616,14 @@ def _case_errors_without_jsonschema(case):
     if 'case_type' in case and case['case_type'] not in CASE_TYPES:
         errors.append('case_type 取值非法: %s' % (case['case_type'],))
     for key in ('inputs', 'hypotheses', 'anomalies', 'modifications',
-                'validation', 'lessons_proposed'):
+                'validation', 'lessons_proposed', 'references'):
         if key in case and not isinstance(case[key], list):
             errors.append('%s 必须是数组' % key)
+    references = case.get('references')
+    if isinstance(references, list):
+        for index, item in enumerate(references):
+            if not isinstance(item, dict) or not {'reference_id', 'accession', 'purpose'} <= set(item):
+                errors.append('references[%d] 缺少必需字段 (reference_id/accession/purpose)' % index)
     hypotheses = case.get('hypotheses')
     if isinstance(hypotheses, list):
         if not hypotheses:
@@ -795,6 +803,69 @@ def case_validate(args):
         print('INVALID'); [print('- ' + e) for e in errors]; return 1
     print('VALID'); return 0
 
+def case_reference(args):
+    """Link a registered public reference into the case's evidence chain.
+
+    The case must cite the registry entry (id + accession with version + file hash),
+    not "a close relative": a bare citation cannot be reproduced once GenBank updates
+    the record.  An unknown id, or a purpose the record never declared, fails closed so
+    dangling citations cannot be written.
+    """
+    root = pathlib.Path(args.directory).resolve()
+    case_path = root / 'case.json'
+    if not case_path.is_file():
+        raise ValueError('案例不存在: %s' % case_path)
+    with open(case_path, encoding='utf-8') as fh:
+        case = json.load(fh)
+    if not isinstance(case, dict):
+        raise ValueError('case.json 必须是 JSON 对象')
+    registry_dir = pathlib.Path(getattr(args, 'registry', None) or REFERENCE_REGISTRY_DIR)
+    registry_file = registry_dir / REFERENCE_REGISTRY_FILE
+    if not registry_file.is_file():
+        raise ValueError('参考登记表不存在: %s（先用 scripts/reference_registry.py register/acquire 登记）'
+                         % registry_file)
+    with open(registry_file, encoding='utf-8') as fh:
+        registry = json.load(fh)
+    record = next((item for item in (registry.get('references') or [])
+                   if isinstance(item, dict) and item.get('id') == args.reference_id), None)
+    if record is None:
+        raise ValueError('参考登记表中没有该 id: %s（不允许引用未登记的参考，否则证据链断开）'
+                         % args.reference_id)
+    purpose = str(args.purpose).strip()
+    declared = list(record.get('purposes') or [])
+    if purpose not in declared:
+        raise ValueError('该参考登记时未声明用途 %s（已声明: %s）—— 等级限制用途，'
+                         '不得事后扩大使用范围'
+                         % (purpose, '/'.join(declared) or '无'))
+    entry = {'reference_id': record.get('id'), 'accession': record.get('accession'),
+             'level': record.get('level'), 'purpose': purpose,
+             'file_sha256': record.get('file_sha256'), 'source': record.get('source')}
+    entries = case.setdefault('references', [])
+    if not isinstance(entries, list):
+        raise ValueError('case.json 的 references 必须是数组')
+    matches = [index for index, item in enumerate(entries)
+               if isinstance(item, dict) and item.get('reference_id') == entry['reference_id']
+               and item.get('purpose') == purpose]
+    if matches and not getattr(args, 'update', False):
+        raise ValueError('该参考与用途已关联: %s/%s (如需替换请加 --update)'
+                         % (entry['reference_id'], purpose))
+    if matches:
+        entries[matches[0]] = entry
+    else:
+        entries.append(entry)
+    errors = case_schema_errors(case)
+    if errors:
+        raise ValueError('写回后案例不符合 schema, 已放弃写入: %s' % '; '.join(errors))
+    tmp = root / 'case.json.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(case, fh, ensure_ascii=False, indent=2)
+        fh.write('\n')
+    os.replace(tmp, case_path)
+    print('参考已关联: %s (%s, level=%s, purpose=%s, hash=%s)'
+          % (entry['reference_id'], entry['accession'], entry['level'], purpose,
+             str(entry['file_sha256'])[:12]))
+
+
 def case_report(args):
     root = pathlib.Path(args.directory).resolve()
     with open(root / 'case.json', encoding='utf-8') as fh: case = json.load(fh)
@@ -877,7 +948,21 @@ def case_report(args):
             for unknown in (item.get('unknown') or []):
                 lines.append('  - 未测：%s' % unknown)
 
-    lines += ['', '## 8. 证据边界', '',
+    lines += ['', '## 8. 参考（已登记：版本 + hash 固定）', '']
+    references = case.get('references') or []
+    if references:
+        lines += ['| 参考 | accession(含版本) | 等级 | 用途 | file_sha256 |',
+                  '|---|---|---|---|---|']
+        for item in references:
+            lines.append('| `%s` | %s | %s | %s | `%s` |'
+                         % (item.get('reference_id'), item.get('accession'),
+                            item.get('level') or '—', item.get('purpose'),
+                            str(item.get('file_sha256') or '')[:12]))
+    else:
+        lines.append('- 本案例未引用已登记参考（如引用过参考，必须用 `case-reference` 登记，'
+                     '否则无法复现：见 `references/reference-policy.md`）')
+
+    lines += ['', '## 9. 证据边界', '',
               '缺少 reads 时不得写成 raw-read-supported；`case-validate` 只校验记录格式，'
               '不证明科学结论；阴性结果的强度取决于覆盖与读长'
               '（见 `evidence-standard.md` §3.2）。']
@@ -933,7 +1018,7 @@ def main():
         ap = argparse.ArgumentParser(); ap.add_argument('--manifest', required=True)
         try: sync_public(ap.parse_args(sys.argv[2:]))
         except (ValueError, OSError, json.JSONDecodeError, urllib.error.URLError) as exc: print('✗ 公共知识未同步: %s' % exc, file=sys.stderr); sys.exit(1)
-    elif cmd in ('case-init', 'case-event', 'case-anomaly', 'case-validate', 'case-report'):
+    elif cmd in ('case-init', 'case-event', 'case-anomaly', 'case-reference', 'case-validate', 'case-report'):
         ap = argparse.ArgumentParser()
         if cmd == 'case-init':
             ap.add_argument('directory'); ap.add_argument('--case-id'); ap.add_argument('--case-type', dest='case_type', default='abnormal_case', choices=list(CASE_TYPES)); ap.add_argument('--issue', required=True); ap.add_argument('--observation', required=True); ap.add_argument('--taxon'); ap.add_argument('--input', nargs=2, action='append', default=[], metavar=('ROLE', 'PATH')); ap.add_argument('--hypothesis', action='append', default=[], metavar='TEXT')
@@ -946,6 +1031,10 @@ def main():
             ap.add_argument('directory'); ap.add_argument('--id', required=True); ap.add_argument('--claim', required=True); ap.add_argument('--status', required=True); ap.add_argument('--confidence', required=True); ap.add_argument('--reads-support', dest='reads_support', default=None); ap.add_argument('--event-action', dest='event_action', action='append', default=[], metavar='ACTION'); ap.add_argument('--update', action='store_true')
             try: case_anomaly(ap.parse_args(sys.argv[2:]))
             except (ValueError, OSError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
+        elif cmd == 'case-reference':
+            ap.add_argument('directory'); ap.add_argument('--reference-id', dest='reference_id', required=True); ap.add_argument('--purpose', required=True); ap.add_argument('--registry', default=None); ap.add_argument('--update', action='store_true')
+            try: case_reference(ap.parse_args(sys.argv[2:]))
+            except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
         elif cmd == 'case-validate':
             ap.add_argument('directory'); sys.exit(case_validate(ap.parse_args(sys.argv[2:])))
         else:
