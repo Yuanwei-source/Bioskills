@@ -51,7 +51,7 @@ description: >-
 | 选择工具；执行前检查所需环境 | [tool-catalog.md](references/tool-catalog.md)、[tool_check.md](references/tool_check.md) |
 | 解释结论与生成报告 | [conclusion-report.md](references/conclusion-report.md) |
 | 保存、检索、提炼或共享经验 | [learning-policy.md](references/learning-policy.md) |
-| 修改脚本、schema、解析器或测试 | [developer-contract.md](references/developer-contract.md) |
+| 经验/案例命令的**确切参数**；或修改脚本、schema、解析器、测试 | [developer-contract.md](references/developer-contract.md) §3.1 |
 
 只加载当前步骤需要的文件，不要求通读 references。
 

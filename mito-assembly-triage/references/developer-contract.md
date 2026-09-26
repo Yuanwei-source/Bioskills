@@ -62,6 +62,54 @@ CI 固定安装 `jsonschema`，因此等价性测试在 CI 中真正执行而不
 
 后台任务"子进程正常退出"只表示命令执行成功；科学验收由证据标准另行判定。
 
+### 3.1 经验与案例命令（确切参数）
+
+`SKILL.md` 只给流程与指向（通用参数以 `--help` 为准）；但**涉及证据链记账**的命令在这里给出确切参数，
+避免照文档构造出缺必需参数的命令（`--input` 是记录 `inputs[]` + SHA-256 的唯一 CLI 途径，
+而 `inputs` 是 `schemas/case.schema.json` 的必需键）。
+
+```bash
+# 建档：登记输入文件与哈希（inputs[] 必需），并给出至少一条候选解释
+python3 tools/experience.py case-init work/case-001 --issue internal_stop \
+  --observation 'nad5 内部 stop' --input assembly_fasta work/asm.fa \
+  --hypothesis 'H1: 边界/读码框错误' --hypothesis 'H2: 碱基错误' \
+  [--case-type normal_validation_case|tool_failure_case] [--taxon 'Hemiptera: Delphacidae']
+
+# 事件：命令、结果、对假设的影响（如 H1:against）
+python3 tools/experience.py case-event work/case-001 --action annot_check \
+  --result 'table 5 下仍有内部 stop' --impact H1:against
+
+# 逐异常判定：写入既有 case.json 的 anomalies[]；--event-action 必须命中真实事件
+python3 tools/experience.py case-anomaly work/case-001 --id A1 --claim '…' \
+  --status UNRESOLVED --confidence low --reads-support NOT_ASSESSED \
+  --event-action annot_check [--update]
+
+# 关联已登记的公共参考：id 未登记 / 用途未声明 → 直接失败
+python3 tools/experience.py case-reference work/case-001 \
+  --reference-id ref-001 --purpose gene_order_comparison [--registry DIR]
+
+python3 tools/experience.py case-validate work/case-001   # 只校验记录格式，不证明科学结论
+python3 tools/experience.py case-report  work/case-001   # 生成 case.md 草稿（须按 conclusion-report.md 复核）
+
+# 经验：candidate → verified 的审核链
+python3 tools/experience.py propose-lesson --case work/case-001 --next-test '复核边界' \
+  [--lesson-domain annotation] [--supporting-case DIR …]
+python3 tools/experience.py review-lesson --lesson-id lesson-001 --status verified \
+  --reviewer human --reason '记录可核查的独立证据核验'
+
+# 检索与共享（共享/上传是两个独立动作，各自需要授权/校验）
+python3 tools/experience.py search-structured --query 'internal_stop nad5'
+python3 tools/experience.py export-contribution --case work/case-001 \
+  --output contribution.json --authorize
+python3 tools/experience.py sync-public --manifest <manifest-url-or-file>
+```
+
+代码里的 `required=True` 参数（缺了直接报错）：`case-anomaly --id/--claim/--status/--confidence`、
+`case-reference --reference-id/--purpose`、`propose-lesson --case/--next-test`、
+`review-lesson --lesson-id/--status/--reviewer/--reason`、`search-structured --query`、
+`sync-public --manifest`；`case-init` 必须至少一条 `--hypothesis`。
+`--authorize`（导出）与 `--allow-public-upload`（COX1 查询）是**授权闸门**，不是可选装饰。
+
 ## 4. 写入安全（工程要求，与生物学无关）
 
 - 候选修复写入**独立目录**，绝不覆盖原始输入；
