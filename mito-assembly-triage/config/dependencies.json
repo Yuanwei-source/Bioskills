@@ -251,15 +251,6 @@
       "tools": "scripts/circularize.py",
       "capability": "接缝/环化候选的证据链"
     },
-    "case_records": {
-      "tier": "essential",
-      "requires": [
-        "python3",
-        "jsonschema"
-      ],
-      "tools": "tools/experience.py",
-      "capability": "结构化案例与参考登记"
-    },
     "reference_acquisition": {
       "tier": "optional",
       "requires": [

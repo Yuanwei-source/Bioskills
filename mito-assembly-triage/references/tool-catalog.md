@@ -46,12 +46,11 @@ COX1 多 HSP 出现 query/target 重叠、非共线或混链时不自动汇总�
 
 | 工具 | 用途 | 输出与限制 |
 |---|---|---|
-| `tools/experience.py case-init/case-event/case-anomaly/case-reference/case-validate/case-report` | 案例、事件、逐异常记录、参考关联、记录校验（`case-validate` 只校记录格式，不证明科学结论）；case-init 必须有 hypothesis；缺 `jsonschema` 时校验/写入口以**退出码 3** 失败（提示 pip 安装，不降级）；`case-validate` 分两层报告 **FORMAT**（schema）与 **BUSINESS**（跨字段业务规则，见 developer-contract §1 的 `BUSINESS_RULES` 表），`VALID` 仅表示两层都无问题、不证明科学结论，任一层有问题即退出 `1` | 写指定任务目录；例子见 [diagnostic-playbook.md](diagnostic-playbook.md)、确切参数见 [developer-contract.md](developer-contract.md) §3.1 |
+| `experimental/experience/experience.py case-init/case-event/case-anomaly/case-reference/case-validate/case-report` | 案例、事件、逐异常记录、参考关联、记录校验（`case-validate` 只校记录格式，不证明科学结论）；case-init 必须有 hypothesis；缺 `jsonschema` 时校验/写入口以**退出码 3** 失败（提示 pip 安装，不降级）；`case-validate` 分两层报告 **FORMAT**（schema）与 **BUSINESS**（跨字段业务规则，见 developer-contract §1 的 `BUSINESS_RULES` 表），`VALID` 仅表示两层都无问题、不证明科学结论，任一层有问题即退出 `1` | 写指定任务目录；例子见 [diagnostic-playbook.md](diagnostic-playbook.md)、确切参数见 [developer-contract.md](developer-contract.md) §3.1 |
 | `case-validate / case-report` | 格式校验 / 从已有记录生成 case.md | 校验失败 1；报告是草稿，按状态分类有缺陷，见 [conclusion-report.md](conclusion-report.md) §5 |
 | `search-structured / propose-lesson / review-lesson` | 检索、提炼、审核经验 | 写跨任务知识库前需授权；verified 不是通用规则 |
 | `export-contribution / sync-public` | 预览脱敏贡献 / 同步隔离缓存 | 生成预览与实际上传分开；授权与校验见 [learning-policy.md](learning-policy.md) |
 | `scripts/reference_registry.py` | acquire/register/record-database/list/verify | 固定版本、hash 与用途；不判参考是否可靠，见 [reference-policy.md](reference-policy.md) |
-| 代码↔文档审计：`python3 tools/audit_code_docs.py [--json] [--check-baseline] [--update-baseline]` | skill 目录本身（无需网络） | 代码里的 flag/错误码/枚举值是否仍有文档、规则表是否仍可检索、基线是否同步 | **不判断文档写得对不对**（语义仍须人工评审）；`--update-baseline` 只写豁免清单 | 非 0 = 发现漂移；写 `tools/doc_contract_baseline.json` |
 | 依赖盘点/门禁：`python3 tools/env_check.py --setup|--daily|--stage NAME [--json --strict --network --path DIR --lock PATH]` | skill 目录 + `config/dependencies.json`（无需网络，`--network` 才探测联网依赖） | 三级依赖（essential/extended/optional）是否就绪、某个 stage 能否执行、环境相对上次是否变化 | **不验证数据正确性**；lock 是缓存不是信任凭证（日常仍真实探测） | `0` 就绪 / `2` essential 缺失 / `3` 该 stage 缺依赖；写 `$MITO_KNOWLEDGE_DIR/environment.lock.json` |
 | `bash scripts/check_env.sh` | 全环境盘点，可选 | 0 核心依赖就绪 / 2 核心依赖缺失；只阻断实际依赖缺失工具的步骤 |
 | `bash scripts/run_bg.sh <名> -- <命令...>` | 长任务后台运行 | logs 中记录 log/pid/status；可信 shell 才用 `--trusted-shell` |

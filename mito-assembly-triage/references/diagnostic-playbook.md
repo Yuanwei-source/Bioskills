@@ -58,17 +58,17 @@
 事件 action 应可唯一定位本次检查。
 
 ```bash
-python3 <skill目录>/tools/experience.py case-init work/case-001 \
+python3 <skill目录>/experimental/experience/experience.py case-init work/case-001 \
   --issue internal_stop --observation '<位置与观察>' \
   --hypothesis '<边界或读框解释>' --hypothesis '<碱基错误解释>'
-python3 <skill目录>/tools/experience.py case-event work/case-001 \
+python3 <skill目录>/experimental/experience/experience.py case-event work/case-001 \
   --action translation_check_01 \
   --result '<命令/版本/产物；支持与反证；未测项；范围/局限；复核信息>' --impact H1:against
-python3 <skill目录>/tools/experience.py case-anomaly work/case-001 \
+python3 <skill目录>/experimental/experience/experience.py case-anomaly work/case-001 \
   --id A1 --claim '<具体命题>' --status UNRESOLVED --confidence low \
   --reads-support NOT_ASSESSED --event-action translation_check_01
-python3 <skill目录>/tools/experience.py case-validate work/case-001
-python3 <skill目录>/tools/experience.py case-report work/case-001
+python3 <skill目录>/experimental/experience/experience.py case-validate work/case-001
+python3 <skill目录>/experimental/experience/experience.py case-report work/case-001
 ```
 
 `case-validate` 只检查部分格式。`case-report` 生成草稿，交付前按

@@ -33,7 +33,7 @@
 
 #### 业务规则层（schema 之外，独立于格式）
 
-`tools/experience.py` 的 `BUSINESS_RULES` 列出一组**跨字段业务关系**，由
+`experimental/experience/experience.py`（已移出主路径）的 `BUSINESS_RULES` 列出一组**跨字段业务关系**，由
 `case_business_errors(case, root, verify_inputs=False)` 检查。它们不是格式，因此不写进 schema——
 把"格式合法"与"科学自洽"混为一谈，正是上一轮被删掉的那种隐患。每条规则有稳定错误码：
 
@@ -101,7 +101,7 @@
 
 后台任务"子进程正常退出"只表示命令执行成功；科学验收由证据标准另行判定。
 
-### 3.1 经验与案例命令（确切参数）
+### 3.1 经验与案例命令（确切参数；**子系统已移出主路径，默认不参与运行**）
 
 `SKILL.md` 只给流程与指向（通用参数以 `--help` 为准）；但**涉及证据链记账**的命令在这里给出确切参数，
 避免照文档构造出缺必需参数的命令（`--input` 是记录 `inputs[]` + SHA-256 的唯一 CLI 途径，
@@ -109,38 +109,38 @@
 
 ```bash
 # 建档：登记输入文件与哈希（inputs[] 必需），并给出至少一条候选解释
-python3 tools/experience.py case-init work/case-001 --issue internal_stop \
+python3 experimental/experience/experience.py case-init work/case-001 --issue internal_stop \
   --observation 'nad5 内部 stop' --input assembly_fasta work/asm.fa \
   --hypothesis 'H1: 边界/读码框错误' --hypothesis 'H2: 碱基错误' \
   [--case-type normal_validation_case|tool_failure_case] [--taxon 'Hemiptera: Delphacidae']
 
 # 事件：命令、结果、对假设的影响（如 H1:against）
-python3 tools/experience.py case-event work/case-001 --action annot_check \
+python3 experimental/experience/experience.py case-event work/case-001 --action annot_check \
   --result 'table 5 下仍有内部 stop' --impact H1:against
 
 # 逐异常判定：写入既有 case.json 的 anomalies[]；--event-action 必须命中真实事件
-python3 tools/experience.py case-anomaly work/case-001 --id A1 --claim '…' \
+python3 experimental/experience/experience.py case-anomaly work/case-001 --id A1 --claim '…' \
   --status UNRESOLVED --confidence low --reads-support NOT_ASSESSED \
   --event-action annot_check [--update]
 
 # 关联已登记的公共参考：id 未登记 / 用途未声明 → 直接失败
-python3 tools/experience.py case-reference work/case-001 \
+python3 experimental/experience/experience.py case-reference work/case-001 \
   --reference-id ref-001 --purpose gene_order_comparison [--registry DIR]
 
-python3 tools/experience.py case-validate work/case-001   # 只校验记录格式，不证明科学结论
-python3 tools/experience.py case-report  work/case-001   # 生成 case.md 草稿（须按 conclusion-report.md 复核）
+python3 experimental/experience/experience.py case-validate work/case-001   # 只校验记录格式，不证明科学结论
+python3 experimental/experience/experience.py case-report  work/case-001   # 生成 case.md 草稿（须按 conclusion-report.md 复核）
 
 # 经验：candidate → verified 的审核链
-python3 tools/experience.py propose-lesson --case work/case-001 --next-test '复核边界' \
+python3 experimental/experience/experience.py propose-lesson --case work/case-001 --next-test '复核边界' \
   [--lesson-domain annotation] [--supporting-case DIR …]
-python3 tools/experience.py review-lesson --lesson-id lesson-001 --status verified \
+python3 experimental/experience/experience.py review-lesson --lesson-id lesson-001 --status verified \
   --reviewer human --reason '记录可核查的独立证据核验'
 
 # 检索与共享（共享/上传是两个独立动作，各自需要授权/校验）
-python3 tools/experience.py search-structured --query 'internal_stop nad5'
-python3 tools/experience.py export-contribution --case work/case-001 \
+python3 experimental/experience/experience.py search-structured --query 'internal_stop nad5'
+python3 experimental/experience/experience.py export-contribution --case work/case-001 \
   --output contribution.json --authorize
-python3 tools/experience.py sync-public --manifest <manifest-url-or-file>
+python3 experimental/experience/experience.py sync-public --manifest <manifest-url-or-file>
 ```
 
 代码里的 `required=True` 参数（缺了直接报错）：`case-anomaly --id/--claim/--status/--confidence`、
@@ -189,35 +189,17 @@ essential 缺失；`env_check.py --stage` 与**工作脚本**用 `3` 表示"本�
 | 工具链桥（MITOS2→GenBank、`run_mitos2` outdir、`check_env` 提示） | `tests/test_toolchain_fixes.py` |
 | 案例 CLI（`case-anomaly`、假设编号） | `tests/test_case_anomaly_cli.py` |
 | 公共参考登记（accession.version、等级→用途、漂移、截断） | `tests/test_reference_registry.py` |
-| 代码 ↔ 文档一致性（flag/错误码/枚举值不得丢文档；规则表可检索） | `tools/audit_code_docs.py` + `tests/test_doc_contracts.py`（基线 `tools/doc_contract_baseline.json`） |
 | 案例类型与 lesson 范围/领域（复审核 R-1…R-8） | `tests/test_case_type_and_lesson_scope.py`、`tests/test_review_round_lesson_domain_and_report.py` |
 | 注释策略与类群例外 | `tests/test_annotation_policy.py` |
 | 数据与路径保护（未发表数据不进公共库） | `.gitignore` 规则 + `git check-ignore`/`git add -n` 人工核验（见 `REAL-DATA` 审计记录） |
 
 新增/修改行为时的顺序：**先写失败复现 → 最小修复 → 补反例 → 跑完整测试与 CI**，CI 绿灯是必要条件。
 
-### 5.1 代码 ↔ 文档一致性审计（常驻护栏）
+### 5.1 代码 ↔ 文档一致性
 
-`tools/audit_code_docs.py` 检查两侧是否漂移，三项任一失败即以非 0 退出（CI 会跑）：
-
-1. **可执行 token 覆盖**：从代码抽取 CLI flag、判定/错误码、枚举值，要求每个 token
-   **要么有文档，要么在 `tools/doc_contract_baseline.json` 里显式豁免**。
-   新增 token 未写文档也未豁免 → 失败（强制"写文档，或明确豁免"这一次决定）；
-   `documented` 列表里的 token 消失 → 失败。
-2. **规则表**：一组精选的"代码强制行为"必须仍能在 `SKILL.md` / `references/` 中检索到；
-   每条规则自带**代码凭据**，凭据不存在也失败（防止规则表自身腐化）。
-3. **基线同步**：`--check-baseline` 要求当前状态与基线完全一致。
-
-**为什么要有它**：一次文档压缩把 6 个 CLI flag 的唯一文档位置删掉了，其中 4 个是
-`required=True`；代码没变，所以单元测试全绿——漂移发生在文档侧，需要单独的检查。
-
-**豁免的边界**：可以豁免"逐工具调参 flag"（`--min-mapq`、`--evalue`、`--junction-region` …），
-因为 `SKILL.md` 已声明"参数以 `--help` 为准"；但**会改变结论语义或授权语义**的 flag
-（`--input`、`--next-test`、`--reference-id`、`--event-action`、`--authorize`、
-`--allow-public-upload` 等）必须保持有文档，且已在 `documented` 列表中受保护。
-
-更新基线（`--update-baseline`）是**需要理由的动作**：它意味着"这个 token 故意不写进文档"，
-请在 PR 说明里给出理由，而不是用它让 CI 变绿。
+**已取消自动化护栏。** 曾经的 `tools/audit_code_docs.py` + 基线 + 契约测试（约 460 行）被删除：
+它把"文档检查"升格成一等公民，导致改两行代码要同步改文档 + 更新基线，成本高于它防止的问题。
+现在不做自动化校验：接口与退出码见 §3 / §3.1，由代码评审和 CI 里的测试兜底。判断标准很简单：**测试和真实数据能发现的漂移，才值得自动化。**
 
 ## 6. 文档分层约定（避免把实现约束写成领域规则）
 

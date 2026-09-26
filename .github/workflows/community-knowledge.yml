@@ -8,8 +8,7 @@ on:
       # scripts/ and references/ were missing: a change to annot_check.py or
       # cox1_id.py alone used to skip this workflow entirely.
       - 'mito-assembly-triage/scripts/**'
-      - 'mito-assembly-triage/tools/**'   # 含 audit_code_docs.py 与文档契约基线
-      - 'mito-assembly-triage/tools/experience.py'
+      - 'mito-assembly-triage/tools/**'   # env_check.py（环境就绪检查）
       - 'mito-assembly-triage/tests/**'
       - 'mito-assembly-triage/SKILL.md'
       - 'mito-assembly-triage/references/**'
@@ -57,5 +56,5 @@ jobs:
       - name: Python syntax and tests
         working-directory: mito-assembly-triage
         run: |
-          python3 -m py_compile tools/experience.py
+          python3 -m py_compile scripts/*.py tools/*.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v

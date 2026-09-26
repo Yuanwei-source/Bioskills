@@ -1,17 +1,17 @@
 # 经验学习与共享政策
 
 > 当前任务的案例与报告可按任务保存；跨任务经验积累需授权。
-> 候选 lesson 不能自动修改 `SKILL.md` 或硬规则。状态实现见 `tools/experience.py`。
+> 候选 lesson 不能自动修改 `SKILL.md` 或硬规则。状态实现见 `experimental/experience/experience.py`。
 
 ## 1. 本地与派生分离
 
-| 层 | 位置 | 说明 |
-|---|---|---|
-| 任务案例与报告 | 用户任务目录的 `case.json` + `events.jsonl` + `case.md`，审阅版报告引用同一事实链 | 属本次分析产物，可在授权任务内写入 |
-| 跨任务案例库 | `$MITO_KNOWLEDGE_DIR/cases/<case>/` | 纳入长期检索/学习前需用户授权 |
-| 派生经验（lesson） | `$MITO_KNOWLEDGE_DIR/lessons/candidates/`、`.../verified/` | 需审核，默认不共享 |
-| 公共同步缓存（隔离） | `$MITO_KNOWLEDGE_DIR/public/` | **只读入**，不覆盖本地案例，不执行远程内容 |
-| 原始测序数据 | 用户自己的存储 | **不进**知识库，也不进公共仓库；只记录路径与 SHA-256 |
+| 层                   | 位置                                                                                   | 说明                                                       |
+| -------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 任务案例与报告       | 用户任务目录的`case.json` + `events.jsonl` + `case.md`，审阅版报告引用同一事实链 | 属本次分析产物，可在授权任务内写入                         |
+| 跨任务案例库         | `$MITO_KNOWLEDGE_DIR/cases/<case>/`                                                  | 纳入长期检索/学习前需用户授权                              |
+| 派生经验（lesson）   | `$MITO_KNOWLEDGE_DIR/lessons/candidates/`、`.../verified/`                         | 需审核，默认不共享                                         |
+| 公共同步缓存（隔离） | `$MITO_KNOWLEDGE_DIR/public/`                                                        | **只读入**，不覆盖本地案例，不执行远程内容           |
+| 原始测序数据         | 用户自己的存储                                                                         | **不进**知识库，也不进公共仓库；只记录路径与 SHA-256 |
 
 这一区分按用途，不按文件是否留在磁盘判断。仅做当前任务时，可设置
 `MITO_KNOWLEDGE_DIR="$PWD/work/knowledge"` 指向任务内目录；不设置时工具可能使用默认长期目录，
@@ -24,11 +24,11 @@
 如果只保存"异常案例"，经验系统会长期偏向"线粒体一定有问题"——这是**特异性（specificity）偏差**。
 每个案例都要标明类型：
 
-| `case_type` | 含义 | 提供的学习价值 |
-|---|---|---|
-| `abnormal_case` | 报告并诊断了异常（默认） | 发现能力（sensitivity） |
-| `normal_validation_case` | 经检查**未发现异常**，且已写明检查覆盖了哪些项、未覆盖哪些项 | 为评估误报与特异性提供必要对照；标签本身不证明真实阴性 |
-| `tool_failure_case` | 失败发生在**工具/环境**层面（格式故障、退出码 3、数据库缺失、权限不足） | 防止把工具故障记成生物学结论 |
+| `case_type`              | 含义                                                                          | 提供的学习价值                                         |
+| -------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `abnormal_case`          | 报告并诊断了异常（默认）                                                      | 发现能力（sensitivity）                                |
+| `normal_validation_case` | 经检查**未发现异常**，且已写明检查覆盖了哪些项、未覆盖哪些项            | 为评估误报与特异性提供必要对照；标签本身不证明真实阴性 |
+| `tool_failure_case`      | 失败发生在**工具/环境**层面（格式故障、退出码 3、数据库缺失、权限不足） | 防止把工具故障记成生物学结论                           |
 
 `normal_validation_case` **不是**"没跑出东西"：它要求跑完该结论的**最小充分证据集**
 （`diagnostic-decision-tree.md` §6），并逐项记录"已检查 / 结论 / 未覆盖"。
@@ -75,22 +75,22 @@ case.json (本地案例)
 
 ## 3. lesson 应记录的内容（字段映射）
 
-| 要求 | 落在何处 |
-|---|---|
-| 适用类群 / 组装与数据类型 | `applicable_when` |
-| 明确不适用条件 | `not_applicable_when` |
-| 初始异常（诊断线索） | `diagnostic_clues` |
-| 支持证据 | `supporting_case_ids` + `sources` |
-| **反例** | `counterexample_case_ids` |
-| 建议的下一步检查 | `suggested_next_test` |
-| 验证级别 / 审核历史 | `validation_status` + `review_history` |
-| 回溯链接 | `sources[].path` / `case_id` |
-| 冲突的其他经验 | `conflicts` |
-| **推广范围** | `generalization_scope`：`single_case` / `species` / `genus` / `family` / `order` / `multi_taxon` |
-| **可迁移性** | `transferability`：`none` / `low` / `moderate` / `high` |
-| **领域**（防止把工具故障当生物学结论） | `lesson_domain`：`tool` / `annotation` / `biology`（由 `case_type` 限定，见 §2） |
-| **来源案例类型** | `source_case_type`（保留区分，导出与同步都不丢） |
-| **样本数量**（当前无独立字段） | 写入 `sources`/描述性字段，或在 `case.md` 中说明 |
+| 要求                                         | 落在何处                                                                                                       |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 适用类群 / 组装与数据类型                    | `applicable_when`                                                                                            |
+| 明确不适用条件                               | `not_applicable_when`                                                                                        |
+| 初始异常（诊断线索）                         | `diagnostic_clues`                                                                                           |
+| 支持证据                                     | `supporting_case_ids` + `sources`                                                                          |
+| **反例**                               | `counterexample_case_ids`                                                                                    |
+| 建议的下一步检查                             | `suggested_next_test`                                                                                        |
+| 验证级别 / 审核历史                          | `validation_status` + `review_history`                                                                     |
+| 回溯链接                                     | `sources[].path` / `case_id`                                                                               |
+| 冲突的其他经验                               | `conflicts`                                                                                                  |
+| **推广范围**                           | `generalization_scope`：`single_case` / `species` / `genus` / `family` / `order` / `multi_taxon` |
+| **可迁移性**                           | `transferability`：`none` / `low` / `moderate` / `high`                                              |
+| **领域**（防止把工具故障当生物学结论） | `lesson_domain`：`tool` / `annotation` / `biology`（由 `case_type` 限定，见 §2）                    |
+| **来源案例类型**                       | `source_case_type`（保留区分，导出与同步都不丢）                                                             |
+| **样本数量**（当前无独立字段）         | 写入`sources`/描述性字段，或在 `case.md` 中说明                                                            |
 
 `generalization_scope` / `transferability` 的目的是**防止"一次案例 → 规则"**（AI 最容易犯的错）。规则：
 
