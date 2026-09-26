@@ -54,6 +54,7 @@ class CaseSchemaTests(unittest.TestCase):
         return self.module.case_validate(SimpleNamespace(directory=str(case)))
 
     def test_valid_case_passes(self):
+        # 默认案例引用的 /tmp/x.fa 不存在 → 只是 note 级提示（归档/换机常见），不改判读
         self.assertEqual(self.validate(self._case("ok")), 0)
 
     def test_missing_hypotheses_is_invalid(self):
@@ -78,7 +79,10 @@ class CaseSchemaTests(unittest.TestCase):
         self.assertEqual(self.validate(case), 1)
 
     def test_per_anomaly_status_and_confidence_are_validated(self):
-        good = self._case("anomalies-ok", anomalies=[
+        # 逐异常枚举要合法，且案例级状态不得与异常矛盾（#4 的 DECISION_ANOMALY_CONFLICT）
+        good = self._case("anomalies-ok", decision={"status": "UNRESOLVED", "confidence": "low",
+                                                   "rationale": "尚有未解决项"},
+                          anomalies=[
             {"id": "A1", "claim": "cox1 非典型起始", "status": "UNRESOLVED",
              "confidence": "not_assessable", "reads_support": "NOT_ASSESSED"},
             {"id": "A2", "claim": "trnS1 缺 DHU 臂属真实特征", "status": "RESOLVED",
@@ -323,7 +327,15 @@ class CaseSchemaVerdictTests(unittest.TestCase):
                 (directory / "case.json").write_text(json.dumps(data), encoding="utf-8")
                 (directory / "events.jsonl").touch()
                 verdict = self.module.case_validate(SimpleNamespace(directory=str(directory)))
-                self.assertEqual(verdict == 0, expected_valid, "%s" % name)
+                # 公开入口现在有两层：格式（schema）与业务（跨字段）。数据集里的
+                # expected_valid 描述的是**格式层**；业务层的 error 级矛盾也会让它退出 1
+                # （例如 conflicting_status：格式合法，但案例级 RESOLVED 与异常 UNRESOLVED 矛盾）。
+                format_ok = not self.module.case_schema_errors(case)
+                business = self.module.case_business_errors(case, directory)
+                fatal = [f for f in business if f.get("severity", "error") == "error"]
+                self.assertEqual(format_ok, expected_valid, "格式层: %s" % name)
+                self.assertEqual(verdict == 0, (format_ok and not fatal),
+                                 "公开入口: %s -> %s" % (name, business))
 
 
 if __name__ == "__main__":

@@ -666,6 +666,16 @@ def case_anomaly(args):
     if errors:
         raise ValueError('写回后案例不符合 schema, 已放弃写入: %s' % '; '.join(errors))
 
+    # 业务矛盾不阻断写入（没有"改 decision"的命令，阻断会把人卡死），但必须告警：
+    # 格式错误 = 记录不可用 → 拒绝；业务矛盾 = 记录可用但自相矛盾 → 显式提示。
+    for finding in case_business_errors(case, root):
+        print('⚠ [%s] %s' % (finding['code'], finding['message']))
+
+    # 业务矛盾不阻断写入（没有"改 decision"的命令，阻断会把人卡死），但必须告警：
+    # 格式错误 = 记录不可用 → 拒绝；业务矛盾 = 记录可用但自相矛盾 → 显式提示。
+    for finding in case_business_errors(case, root):
+        print('⚠ [%s] %s' % (finding['code'], finding['message']))
+
     tmp = root / 'case.json.tmp'
     with open(tmp, 'w', encoding='utf-8') as fh:
         json.dump(case, fh, ensure_ascii=False, indent=2)
@@ -715,6 +725,105 @@ def case_schema_errors(case):
     return []
 
 
+# 跨字段业务规则（schema 之外）。每条规则有稳定错误码；FORMAT 与 BUSINESS 分开输出，
+# 使 `case-validate` 的 VALID 只表示"格式合法 + 已定义业务规则无矛盾"，绝不隐含科学正确。
+BUSINESS_RULES = {
+    'DECISION_ANOMALY_CONFLICT':
+        '案例级 decision.status 为 RESOLVED，却存在 status 为 UNRESOLVED 的异常（自相矛盾）',
+    'ANOMALY_ID_DUPLICATE': 'anomalies[].id 重复，逐异常判定不可区分',
+    'NORMAL_CASE_HAS_UNRESOLVED_ANOMALY':
+        'case_type=normal_validation_case（已核实无异常）却挂着未解决异常，分类与内容矛盾',
+    'ANOMALY_EVENT_UNKNOWN':
+        'anomalies[].evidence_events 引用了 events.jsonl 中不存在的事件（证据链断开）',
+    'EVENT_HYPOTHESIS_UNKNOWN': '事件 impact 引用了 hypotheses[] 中不存在的假设编号',
+    'INPUT_FILE_MISSING': 'inputs[].path 在磁盘上不存在（环境性；仅提示，不改判读）',
+    'INPUT_SHA256_MISMATCH': 'inputs[].sha256 与磁盘文件不一致（输入被替换或记录有误）',
+    'EVENTS_UNPARSABLE': 'events.jsonl 存在无法解析为 JSON 对象的行',
+}
+
+
+def case_business_errors(case, root=None, verify_inputs=False):
+    """跨字段业务矛盾（不是格式问题）。返回 [{'code','message','rule'}]。
+
+    与格式校验分开的理由：schema 只表达结构与类型；"案例判 RESOLVED 却挂着 UNRESOLVED 异常"
+    这类关系属业务自洽性，混进 schema 会把"格式合法"与"科学自洽"混为一谈。规则集合见
+    `references/developer-contract.md` §1，措辞与 `references/evidence-standard.md` §7 一一对应。
+    """
+    findings = []
+
+    def add(code, message, severity='error'):
+        findings.append({'code': code, 'message': message, 'rule': BUSINESS_RULES[code],
+                         'severity': severity})
+
+    anomalies = [a for a in (case.get('anomalies') or []) if isinstance(a, dict)]
+    decision = case.get('decision') if isinstance(case.get('decision'), dict) else {}
+    unresolved = [str(a.get('id')) for a in anomalies if a.get('status') == 'UNRESOLVED']
+
+    if decision.get('status') == 'RESOLVED' and unresolved:
+        add('DECISION_ANOMALY_CONFLICT',
+            '案例级 decision.status=RESOLVED，但异常 %s 为 UNRESOLVED' % ', '.join(unresolved))
+    ids = [a.get('id') for a in anomalies if a.get('id')]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        add('ANOMALY_ID_DUPLICATE', 'anomalies[].id 重复: %s' % ', '.join(duplicates))
+    if case.get('case_type') == 'normal_validation_case' and unresolved:
+        add('NORMAL_CASE_HAS_UNRESOLVED_ANOMALY',
+            'case_type=normal_validation_case 但异常 %s 为 UNRESOLVED' % ', '.join(unresolved))
+
+    # events.jsonl：可解析性、事件→异常、事件→假设的引用完整性
+    event_actions, events = [], []
+    if root is not None:
+        try:
+            events_path = safe_case_member(pathlib.Path(root),
+                                           case.get('events_file', 'events.jsonl'), 'events_file')
+        except ValueError:
+            events_path = None
+        if events_path is not None and events_path.is_file():
+            for number, line in enumerate(events_path.read_text(encoding='utf-8').splitlines(), 1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    add('EVENTS_UNPARSABLE', 'events.jsonl 第 %d 行不是合法 JSON' % number)
+                    continue
+                if not isinstance(record, dict):
+                    add('EVENTS_UNPARSABLE', 'events.jsonl 第 %d 行不是 JSON 对象' % number)
+                    continue
+                events.append(record)
+                if record.get('action'):
+                    event_actions.append(str(record['action']))
+    known_actions = set(event_actions)
+    for anomaly in anomalies:
+        for action in (anomaly.get('evidence_events') or []):
+            if str(action) not in known_actions:
+                add('ANOMALY_EVENT_UNKNOWN', '异常 %s 引用的事件不存在: %s'
+                    % (anomaly.get('id'), action))
+    hypothesis_ids = {str(h.get('id')) for h in (case.get('hypotheses') or [])
+                      if isinstance(h, dict) and h.get('id')}
+    for record in events:
+        for token in re.findall(r'\bH\d+\b', str(record.get('impact') or '')):
+            if token not in hypothesis_ids:
+                add('EVENT_HYPOTHESIS_UNKNOWN', '事件 %s 的 impact 引用不存在的假设: %s'
+                    % (record.get('action'), token))
+
+    # 输入文件：存在性总是校验；哈希只在 --verify-inputs 时比对（大文件重新哈希代价高）
+    for item in (case.get('inputs') or []):
+        if not isinstance(item, dict) or not item.get('path'):
+            continue
+        path = pathlib.Path(str(item['path']))
+        if not path.is_file():
+            # 文件不在这台机器上不等于记录自相矛盾（归档/换机很常见）→ note，不改判读
+            add('INPUT_FILE_MISSING', '输入文件不存在: %s (%s)' % (item['path'], item.get('role')),
+                severity='note')
+        elif verify_inputs and item.get('sha256'):
+            actual = file_sha256(path)
+            if actual != item['sha256']:
+                add('INPUT_SHA256_MISMATCH', '输入 %s 的 sha256 与记录不一致（记录 %s…，实际 %s…）'
+                    % (item.get('role'), str(item['sha256'])[:12], actual[:12]))
+    return findings
+
+
 def case_validate(args):
     root = pathlib.Path(args.directory).resolve()
     with open(root / 'case.json', encoding='utf-8') as fh: case = json.load(fh)
@@ -735,9 +844,23 @@ def case_validate(args):
     try: events_path = safe_case_member(root, case.get('events_file', 'events.jsonl'), 'events_file')
     except ValueError as exc: errors.append(str(exc)); events_path = None
     if events_path is not None and not events_path.is_file(): errors.append('events file missing')
-    if errors:
-        print('INVALID'); [print('- ' + e) for e in errors]; return 1
-    print('VALID'); return 0
+    business = case_business_errors(case, root, verify_inputs=getattr(args, 'verify_inputs', False))
+    fatal = [f for f in business if f.get('severity', 'error') == 'error']
+    print('FORMAT: %s' % ('OK' if not errors else 'INVALID (%d 项)' % len(errors)))
+    for error in errors:
+        print('- [SCHEMA] %s' % error)
+    print('BUSINESS: %s' % ('无矛盾' if not business
+                            else '%d 项矛盾（其中 %d 项为 error 级）' % (len(business), len(fatal))))
+    for finding in business:
+        print('- [%s/%s] %s' % (finding['code'], finding.get('severity', 'error'), finding['message']))
+    if errors or fatal:
+        # 判读词本身必须保持独立字面量：它被 doc-contract 审计保护，也便于机器判读。
+        print('INVALID')
+        print('  cause: %s' % ('format' if errors else 'business'))
+        return 1
+    print('VALID')
+    print('  格式合法 + 已定义业务规则无矛盾；不证明科学结论')
+    return 0
 
 def case_reference(args):
     """Link a registered public reference into the case's evidence chain.
@@ -976,7 +1099,7 @@ def main():
             except MissingDependency as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(MissingDependency.EXIT_CODE)
             except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
         elif cmd == 'case-validate':
-            ap.add_argument('directory')
+            ap.add_argument('directory'); ap.add_argument('--verify-inputs', dest='verify_inputs', action='store_true')
             try: sys.exit(case_validate(ap.parse_args(sys.argv[2:])))
             except MissingDependency as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(MissingDependency.EXIT_CODE)
             except (ValueError, OSError, json.JSONDecodeError) as exc: print('✗ %s' % exc, file=sys.stderr); sys.exit(1)
