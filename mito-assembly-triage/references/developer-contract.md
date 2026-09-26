@@ -130,11 +130,35 @@ python3 tools/experience.py sync-public --manifest <manifest-url-or-file>
 | 工具链桥（MITOS2→GenBank、`run_mitos2` outdir、`check_env` 提示） | `tests/test_toolchain_fixes.py` |
 | 案例 CLI（`case-anomaly`、假设编号） | `tests/test_case_anomaly_cli.py` |
 | 公共参考登记（accession.version、等级→用途、漂移、截断） | `tests/test_reference_registry.py` |
+| 代码 ↔ 文档一致性（flag/错误码/枚举值不得丢文档；规则表可检索） | `tools/audit_code_docs.py` + `tests/test_doc_contracts.py`（基线 `tools/doc_contract_baseline.json`） |
 | 案例类型与 lesson 范围/领域（复审核 R-1…R-8） | `tests/test_case_type_and_lesson_scope.py`、`tests/test_review_round_lesson_domain_and_report.py` |
 | 注释策略与类群例外 | `tests/test_annotation_policy.py` |
 | 数据与路径保护（未发表数据不进公共库） | `.gitignore` 规则 + `git check-ignore`/`git add -n` 人工核验（见 `REAL-DATA` 审计记录） |
 
 新增/修改行为时的顺序：**先写失败复现 → 最小修复 → 补反例 → 跑完整测试与 CI**，CI 绿灯是必要条件。
+
+### 5.1 代码 ↔ 文档一致性审计（常驻护栏）
+
+`tools/audit_code_docs.py` 检查两侧是否漂移，三项任一失败即以非 0 退出（CI 会跑）：
+
+1. **可执行 token 覆盖**：从代码抽取 CLI flag、判定/错误码、枚举值，要求每个 token
+   **要么有文档，要么在 `tools/doc_contract_baseline.json` 里显式豁免**。
+   新增 token 未写文档也未豁免 → 失败（强制"写文档，或明确豁免"这一次决定）；
+   `documented` 列表里的 token 消失 → 失败。
+2. **规则表**：一组精选的"代码强制行为"必须仍能在 `SKILL.md` / `references/` 中检索到；
+   每条规则自带**代码凭据**，凭据不存在也失败（防止规则表自身腐化）。
+3. **基线同步**：`--check-baseline` 要求当前状态与基线完全一致。
+
+**为什么要有它**：一次文档压缩把 6 个 CLI flag 的唯一文档位置删掉了，其中 4 个是
+`required=True`；代码没变，所以单元测试全绿——漂移发生在文档侧，需要单独的检查。
+
+**豁免的边界**：可以豁免"逐工具调参 flag"（`--min-mapq`、`--evalue`、`--junction-region` …），
+因为 `SKILL.md` 已声明"参数以 `--help` 为准"；但**会改变结论语义或授权语义**的 flag
+（`--input`、`--next-test`、`--reference-id`、`--event-action`、`--authorize`、
+`--allow-public-upload` 等）必须保持有文档，且已在 `documented` 列表中受保护。
+
+更新基线（`--update-baseline`）是**需要理由的动作**：它意味着"这个 token 故意不写进文档"，
+请在 PR 说明里给出理由，而不是用它让 CI 变绿。
 
 ## 6. 文档分层约定（避免把实现约束写成领域规则）
 
