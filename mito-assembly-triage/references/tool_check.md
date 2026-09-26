@@ -85,7 +85,7 @@
   会打印告警；不得用于日常诊断——它关掉的正是"缺依赖即失败"这条保护。
 
 阶段与依赖的对应（`stages`）就在同一份清单里：`seq_stats` / `annot_check` / `gene_locating` /
-`read_evidence` / `circularize` / `case_records` / `annot_independent` / `circular_plot` /
+`read_evidence` / `circularize` / `annot_independent` / `circular_plot` /
 `reference_acquisition` / `cox1_identity`。**只有该阶段需要的依赖缺失时，才阻断该阶段**——
 缺 bwa 不阻断仅 FASTA/GB 检查；缺 samtools 才阻断依赖它的 BAM 检查。
 

@@ -3,6 +3,8 @@
 > 结论的证据门槛由 [evidence-standard.md](evidence-standard.md) 定义。
 > 本文件区分科学报告要求与现有 `case-report` 的实际能力。
 
+> **状态：已移出主路径（默认不参与运行）**。经验/案例子系统（`experimental/experience/`）在积累到 ≥10 个真实案例、≥3 个类群、且出现重复问题模式之前不再投入；下面的说明作为将来恢复时的参考保留。
+
 ## 1. 按具体命题报告
 
 每条结论应能独立引用、独立降级。不要用案例级 `decision` 替代逐条判断。
@@ -62,7 +64,7 @@
 
 ## 5. 当前生成器的能力与限制
 
-`python3 tools/experience.py case-report <任务案例目录>` 从 case 与事件生成 `case.md`，
+`python3 experimental/experience/experience.py case-report <任务案例目录>` 从 case 与事件生成 `case.md`，
 包含事件、逐异常矩阵、按状态分组的结论、通用下一步提示、案例汇总、假设、参考和证据边界。
 
 **该输出是草稿，不是科学验收结果。已知限制：**
