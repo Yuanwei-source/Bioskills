@@ -44,7 +44,8 @@ MIN_QUERY_COVERAGE = 0.8
 MIN_QUERY_LENGTH = 400
 MAX_QUERY_LENGTH = 5000
 POLL_ATTEMPTS = 40
-POLL_INTERVAL = 12
+# NCBI BLAST URL API guidance: poll an individual RID no more than once per minute.
+POLL_INTERVAL = 60
 
 
 # ------------------------------------------------------------------------- input
@@ -67,8 +68,9 @@ def read_single_fasta(fn):
 
 
 # ---------------------------------------------------------- BLAST XML dialects
-# This tool requests XML2 (FORMAT_TYPE=XML2, i.e. ``blastn -outfmt 16``) but must
-# also keep reading the legacy dialect (-outfmt 5 / FORMAT_TYPE=XML):
+# This tool requests XML2_S (the single-file XML2 variant); FORMAT_TYPE=XML2
+# returns a ZIP archive containing multiple XML files. Keep reading the legacy
+# dialect (FORMAT_TYPE=XML / -outfmt 5) for old saved responses:
 #
 #   XML2   root <BlastXML2 xmlns="http://www.ncbi.nlm.nih.gov">
 #          query-len | description/HitDescr/id + title | len |
@@ -626,8 +628,8 @@ def poll_search_info(rid):
 
 
 def fetch_results_xml(rid, max_results=10):
-    """CMD=Get with FORMAT_TYPE=XML2 -> structured alignment blocks."""
-    return _request({'CMD': 'Get', 'FORMAT_TYPE': 'XML2', 'RID': rid,
+    """CMD=Get with single-file XML2 -> one parseable XML document."""
+    return _request({'CMD': 'Get', 'FORMAT_TYPE': 'XML2_S', 'RID': rid,
                      'ALIGNMENTS': str(max_results), 'DESCRIPTIONS': str(max_results)},
                     timeout=180)
 
@@ -747,7 +749,7 @@ def main():
             print('完整候选与逐 HSP 原始记录已写入: %s' % out_json)
         sys.exit(code)
 
-    print('\n=== 物种鉴定结果 (COX1 blastn vs nt, XML2) ===')
+    print('\n=== COX1 BLAST 分类线索 (blastn vs nt, XML2_S) ===')
     print('查询长度: %d bp | 数据库: nt (NCBI BLAST URL API, 该接口不暴露库版本号)' % query_len)
     print('%-40s %8s %8s %6s' % ('命中描述', 'Ident%', 'cov%', 'HSP'))
     for hit in hits[:max_results]:

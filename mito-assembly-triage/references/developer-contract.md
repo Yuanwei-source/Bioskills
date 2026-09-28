@@ -299,8 +299,8 @@ partial 的实现约束：
 
 ## 9. COX1 BLAST 结果解析契约
 
-查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。它请求 `FORMAT_TYPE=XML2`，并**同时**能读
-XML2（`-outfmt 16`）与旧版 XML（`-outfmt 5`）两种方言；`FORMAT_OBJECT=SearchInfo` 按 NCBI 实际返回的
+查询片段为 400–5000 bp，结果只提供分类线索，不能单独确定物种。它请求 `FORMAT_TYPE=XML2_S`（单文件 XML2；`XML2` 会返回多文件 ZIP，不能直接当 XML 解析），并**同时**能读
+XML2 与旧版 XML（`-outfmt 5`）两种方言；`FORMAT_OBJECT=SearchInfo` 按 NCBI 实际返回的
 QBlast 文本（`RID =` / `Status=`）解析，XML 形式也兼容。**每个 `<Hsp>` 的 query/hit 坐标、identity、align-len、
 bit-score 都必须存在且数值合法**：缺任一必需字段时整份结果按**格式故障**（退出码 3）处理 ——
 缺少 subject 坐标就无法做方向/共线性/目标重用检查，不能靠“只剩单个 HSP”绕过验证。它报告每个候选的 **query coverage**（多 HSP 并集）与 identity，并把 RID 轮询与结果下载分开。
