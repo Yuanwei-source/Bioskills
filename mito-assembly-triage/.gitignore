@@ -1,7 +1,10 @@
 logs/
 __pycache__/
 knowledge/cases/
-# 本地回归测试、输入数据、真实样本评估及交付物：保留在开发机，不发布到 GitHub。
-tests/
+# 本地样本数据、真实样本评估及交付物：保留在开发机，不发布到 GitHub。
+tests/tests_data/
+tests/deliverables/
+tests/evaluations/
+tests/docs/
 # 本地送审/评审材料，不上传远程仓库
 references-review/
