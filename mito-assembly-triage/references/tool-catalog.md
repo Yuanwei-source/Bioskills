@@ -8,11 +8,16 @@ hash、产物路径和实际退出状态。参数以各工具 `--help` 为准，
 
 | 任务 / 工具 | 必要输入与用途 | 关键限制 | 输出与退出码 |
 |---|---|---|---|
+| 明确编辑清单候选：`apply_candidate.py` | FASTA 碱基替换、唯一 CDS 边界调整、GenBank 注释字段精确编辑；需 edits JSON 和证据引用 | 只写新候选和变更 manifest，不推断编辑、不做科学验收；边界需显式密码表 | 0 生成候选 / 1 输入、旧值或输出保护失败 / 3 缺依赖 |
+| Illumina reads-only 组装：GetOrganelle `get_organelle_from_reads.py` | 配对或单端 Illumina FASTQ；`-F animal_mt` 数据库 | 只作为候选组装；检查 graph/path、重复、分支和所有连接，工具输出 circular 不能单独证明拓扑；不适用于直接输入 ONT/PacBio 原始 reads | 0/非 0 依上游版本；须保留完整日志、graph 和所有候选序列 |
+| FASTA-only 初检：`assembly_intake.py` | 单/多记录组装 FASTA；逐条长度、GC、模糊碱基区间、SHA-256 | 只报告 FASTA 可见事实；不判断分子身份、碱基真实性、方向或闭环 | 0 报告 / 1 FASTA 格式或读写错误；可用 `--json` 保存结构化报告 |
+| 任务记录/修复追溯：`case.py` | 输入、事件、结论及已有工具生成的候选；[用法](task-records.md) | 不生成或采纳修复；verified 仅表示登记标准结果，不证明科学结论 | 0 完成 / 1 非法输入或文件漂移 / 3 缺依赖 |
 | 序列体检：`seq_stats.py` | FASTA；长度、GC/AT、模糊碱基和滑窗 | 模糊位置是 0-based；不验证样本真实性 | 统计输出；正常 0 |
 | 注释质检：`annot_check.py` | GenBank；显式传类群确认的 `--table`，必要时 `--taxon`、`--ref` | 无 reads 验证；`--taxon` 不自动切换昆虫阈值，拓扑检查只校声明 | 0 无发现 / 1 错误（含参数错误）/ 2 待核查 |
-| 注释格式桥：`mitos2_to_genbank.py` | MITOS2 GFF/FAS/FAA 与组装 FASTA；生成可质检 GB | 非通用 GFF 转换；不补基因/碱基，不导出未知 partial，不是提交质量记录 | 写 GB；输入/坐标异常非 0，无半成品 |
-| 基因定位：`blast_genes.py` | 已注释参考 GB + 目标 FASTA；需 blastn | 默认 identity ≥80% 且 coverage ≥80%；短/局部命中被排除，不独自判重排或丢失 | 1-based 定位；任一无唯一命中返回 1，不写部分结果 |
-| reads 检查：`depth_analysis.py` | 排序并建索引 BAM + 匹配 FASTA；覆盖、soft-clip、碱基支持 | 单 mt 参考不排除 NUMT；callable 的工程检查不替代全部科学验收 | 0 正常 / 1 输入或 BAM 错误 / 2 低覆盖 |
+| 注释格式桥：`mitos2_to_genbank.py` | MITOS2 GFF/FAS/FAA、单记录组装 FASTA、必需 `--table`；生成可质检 GB | 非通用 GFF 转换；不补基因/碱基，不导出未知 partial，不是提交质量记录 | 写 GB；输入/坐标异常非 0，无半成品 |
+| FASTA-only 注释候选路线：`run_fasta_annotation.sh` | 单记录组装 FASTA、显式密码表及证据状态、可用 MITOS2 环境；依次初检、注释、桥接、质检 | 不修组装、不证明样本真实性或闭环；MITOS2 注释仍需类群化独立复核；可 `--mitos-dir` 重用已有 MITOS2 结果 | 0 无初检发现 / 2 有待核查或多记录安全停止 / 1 错误 / 3 MITOS2 环境门禁未满足 |
+| 基因定位：`blast_genes.py` | 已注释参考 GB + 目标 FASTA；需 blastn | 默认 identity ≥80% 且 coverage ≥80%；独立定位分开，HSP 仅无歧义共线时合并，identity 按比对列加权；不独自判重排或丢失 | 1-based 定位（TSV 第 8 列为 target）；任一无唯一命中返回 1，不写部分结果 |
+| reads 检查：`depth_analysis.py` | 排序并建索引 BAM + 匹配 FASTA；覆盖、soft-clip、碱基支持 | 单 mt 参考不排除 NUMT；callable 的工程检查不替代全部科学验收 | 0 无覆盖预警 / 1 输入或 BAM 错误 / 2 低覆盖或零覆盖位点；可加 `--output-json` |
 | 两 scaffold 候选：`circularize.py` | 两 FASTA、参考 GB；首次可无 BAM 生成候选，回贴后验证需 BAM；需 blastn/minimap2/samtools/Biopython | 只自动验证一个内部接缝，不验证尾首闭合；方向/顺序与参考冲突时拒绝 accept | 0 CANDIDATE_ACCEPTED / 2 REVIEW（含待回贴）/ 1 失败或接缝不足；0 也非物理闭环证明 |
 | COX1 线索：`cox1_id.py` | 本地确定 `--coords start,end`，片段 400–5000 bp；须有上传授权再传 `--allow-public-upload` | 向 NCBI 上传片段；不自动定位 COX1，identity/coverage 不等于物种鉴定 | 0 得判读 / 1 insufficient 或 no_match / 2 拒绝 / 3 网络或格式故障 |
 **HSP 坐标与数值边界（格式故障 = 退出码 3，不是 `no_match`）**：坐标**越界**（`query-from/to` 超出
@@ -34,9 +39,12 @@ hash、产物路径和实际退出状态。参数以各工具 `--help` 为准，
 `--accept-candidate` 仅在已核对全部新增接缝、重复歧义与组装图且满足采纳授权后使用；
 当前工具提示要求人工核对，不因退出 0 而宣称全部连接已自动验证。
 
-`depth_analysis.py` 的可选模糊碱基支持检查需要额外的 `.fasta` 输入（与 BAM 参考坐标一致）；
-`--allow-base-replacement` 影响替换建议，不自动写入修复 FASTA。其控制区 soft-clip 提示
-仍有“正常长度异质性”等过强措辞，只作为待查解释，不能原样当成结论。
+`depth_analysis.py BAM FASTA [AMBIGUOUS_FASTA] --output-json FILE` 保存覆盖与位点支持。
+额外 FASTA 与参考必须同名、同长度，明确碱基不能改变；其他扩展名也可用。
+`--min-depth 5 --min-mapq 20 --min-baseq 20` 为工程默认值。重叠 mate 仅计一个模板，
+冲突、未知质量、MAPQ=255 不计定点支持；覆盖也先显式排除未知质量和 MAPQ。
+全零覆盖不能通过。samtools 需支持 `view -e` 及质量表达式；不支持时明确失败。
+`--allow-base-replacement` 只影响候选建议，不写修复 FASTA，也不授权采纳；soft-clip 仅报观测。
 
 COX1 多 HSP 出现 query/target 重叠、非共线或混链时不自动汇总择优；
 这不等于命中已被证明无效。查看逐 HSP 证据，使用 `--output-json <文件>` 保存详情。
@@ -46,12 +54,8 @@ COX1 多 HSP 出现 query/target 重叠、非共线或混链时不自动汇总�
 
 | 工具 | 用途 | 输出与限制 |
 |---|---|---|
-| `tools/experience.py case-init/case-event/case-anomaly/case-reference/case-validate/case-report` | 案例、事件、逐异常记录、参考关联、记录校验（`case-validate` 只校记录格式，不证明科学结论）；case-init 必须有 hypothesis；缺 `jsonschema` 时校验/写入口以**退出码 3** 失败（提示 pip 安装，不降级）；`case-validate` 分两层报告 **FORMAT**（schema）与 **BUSINESS**（跨字段业务规则，见 developer-contract §1 的 `BUSINESS_RULES` 表），`VALID` 仅表示两层都无问题、不证明科学结论，任一层有问题即退出 `1` | 写指定任务目录；例子见 [diagnostic-playbook.md](diagnostic-playbook.md)、确切参数见 [developer-contract.md](developer-contract.md) §3.1 |
-| `case-validate / case-report` | 格式校验 / 从已有记录生成 case.md | 校验失败 1；报告是草稿，按状态分类有缺陷，见 [conclusion-report.md](conclusion-report.md) §5 |
-| `search-structured / propose-lesson / review-lesson` | 检索、提炼、审核经验 | 写跨任务知识库前需授权；verified 不是通用规则 |
-| `export-contribution / sync-public` | 预览脱敏贡献 / 同步隔离缓存 | 生成预览与实际上传分开；授权与校验见 [learning-policy.md](learning-policy.md) |
+| 历史 `case-*` / lesson / sync 命令 | 当前分发缺少 `experience.py`，均不可执行 | 任务内记录改用 case.py；旧命令不映射为新命令，详见 task-records.md |
 | `scripts/reference_registry.py` | acquire/register/record-database/list/verify | 固定版本、hash 与用途；不判参考是否可靠，见 [reference-policy.md](reference-policy.md) |
-| 代码↔文档审计：`python3 tools/audit_code_docs.py [--json] [--check-baseline] [--update-baseline]` | skill 目录本身（无需网络） | 代码里的 flag/错误码/枚举值是否仍有文档、规则表是否仍可检索、基线是否同步 | **不判断文档写得对不对**（语义仍须人工评审）；`--update-baseline` 只写豁免清单 | 非 0 = 发现漂移；写 `tools/doc_contract_baseline.json` |
 | 依赖盘点/门禁：`python3 tools/env_check.py --setup|--daily|--stage NAME [--json --strict --network --path DIR --lock PATH]` | skill 目录 + `config/dependencies.json`（无需网络，`--network` 才探测联网依赖） | 三级依赖（essential/extended/optional）是否就绪、某个 stage 能否执行、环境相对上次是否变化 | **不验证数据正确性**；lock 是缓存不是信任凭证（日常仍真实探测） | `0` 就绪 / `2` essential 缺失 / `3` 该 stage 缺依赖；写 `$MITO_KNOWLEDGE_DIR/environment.lock.json` |
 | `bash scripts/check_env.sh` | 全环境盘点，可选 | 0 核心依赖就绪 / 2 核心依赖缺失；只阻断实际依赖缺失工具的步骤 |
 | `bash scripts/run_bg.sh <名> -- <命令...>` | 长任务后台运行 | logs 中记录 log/pid/status；可信 shell 才用 `--trusted-shell` |

@@ -121,7 +121,7 @@ python3 <skill目录>/scripts/reference_registry.py record-database \
 ## 7. 案例如何引用参考（证据链闭合）
 
 ```bash
-python3 <skill目录>/tools/experience.py case-reference work/case-001 \
+python3 <skill目录>/experimental/experience/experience.py case-reference work/case-001 \
   --reference-id ref-001 --purpose gene_order_comparison
 ```
 

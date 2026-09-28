@@ -50,8 +50,8 @@
 缺少该命题必要输入才用 `not_assessable`；已有可评估但不足或冲突的证据时用 `low/moderate`
 并保留 `UNRESOLVED`，不要用一个状态覆盖所有结构相关陈述。
 
-落地位置：每个异常各自把 `status` / `confidence` / `reads_support` 写入 `case.json` 的 `anomalies[]`
-（schema 校验这三个枚举）；案例级 `decision` 只作汇总结论，不能代替逐异常判定。
+落地位置：每个异常各自把 `status` / `confidence` / `reads_support` 写入 `case.json` 的 `conclusions[]`
+（schema 校验这三个枚举）；版本 3 不设案例级 decision，以逐条命题为准。
 
 ## 3. `raw-read-supported` 的门槛与写法
 
@@ -62,12 +62,19 @@
 - MAPQ 与碱基质量分布（不只报均值深度）；
 - 链向偏好、证据坐标、**重复标记状态**（是否已 `markdup`/去重）。
 
-这些字段现在由脚本实际产出，而不是只写在文档里：
+下表列出脚本实际产出。输入 hash、工具版本、竞争参考和重复标记状态仍需任务记录补足，
+不能把下表理解成脚本已生成完整证据链：
 
 | 结论类型 | 产出点 | 关键字段 |
 |---|---|---|
-| 单碱基校正 | `scripts/depth_analysis.py` 的 `base_support()` | `depth`、`support`、`strand_counts`、`mapq`、`excluded{duplicate,low_mapq,low_baseq,secondary}`；深度/MAPQ/碱基质量/链向四项全部通过才 `callable` |
-| 接缝 / 环化 | `scripts/circularize.py` 的 `junction_evidence()` | `support`（独立 QNAME 数）、`strand_counts`、`mapq_min`/`mapq_median`、`duplicates_excluded` |
+| 单碱基候选 | `scripts/depth_analysis.py` 的 `base_support()` | `depth=template_depth`、`read_depth`、`base_counts`、`support`、`strand_counts`、`mapq`、`base_quality`、`excluded`；按 RG+QNAME 合并，mate 冲突排除，质量缺失/低质量及 MAPQ=255 不参与 |
+| 接缝候选 | `scripts/circularize.py` 的 `junction_evidence()` | `support`（RG+QNAME 模板数）、`templates`、模板与 read 两套链向统计、`mapq_min/median`、`duplicates_excluded`；要求整个锚定区间连续 M/=/X，D/N/I 不算连续支持 |
+
+模板数不等于已验证的独立分子数：PCR 重复标记、文库设计和竞争比对仍需核验。
+`callable` 只表示定点工程筛查通过，不证明该碱基可以采纳。重叠 mate 一致时优先 R1
+提供一个模板链向观察，不把同一模板的两端当作两条独立链向证据。
+覆盖采用按碱基加权均值，同时报告绝对低覆盖、相对低覆盖和零覆盖位点。
+缺失 QUAL 及 MAPQ=255 在覆盖统计前显式剔除；全零覆盖返回 2，工具故障返回 1。
 
 `reads_support` 只取三个值：
 
@@ -146,6 +153,8 @@
 
 | 主题 | 来源 |
 |---|---|
+| SAM 坐标、负链与质量语义 | https://samtools.github.io/hts-specs/SAMv1.pdf |
+| samtools 过滤表达式（qual 为原始 Phred 数值） | https://www.htslib.org/doc/samtools.html#FILTER_EXPRESSIONS |
 | NCBI 细胞器基因组提交与注释要求 | https://www.ncbi.nlm.nih.gov/genbank/organelle_submit/ |
 | NCBI 遗传密码表（按类群选表） | https://www.ncbi.nlm.nih.gov/datasets/docs/v2/data-processing/taxonomy-processing/genetic-codes/ |
 | MITOS / Bernt et al. 2013（历史注释的系统性误差） | https://pubmed.ncbi.nlm.nih.gov/22982435/ |
@@ -160,16 +169,8 @@
 
 ## 7. 实现与格式限制
 
-案例 schema、校验路径（唯一实现，缺依赖即失败）和报告生成器的限制见
-[developer-contract.md](developer-contract.md) §1/§7；这些实现要求不构成生物学证据。
-
-**已校验的跨字段关系**（业务规则层，见 developer-contract §1 的表）：
-`DECISION_ANOMALY_CONFLICT`、`ANOMALY_ID_DUPLICATE`、`NORMAL_CASE_HAS_UNRESOLVED_ANOMALY`、
-`ANOMALY_EVENT_UNKNOWN`、`EVENT_HYPOTHESIS_UNKNOWN`、`INPUT_FILE_MISSING`、
-`INPUT_SHA256_MISMATCH`（需 `--verify-inputs`）、`EVENTS_UNPARSABLE`；其中 `INPUT_FILE_MISSING` 为 **note 级**（环境性，不改变判读），其余为 error 级。
-`case-validate` 把 `FORMAT` 与 `BUSINESS` 分开报告，`VALID` **只**表示"格式合法 + 已定义业务规则
-无矛盾"，不等于科学结论。
-
-**仍未校验（明确披露，不是静默漏检）**：① `decision.confidence` 与证据强度的对应——按 §2.1，
-无 reads 不限制与 reads 无关的注释结论，故不作为矛盾；② 案例与外部知识库/文献的一致性；
-③ 多案例之间的一致性。**"未校验"≠"已验证"**，报告里不得混用。
+当前 `scripts/case.py` 依据 `schemas/task-case.schema.json`（版本 3）校验格式、
+证据引用和状态关系；`validate --verify-files` 及 `report` 还核对已登记文件的 SHA-256。
+详见 [task-records.md](task-records.md)。这些检查不证明科学内容、命令真实性或复核人身份。
+reads 支持必须引用使用 reads/bam 输入的事件；竞争参考须登记并用于支持事件。
+其实际判别力仍按上述生物学门槛判断，不能由角色标签自动推出。

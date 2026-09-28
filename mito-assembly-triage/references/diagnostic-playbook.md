@@ -21,7 +21,7 @@
 列出当前证据相容且会影响决策的解释，以及各自的预期观测与反证；不按固定数量凑假设。
 基因未检出需考虑命名/漏注释/检索灵敏度/断裂/真实丢失；内部 stop 需考虑密码表、
 边界/读框、碱基错误和有证据的生物例外；结构异常需考虑表示方式、重复与错接。
-将解释写入 `hypotheses[]`，支持、反对与未知分别记录。
+将竞争解释写入事件 `summary` 与结论 `rationale`；支持、反对与未知分别记录。
 
 ## CHOOSE_TEST
 
@@ -44,7 +44,7 @@
 
 ## DECIDE
 
-每条异常单独记录 claim、状态、置信度与 reads 支持，案例级 decision 仅作汇总。
+每条异常单独记录 claim、状态、置信度与 reads 支持，存入 `conclusions[]`，不生成案例级总置信度。
 `NO_CHANGE` 仅表示处置不修改；注明理由，不能据此推出样本质量通过。
 置信度与缺失输入的规则统一见证据标准 §2；复核与判定人的记录见决策树 §4。
 
@@ -52,27 +52,15 @@
 除非影响本次结论。结论需要的支持/反证、未测项、范围与局限即使无专用 CLI 字段，
 也必须写入事件及报告。四类停止条件只在决策树 §3 定义，不为收尾强行给肯定结论。
 
-### 任务内记账示例
+### 任务内记录（当前可用方式）
 
-在用户任务工作目录运行；占位内容替换为实际事实。假设 ID 由 case-init 按顺序分配，
-事件 action 应可唯一定位本次检查。
-
-```bash
-python3 <skill目录>/tools/experience.py case-init work/case-001 \
-  --issue internal_stop --observation '<位置与观察>' \
-  --hypothesis '<边界或读框解释>' --hypothesis '<碱基错误解释>'
-python3 <skill目录>/tools/experience.py case-event work/case-001 \
-  --action translation_check_01 \
-  --result '<命令/版本/产物；支持与反证；未测项；范围/局限；复核信息>' --impact H1:against
-python3 <skill目录>/tools/experience.py case-anomaly work/case-001 \
-  --id A1 --claim '<具体命题>' --status UNRESOLVED --confidence low \
-  --reads-support NOT_ASSESSED --event-action translation_check_01
-python3 <skill目录>/tools/experience.py case-validate work/case-001
-python3 <skill目录>/tools/experience.py case-report work/case-001
-```
-
-`case-validate` 只检查部分格式。`case-report` 生成草稿，交付前按
-[conclusion-report.md](conclusion-report.md) 补齐科学内容并复核分类。
+使用 [task-records.md](task-records.md) 中的 `scripts/case.py` 建立任务，登记输入、
+实际执行事件和逐条结论，再校验文件并生成报告。事件与结论同存于版本 3 的 `case.json`。
+`depth_analysis.py --output-json` 的产物可作为事件 artifact 登记。
+遗传密码表及确认依据写入事件 summary；修改差异和修改后验证分别登记产物与事件。
+碱基和 CDS 边界改动可按证据清单用 `apply_candidate.py` 生成候选；结构改动使用对应结构工具。
+候选另存并用 `case.py candidate` 关联基础输入和生成事件；验证事件必须实际使用候选，
+写明预先定义的验收标准。此工具不自动生成、采纳修复，也不维护跨任务经验库。
 
 ## VERIFY
 

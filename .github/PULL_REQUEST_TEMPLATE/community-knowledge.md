@@ -1,7 +1,7 @@
 ## 社区知识贡献
 
 - [ ] 我明确授权提交该结构化贡献（不包含原始 FASTQ/BAM、凭据或敏感路径）
-- [ ] 已在本地运行 `python3 tools/experience.py case-validate ...`
+- [ ] 已在本地运行 `python3 experimental/experience/experience.py case-validate ...`
 - [ ] 已说明证据来源、适用类群、反例和未解决歧义
 - [ ] 这是候选经验，不要求自动修改 `SKILL.md` 或稳定规则
 
