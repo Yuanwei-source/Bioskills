@@ -1,0 +1,96 @@
+{
+  "format": "mito-taxon-profiles-1",
+  "profiles": [
+    {
+      "scientific_name": "Neomohunia sinuatipenis",
+      "lineage": [
+        "Animalia",
+        "Arthropoda",
+        "Insecta",
+        "Hemiptera",
+        "Auchenorrhyncha",
+        "Cicadellidae",
+        "Deltocephalinae",
+        "Mukariini",
+        "Neomohunia"
+      ],
+      "mitochondrial_code": {
+        "table": 5,
+        "status": "provisional",
+        "species_specific_confirmed": false,
+        "auto_select": false,
+        "evidence": [
+          {
+            "claim": "The taxonomic revision describes Neomohunia sinuatipenis and places Neomohunia in Cicadellidae: Deltocephalinae: Mukariini.",
+            "url": "https://doi.org/10.3897/zookeys.790.26130",
+            "scope": "Species name and classification; not mitochondrial genetic-code evidence or independent identification of the project sample."
+          },
+          {
+            "claim": "NCBI Taxonomy has a genus-level Neomohunia node (TaxID 2631208), but no species-level node for Neomohunia sinuatipenis was found.",
+            "url": "https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi?command=show&id=2631208&lvl=3&mode=tree",
+            "scope": "Genus-level taxonomy context only; the genus TaxID is not assigned as a species TaxID."
+          },
+          {
+            "claim": "Translation table 5 is the Invertebrate Mitochondrial Code.",
+            "url": "https://www.ncbi.nlm.nih.gov/datasets/docs/v2/data-processing/taxonomy-processing/genetic-codes/",
+            "scope": "Definition of table 5; does not establish that Neomohunia sinuatipenis uses it."
+          }
+        ],
+        "limitations": [
+          "Table 5 is provisional for Neomohunia sinuatipenis; no species-specific mitochondrial code assignment or independently validated mitogenome record was established in this review.",
+          "The Chinese common name supplied by the user is mapped to Neomohunia sinuatipenis using the taxonomic literature; this does not independently confirm the QJXH specimen identification.",
+          "The profile does not select a table automatically and supplies no gene-count, arrangement, length, coverage, or repair thresholds."
+        ]
+      },
+      "engineering_thresholds": []
+    },
+    {
+      "scientific_name": "Cemus macaoensis",
+      "ncbi_taxon_id": 871496,
+      "lineage": [
+        "Animalia",
+        "Arthropoda",
+        "Insecta",
+        "Hemiptera",
+        "Auchenorrhyncha",
+        "Fulgoromorpha",
+        "Fulgoroidea",
+        "Delphacidae"
+      ],
+      "mitochondrial_code": {
+        "table": 5,
+        "status": "provisional",
+        "species_specific_confirmed": false,
+        "auto_select": false,
+        "evidence": [
+          {
+            "claim": "NCBI Taxonomy records the Cemus macaoensis taxon node (TaxID 871496).",
+            "url": "https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi?command=show&id=871496&lvl=3&mode=tree",
+            "scope": "Taxon node identity; not independent identification of the project sample."
+          },
+          {
+            "claim": "Cemus macaoensis is classified in Hemiptera, family Delphacidae.",
+            "url": "https://itis.gov/servlet/SingleRpt/SingleRpt?search_topic=TSN&search_value=901577",
+            "scope": "Taxonomic placement; not evidence for translation table."
+          },
+          {
+            "claim": "Translation table 5 is the Invertebrate Mitochondrial Code.",
+            "url": "https://www.ncbi.nlm.nih.gov/datasets/docs/v2/data-processing/taxonomy-processing/genetic-codes/",
+            "scope": "Definition of table 5; does not establish that a particular species uses it."
+          },
+          {
+            "claim": "NCBI assigns the mitochondrial genetic code table 5 to Sogatella furcifera.",
+            "url": "https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi?id=113103&mode=Info",
+            "scope": "Same-family reference context only; not an independent species-specific genetic-code confirmation for Cemus."
+          }
+        ],
+        "limitations": [
+          "The code table is provisional for Cemus macaoensis and must be confirmed from species-specific evidence before final annotation.",
+          "The Sogatella furcifera source annotation is reference provenance, not the sample taxon or independent evidence for Cemus identity.",
+          "The profile does not select a table automatically and supplies no gene-count, arrangement, length, coverage, or repair thresholds."
+        ]
+      },
+      "engineering_thresholds": []
+    }
+  ]
+}

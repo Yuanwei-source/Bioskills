@@ -1,5 +1,11 @@
 # 实现契约（格式 / 解析 / 测试约束）
 
+> **当前分发状态（2026-09-28）**：任务内记录已由 `scripts/case.py` 实现，
+> 使用 `schemas/task-case.schema.json` 版本 3；契约与命令见 [task-records.md](task-records.md)。
+> `tests/test_case_workflow.py` 覆盖完整流程、证据关联、文件漂移、并发及原子更新失败。
+> 下文 §1–§3.1 的 experience.py、case-*、旧 schema 和旧测试属于历史契约，不是当前接口。
+> 旧案例不隐式迁移；跨任务经验库与 GitHub CI 未恢复。记录校验通过不等于科学验收。
+
 > **本文件是工程约束，不是生物学判据。** 生物证据规则见 `evidence-standard.md` / `annotation_quality.md`；
 > 这里的内容回答"代码必须怎样表现、由哪组测试锁住"。
 > 拆出本文件的原因：把"selector 归一化后为空则加载失败"这类**实现约束**写在生物学文件里，
@@ -95,7 +101,7 @@
 | `cox1_id.py` | `0` / `1` / `2` / `3` | 得判读 / `insufficient` 或 `no_match` / 拒绝执行 / 网络或结果格式故障 | `3` **不是**"没找到相似序列" |
 | `blast_genes.py` | `0` / `1` | 全部基因唯一命中 / 任一基因无唯一命中或命中歧义（**不写部分结果**） | `1` 不是"基因真的缺失" |
 | `mitos2_to_genbank.py` | `0` / 非 0 | 写出 `<out.gb>` / 缺文件、坐标越界、`result.fas` 与坐标不一致、未知 feature 类型 | 非 0 时**不得**留下半成品 |
-| `depth_analysis.py` | `0` / `1` / `2` | 正常 / 输入或 BAM 错误 / 存在低覆盖区 | `2` 不是"组装错误" |
+| `depth_analysis.py` | `0` / `1` / `2` | 无覆盖预警 / 输入或 BAM 错误 / 低覆盖或零覆盖位点 | `2` 不是"组装错误" |
 | `experience.py case-validate/case-anomaly/case-reference` | `0` / `1` / `3` | 通过 / 记录非法或参数错误 / **缺必需依赖 `jsonschema`**（打印 `pip install jsonschema`，不降级） | `3` 不是“案例有问题”，而是校验器不可用 |
 | `circularize.py` | `0` / `2` / `1` | 接受候选 / REVIEW（含待回贴）/ 失败或接缝证据不足 | 任何一个码都不能独自证明物理闭环 |
 
@@ -168,38 +174,46 @@ python3 experimental/experience/experience.py sync-public --manifest <manifest-u
 essential 缺失；`env_check.py --stage` 与**工作脚本**用 `3` 表示"本次所需依赖缺失、该步骤未执行"
 （与 `cox1_id.py` 的 3、以及 `case-validate` 缺 `jsonschema` 的 3 同义）。
 
-**脚本门禁**：每个脚本干活前调用 `scripts/_deps.py` 的 `require_stage('<stage>')`，缺依赖即退出 3
+**脚本门禁**：分析执行前调用 `scripts/_deps.py` 的 `require_stage('<stage>')`，缺依赖即退出 3
 （与 `--stage` 同义），**不允许**任何 `except ImportError` 式的降级路径；探测逻辑与 stage→requires
-只有一份（`tools/env_check.py` + 清单）。`tests/test_dependency_gates.py` 用"缺 Biopython / 缺 samtools"
+只有一份（`tools/env_check.py` + 清单）。历史 `tests/test_dependency_gates.py`（当前未分发）用"缺 Biopython / 缺 samtools"
 两种合成环境钉住它，并断言脚本里不再出现 `except ImportError`。
 
 **不变式**：lock 是缓存，不是信任凭证。日常模式仍真实探测所需工具；只信 lock 就会退化成
-"第一次通过、以后永远相信"，即本 skill 反复清除的静默降级。`tests/test_env_check.py` 用
+"第一次通过、以后永远相信"，即本 skill 反复清除的静默降级。历史 `tests/test_env_check.py`（当前未分发）用
 "写 lock 后删掉一个工具，日常模式必须报错"钉住这条。
 
-## 5. 测试与规则的对应关系
+## 5. 当前测试与验收
 
-失败复现测试**永久保留**；每条硬规则都要有对应的锁：
+在含 Biopython 的 Python 环境运行：
 
-| 规则 | 锁定测试 |
+```bash
+python -m unittest discover -s tests -v
+```
+
+| 文件 | 实际覆盖 |
 |---|---|
-| GenBank 语义（链、跨原点、`transl_except`、partial） | `tests/test_annot_semantics.py`、`tests/test_annot_check_fixes.py` |
-| COX1 结构化 BLAST（XML2/旧 XML/半可读 HSP=格式故障） | `tests/test_annot_cox1_edges.py`、`tests/test_pr1_review_regressions.py` |
-| 两条校验路径等价 | `tests/test_evidence_contracts.py`、`tests/test_pr1_review_regressions.py` |
-| 工具链桥（MITOS2→GenBank、`run_mitos2` outdir、`check_env` 提示） | `tests/test_toolchain_fixes.py` |
-| 案例 CLI（`case-anomaly`、假设编号） | `tests/test_case_anomaly_cli.py` |
-| 公共参考登记（accession.version、等级→用途、漂移、截断） | `tests/test_reference_registry.py` |
-| 案例类型与 lesson 范围/领域（复审核 R-1…R-8） | `tests/test_case_type_and_lesson_scope.py`、`tests/test_review_round_lesson_domain_and_report.py` |
-| 注释策略与类群例外 | `tests/test_annotation_policy.py` |
-| 数据与路径保护（未发表数据不进公共库） | `.gitignore` 规则 + `git check-ignore`/`git add -n` 人工核验（见 `REAL-DATA` 审计记录） |
+| `tests/test_evidence_regressions.py` | SAM 负链、CIGAR、缺失质量、模板/mate、接缝缺口/锚点、BLAST 多定位及加权 identity |
+| `tests/test_mitos_bridge.py` | 显式密码表、可靠读框、phase 冲突、反密码子来源、单记录与输入保护 |
+| `tests/test_tool_integration.py` | 真实 samtools 的零覆盖/质量缺失/MAPQ255/参考不匹配/末窗口；真实 BLAST 正负链及双拷贝 |
+| `tests/test_cli_contracts.py` | 缺依赖时帮助可用、显式密码表、非法阈值与退出码 |
 
-新增/修改行为时的顺序：**先写失败复现 → 最小修复 → 补反例 → 跑完整测试与 CI**，CI 绿灯是必要条件。
+集成测试只使用临时生成的样例。samtools / BLAST+ 缺失时明确 skip；只有确认未 skip
+才可声称真实工具路径已验证。MITOS2 注释本体和真实样本总体准确率不在本批验收范围。
+历史提及的其他测试当前未随项目提供，不宣称其通过。修改解析器时先保存失败反例，
+再修复并保留正常对照；语法检查不能替代行为测试。
 
-### 5.1 代码 ↔ 文档一致性
+### 5.1 本批接口变更
 
-**已取消自动化护栏。** 曾经的 `tools/audit_code_docs.py` + 基线 + 契约测试（约 460 行）被删除：
-它把"文档检查"升格成一等公民，导致改两行代码要同步改文档 + 更新基线，成本高于它防止的问题。
-现在不做自动化校验：接口与退出码见 §3 / §3.1，由代码评审和 CI 里的测试兜底。判断标准很简单：**测试和真实数据能发现的漂移，才值得自动化。**
+- `annot_check.py`、`mitos2_to_genbank.py` 都必须显式 `--table`，没有表 5 默认值。
+- `depth_analysis.py` 接受 `--output-json` 与可配置质量/覆盖阈值；额外 FASTA 为第三位置参数。
+- `blast_genes.py` TSV 第 8 列记录目标 contig。不同定位分开，重叠/分支 HSP 不强制汇总。
+  共线连接的 gap 上限 `max(20, query_len*0.2)` 是保守工程筛查，可能漏掉复杂真实结构，
+  无命中不能直接写为基因缺失。不同目标或链也不能合并。
+- SAM SEQ/QUAL 不二次反向；模板单位为 RG+QNAME，不证明已排除 PCR 重复。
+- 接缝区间包括整个 overlap 和两侧 flank；仅连续 M/=/X 支持该区间。
+  不检测所有尾首连接，不自动判别唯一锚定或竞争参考；这仍是候选支持。
+- 新维护 CLI 在解析参数后做依赖门禁，`--help` 不依赖外部工具；参数错误为 1。
 
 ## 6. 文档分层约定（避免把实现约束写成领域规则）
 
@@ -236,10 +250,10 @@ essential 缺失；`env_check.py --stage` 与**工作脚本**用 `3` 表示"本�
    结论类型与复核信息。`--event-action` 是可选的，只验证被传入的 action 存在；
    action 同名时无法唯一定位某次执行。需由事件与报告补足，不能称“格式通过即完整可追溯”。
    `case-anomaly --update` 会替换该条记录；手工附加字段不能依赖它保留。
-8. **类群配置与经验独立性**：`--taxon` 不自动切换昆虫阈值；lesson 的“不同 case_id
+8. **类群配置与经验独立性**：`config/taxon_profiles.json` 是带来源的只读档案，`scripts/taxon_profiles.py list|show` 仅显示分类和密码表建议；不自动选 `--table`，不切换昆虫阈值，也不声明物种特异密码表已验证。`--taxon` 不自动切换昆虫阈值；lesson 的“不同 case_id
    且不同类群”是当前推广门槛的工程计数，不等于科学独立性。文档解释层不得冒称代码已修复。
-9. **覆盖提示过强**：`depth_analysis.py` 会将高 soft-clip 比例按区域标签提示为“正常长度异质性”
-   或“缺失序列”。这些是未验证的解释，不能作为诊断事实；当前按证据标准重新判读。
+9. **已修正覆盖措辞**：soft-clip 只报告观测，候选碱基不再称为已证实伪影。
+   覆盖报告仍不是完整的任务记录；竞争比对、PCR 独立性和最终采纳需另行核验。
 
 ## 8. 注释解析细节（仅调试或维护时读取）
 

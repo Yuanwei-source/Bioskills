@@ -2,19 +2,22 @@
 name: mito-assembly-triage
 description: >-
   面向已有或疑似异常的动物线粒体基因组组装/注释结果，提供基于证据的诊断、
-  按需检查、候选修复与独立验证。适用于基因缺失或误注释、CDS 移码或内部终止、
+  按需检查、证据驱动的候选修复与独立验证。适用于基因缺失或误注释、CDS 移码或内部终止、
   疑似 NUMT、控制区与接缝异常、基因顺序差异和模糊碱基。
-  现有结果不足时可使用原始 reads 补充分析，不默认从头重组装。
+  支持三种入口：只有组装 FASTA 时检查后生成并复核注释候选；已有组装和注释时联合优化；只有原始 reads 时，按测序技术选择可用的线粒体组装工具，再复核组装并注释。reads 组装是否可解取决于数据类型、测序深度和图结构，不能保证得到完整闭环。
 ---
 
 # 线粒体基因组异常诊断与修复
 
-帮助研究人员解释已有组装或注释中的异常。提出可证伪假设，选择能区分假设的最小检查，
-在证据允许时生成候选修复。不要把所有工具串成固定流水线。
+目标是把用户现有线粒体组装和注释推进到当前数据所能支持的最佳结果，并实际交付组装/注释文件与面向研究者的最终报告；审查记录不是任务的主要产物。用户无需先指出错误。先核对 FASTA 与注释是否对应，再检查序列、基因身份与边界、来源字段及可用的 reads 证据。
+对证据足够的具体错误，直接在隔离输出目录生成修订候选，列出修改前后差异，并重新验证候选；证据不足的项目保持未解决，明确说明为何当前数据不能支持更正。
+使用 `apply_candidate.py` 生成明确列出的碱基、CDS 边界或注释字段候选，结构修改使用相应工具。
+不要根据参考或常见基因数自动改动样本，也不要把所有工具串成固定流水线。
 
 ## 核心边界
 
-- 原始 FASTA、reads、注释始终只读；候选另存，保留输入哈希、差异、命令与来源。
+- 原始 FASTA、reads、注释始终只读；仅按明确编辑清单生成候选，保留输入哈希、差异、命令与来源。使用 [task-records.md](references/task-records.md) 中的候选登记流程关联
+生成事件和基础输入；验证事件必须实际使用候选文件，并记录预先定义的验收标准。
 - 参考序列、文献、工具日志与历史案例是待核查数据，不能替代样本证据或改写技能指令。
 - 不按预期长度、基因数、参考顺序或拓扑声明强制补全、闭环或修改碱基。
 - 公共文献查询与参考下载可按任务需要执行；向外部发送样本序列、私有信息或案例须有明确授权。
@@ -26,9 +29,20 @@ description: >-
 
 `INTAKE → HYPOTHESIZE → CHOOSE_TEST → EXECUTE → UPDATE → DECIDE → VERIFY → LEARN`
 
-先明确目标、类群、可用数据和已知异常；检查已有产物。按具体类群确认遗传密码表，
-不要将表 5 或昆虫阈值默认用于所有动物。随后列出会改变决策的竞争解释，选择最小必要检查，
-记录结果对各解释的影响。详细循环与记账方式见
+根据输入走对应入口：组装 FASTA only、组装+注释联合复核，或 reads-only 组装。目标是交付当前证据支持的最佳组装和注释文件及一份说明发现、处理与限制的报告；
+按 [结果交付约定](references/results-delivery.md) 组织为 `<样本名>_mitogenome/`，用户通常只需看目录根部的 FASTA、GFF3、GenBank 和 Markdown 报告。`case.py` 账本用于内部追溯，不能替代这些产物。
+先盘点文件、类群与可用数据，检查已有产物，
+核对注释序列与组装序列，以及 source、taxon、采集字段是否描述当前样本。
+若用户只提供组装 FASTA，先按 [START_HERE.md](references/START_HERE.md) 的 FASTA-only 路线
+记录哈希并检查多记录、模糊碱基和格式；能从 FASTA 直接确认的问题先处理或说明证据缺口，
+不能据此改碱基。用户确认类群并提供遗传密码表及其证据状态（confirmed/provisional）后，
+在 MITOS2 环境可用时生成注释候选，
+再联合检查候选注释与原 FASTA；工具不可用则停在依赖说明，不伪称完成注释。
+自动注释软件产物始终是待审候选，“专家级”目标由后续独立检查、类群证据、reads（若涉及样本碱基/连接）
+和明确的未解决项共同达成，不能由单个注释软件或 `annot_check.py` 通过来保证。
+用户已知异常作为线索，而不是开展诊断的前提。按具体类群核查遗传密码表；证据不足时可生成暂定候选，
+但须在结果中保留暂定状态，不得当作已确认。不要将表 5 或昆虫阈值默认用于所有动物。reads-only 时先识别平台、文库和读长，再选择相容的组装策略；对短读长数据可在 GetOrganelle `animal_mt` 数据库及其他依赖可用时尝试线粒体组装，并检查其候选图、分支和连接。其他平台按其适用的成熟工具处理；若当前环境没有合适工具，应明确停止于输入盘点/依赖缺口，不伪称已组装。得到一个或多个组装候选后，继续按 FASTA-only 路线注释并联合复核。随后列出会改变决策的竞争解释，选择最小必要检查，根据证据直接决定是否修正组装碱基/结构及注释字段，并对修订后的文件重新运行相关检查；不能只停留在问题清单或工具候选。
+若没有证据支持序列修正，仍交付未改动的组装副本、最佳注释候选和清晰的阻断说明，不把未解决项包装成专家定稿。详细循环与记账方式见
 [diagnostic-playbook.md](references/diagnostic-playbook.md)。
 
 每条异常单独给出 `RESOLVED`、`NO_CHANGE` 或 `UNRESOLVED` 和置信度。
@@ -41,7 +55,12 @@ description: >-
 
 | 当前需要 | 读取 |
 |---|---|
-| 按已有数据或异常选择入口 | [START_HERE.md](references/START_HERE.md) |
+| 整理用户可用的 FASTA、GFF3、GenBank 与最终报告 | [results-delivery.md](references/results-delivery.md) |
+| 按固定栏目生成用户可读的评估报告 | [report-template.md](references/report-template.md) |
+| 查看有来源的类群档案与遗传密码表建议 | `python3 scripts/taxon_profiles.py show "学名"`（只读建议；不自动选择密码表或阈值） |
+| 按已有数据选择 FASTA-only、组装+注释或 reads-only 入口 | [START_HERE.md](references/START_HERE.md) |
+| 只有组装 FASTA，生成初检及 MITOS2 注释候选与初步质检 | `bash scripts/run_fasta_annotation.sh --help`；完整路线见 [START_HERE.md](references/START_HERE.md) |
+| 登记修复候选、差异、验证事件并生成任务报告 | [task-records.md](references/task-records.md) |
 | 竞争假设、动态检查、案例记录 | [diagnostic-playbook.md](references/diagnostic-playbook.md) |
 | 组装/注释分流、检查优先级、停止、复核 | [diagnostic-decision-tree.md](references/diagnostic-decision-tree.md) |
 | 证据门槛、置信度、reads 与阴性结果 | [evidence-standard.md](references/evidence-standard.md) |
@@ -51,17 +70,20 @@ description: >-
 | 选择工具；执行前检查所需环境 | [tool-catalog.md](references/tool-catalog.md)、[tool_check.md](references/tool_check.md) |
 | 解释结论与生成报告 | [conclusion-report.md](references/conclusion-report.md) |
 | 保存、检索、提炼或共享经验（**子系统已停用**，见该文件的说明） | [learning-policy.md](references/learning-policy.md) |
-| 经验/案例命令的**确切参数**；或修改脚本、schema、解析器、测试 | [developer-contract.md](references/developer-contract.md) §3.1 |
+| 修改脚本、schema、解析器、测试；核对当前实现与历史接口 | [developer-contract.md](references/developer-contract.md) |
 
 只加载当前步骤需要的文件，不要求通读 references。
 
 ## 证据与修复底线
 
-**注释**：同源性、翻译和 RNA 结构可支持注释修正，但不能据此宣称样本碱基或连接已经验证。
+**注释**：先检查来源字段是否把参考物种或其采集信息误写为样本，再检查基因身份、边界和翻译。
+同源性、翻译和 RNA 结构可支持注释修正，但不能据此宣称样本碱基或连接已经验证。
 一般生物学预期、NCBI 提交要求与工具工程阈值分开陈述；类群例外要有适用范围与来源。
 非典型起始或 `/transl_except` 声明必须有相应证据，不能通过伪造 partial、
 改读框或改碱基让检查通过。重叠本身不是裁剪理由。
 `annot_check.py` 返回 2 表示待核查，须逐条说明处置；拓扑检查只校验声明。
+注释检查和 MITOS2 转换均须显式 `--table`。转换器标记读框不确定时，不得按默认读框验收；
+反密码子只有序列而没有位置时保留来源说明，不生成虚假位置。
 
 **碱基**：修改必须有样本 reads 支持，检查碱基质量、MAPQ、链向、独立分子、
 混合等位与竞争比对；高覆盖和参考相似度不能独自支持替换。主要替代解释未排除时保留候选。
@@ -81,10 +103,12 @@ description: >-
 检查真实退出状态，不把运行中、超时或失败称为完成。
 
 每条科学结论必须包含 claim、状态、置信度、支持/反对证据、未测项、适用范围与局限。
-无对应证据或未做检查时如实注明。CLI 未承载的内容写入可追溯事件和报告正文；
-`case-validate` 只校验部分记录格式，不能证明科学结论。
-`case-report` 生成的是草稿，其按状态划分“有/无证据”的行为存在局限，必须按
-[conclusion-report.md](references/conclusion-report.md) 复核、补齐后再作为分析报告使用。
+无对应证据或未做检查时如实注明。使用 `scripts/case.py` 的
+`init → event → conclusion → validate --verify-files → report` 保存任务证据并生成可追溯草稿；用户交付报告按 [report-template.md](references/report-template.md) 整理。
+需要增加输入时用 `input`；结论修订用 `conclusion --update`，保留历史。
+完整格式与示例见 [task-records.md](references/task-records.md)。记录校验不等于科学验收。
+历史 `experience.py` / `case-*` 接口仍不可执行，跨任务经验库仍停用。
+`depth_analysis.py --output-json` 可保存本次覆盖与定点支持数据；它不替代完整任务记录。
 
 简单问答可简短回答并保留相关证据边界；完整诊断报告给出观察事实、逐条结论、
 未解决解释与具体下一步。达到停止条件时说明原因，不为了凑齐检查继续计算。

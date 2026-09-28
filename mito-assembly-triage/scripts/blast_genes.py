@@ -5,6 +5,10 @@
 依赖: BioPython, blastn
 """
 import sys, os, subprocess, tempfile
+import argparse
+import math
+import shutil
+from collections import Counter
 
 
 
@@ -12,31 +16,62 @@ import sys, os, subprocess, tempfile
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _deps import require_stage  # noqa: E402
-require_stage('gene_locating', __file__)
+from _evidence_io import protect_output, atomic_write_text, InputArgumentParser
+
+def hsps_follow(previous, current):
+    """Conservative local chain; gap limits are engineering screens, not gene laws."""
+    if previous['strand'] != current['strand'] or previous.get('target') != current.get('target'):
+        return False
+    qgap = current['qstart'] - previous['qend'] - 1
+    sgap = (current['start'] - previous['end'] - 1 if current['strand'] == '+'
+            else previous['start'] - current['end'] - 1)
+    max_gap = max(20, int(previous['query_len'] * 0.2))
+    return 0 <= qgap <= max_gap and 0 <= sgap <= max_gap and abs(qgap-sgap) <= max_gap
+
 
 def merge_hsps(hsps):
-    """Merge query intervals for one target/strand; overlapping HSPs count once."""
+    """Merge one unambiguous chain; never reuse query or target bases."""
     if not hsps:
         return None
     ordered = sorted(hsps, key=lambda h: (h['qstart'], h['qend']))
-    strand = ordered[0]['strand']
-    for previous, current in zip(ordered, ordered[1:]):
-        if strand == '+' and current['start'] < previous['start']:
-            return None
-        if strand == '-' and current['start'] > previous['start']:
-            return None
-    q_union = 0
-    qlo, qhi = ordered[0]['qstart'], ordered[0]['qend']
-    for hit in ordered[1:]:
-        if hit['qstart'] <= qhi:
-            qhi = max(qhi, hit['qend'])
-        else:
-            q_union += qhi - qlo + 1
-            qlo, qhi = hit['qstart'], hit['qend']
-    q_union += qhi - qlo + 1
-    best = max(ordered, key=lambda h: (h['identity'], -h['evalue']))
-    return dict(best, aln_len=q_union, start=min(h['start'] for h in ordered),
-                end=max(h['end'] for h in ordered))
+    if any(not hsps_follow(a, b) for a, b in zip(ordered, ordered[1:])):
+        return None
+    covered = sum(h['qend'] - h['qstart'] + 1 for h in ordered)
+    aligned = sum(h['aln_len'] for h in ordered)
+    identity = sum(h['identity'] * h['aln_len'] for h in ordered) / aligned
+    return dict(ordered[0], identity=identity, aln_len=covered, alignment_columns=aligned,
+                evalue=max(h['evalue'] for h in ordered),
+                qstart=ordered[0]['qstart'], qend=ordered[-1]['qend'],
+                start=min(h['start'] for h in ordered), end=max(h['end'] for h in ordered),
+                hsps=ordered)
+
+
+def locus_candidates(hsps):
+    """Chain only mutually unique neighbours; retain alternative loci/branches."""
+    unique = {}
+    for hit in hsps:
+        key = (hit['qstart'], hit['qend'], hit['start'], hit['end'], hit['strand'], hit.get('target'))
+        old = unique.get(key)
+        if old is None or hit['evalue'] < old['evalue']:
+            unique[key] = hit
+    ordered = sorted(unique.values(), key=lambda h: (h['qstart'], h['start']))
+    successors = {i: [j for j in range(len(ordered)) if hsps_follow(hit, ordered[j])]
+                  for i, hit in enumerate(ordered)}
+    predecessors = {j: [i for i in successors if j in successors[i]] for j in successors}
+    if any(len(v) > 1 for v in list(successors.values()) + list(predecessors.values())):
+        return [dict(hit, ambiguous_chain=True) for hit in ordered]
+    result = []
+    for start in predecessors:
+        if predecessors[start]:
+            continue
+        chain, index = [], start
+        while True:
+            chain.append(ordered[index])
+            if not successors[index]:
+                break
+            index = successors[index][0]
+        result.append(merge_hsps(chain))
+    return result
 
 
 def select_gene_hits(hits, min_identity=80.0, min_coverage=0.8, expected_names=None):
@@ -44,6 +79,9 @@ def select_gene_hits(hits, min_identity=80.0, min_coverage=0.8, expected_names=N
     errors = []
     names = set(expected_names or hits)
     for name in sorted(names):
+        if any(hit.get('ambiguous_chain') for hit in hits.get(name, [])):
+            errors.append('%s HSP 链存在分支，无法唯一汇总' % name)
+            continue
         candidates = [candidate for candidate in hits.get(name, [])
                       if candidate['identity'] >= min_identity and candidate['aln_len'] / candidate['query_len'] >= min_coverage]
         if len(candidates) == 1:
@@ -54,33 +92,53 @@ def select_gene_hits(hits, min_identity=80.0, min_coverage=0.8, expected_names=N
             errors.append('%s 存在多个满足阈值的命中，不能判定唯一定位' % name)
     return selected, errors
 
-def main():
-    # Biopython 由前置门禁保证（require_stage('gene_locating')），不再有 try/except 降级
-    from Bio import SeqIO
-    if len(sys.argv) < 3:
-        print(__doc__); sys.exit(1)
-    ref_gb, target = sys.argv[1], sys.argv[2]
-    out = 'gene_order.txt'
-    evalue = '1e-5'
-    min_identity = 80.0
-    min_coverage = 0.8
-    if '--out' in sys.argv:
-        out = sys.argv[sys.argv.index('--out')+1]
-    if '--evalue' in sys.argv:
-        evalue = sys.argv[sys.argv.index('--evalue')+1]
-    if '--min-identity' in sys.argv:
-        min_identity = float(sys.argv[sys.argv.index('--min-identity')+1])
-    if '--min-coverage' in sys.argv:
-        min_coverage = float(sys.argv[sys.argv.index('--min-coverage')+1])
 
+def reference_gene_labels(features):
+    """Keep repeated feature names distinct without assigning biological copy IDs."""
+    names = [feature.qualifiers.get('gene', feature.qualifiers.get('product', ['?']))[0]
+             for feature in features]
+    counts = Counter(names)
+    labels = []
+    for name, feature in zip(names, features):
+        if counts[name] == 1:
+            labels.append(name)
+            continue
+        start = int(feature.location.start) + 1
+        end = int(feature.location.end)
+        strand = '+' if feature.location.strand == 1 else '-'
+        labels.append('%s@%d..%d:%s' % (name, start, end, strand))
+    if len(labels) != len(set(labels)):
+        raise ValueError('参考中重复 feature 的名称与坐标均相同，无法生成唯一追踪标签')
+    return labels
+
+def main():
+    parser = InputArgumentParser(description=__doc__)
+    parser.add_argument('reference')
+    parser.add_argument('target')
+    parser.add_argument('--out', default='gene_order.txt')
+    parser.add_argument('--evalue', type=float, default=1e-5)
+    parser.add_argument('--min-identity', type=float, default=80)
+    parser.add_argument('--min-coverage', type=float, default=0.8)
+    args = parser.parse_args()
+    if not 0 <= args.min_identity <= 100 or not 0 < args.min_coverage <= 1 or not math.isfinite(args.evalue) or args.evalue <= 0:
+        parser.error('identity 必须为 0–100，coverage 为 (0,1]，evalue 为有限正数')
+    require_stage('gene_locating', __file__)
+    from Bio import SeqIO
+    ref_gb, target, out = args.reference, args.target, args.out
+    evalue, min_identity, min_coverage = str(args.evalue), args.min_identity, args.min_coverage
+    protect_output(out, [ref_gb, target])
 
     # 1. 提取参考基因
     gb = SeqIO.read(ref_gb, 'genbank')
-    genes = []
+    features = []
     for f in gb.features:
         if f.type in ('CDS', 'tRNA', 'rRNA') and f.location.strand is not None:
-            name = f.qualifiers.get('gene', f.qualifiers.get('product', ['?']))[0]
-            genes.append((name, f.type, f.extract(gb.seq)))
+            features.append(f)
+    names = reference_gene_labels(features)
+    genes = [(name, feature.type, feature.extract(gb.seq))
+             for name, feature in zip(names, features)]
+    if not genes:
+        raise ValueError('参考中没有可定位的 CDS/tRNA/rRNA')
 
     # 2. 建目标库
     tmpdir = tempfile.mkdtemp(prefix='blastgenes_')
@@ -112,9 +170,10 @@ def main():
                     'start': min(ss, se), 'end': max(ss, se),
                     'strand': '+' if ss < se else '-', 'type': ftype, 'target': p[1],
                 })
-            candidates.extend(filter(None, (merge_hsps(group) for group in raw.values())))
+            for group in raw.values():
+                candidates.extend(locus_candidates(group))
     finally:
-        subprocess.run(['rm', '-rf', tmpdir])
+        shutil.rmtree(tmpdir)
 
     selected, errors = select_gene_hits(hits, min_identity, min_coverage, [gene[0] for gene in genes])
     if errors:
@@ -122,21 +181,27 @@ def main():
             print('ERROR: %s' % error)
         sys.exit(1)
 
-    print('%-14s %-12s %8s %6s %6s %s' % ('基因', '类型', '位置', 'strand', 'pid%', 'cov%'))
-    print('-' * 60)
+    print('%-30s %-12s %8s %6s %6s %s' % ('参考特征', '类型', '位置', 'strand', 'pid%', 'cov%'))
+    print('-' * 78)
     ordered = sorted(selected.items(), key=lambda item: item[1]['start'])
     for name, hit in ordered:
         coverage = hit['aln_len'] / hit['query_len'] * 100
-        print('%-14s %-12s %6d-%6d  %s   %5.1f  %5.1f%%' % (name[:14], hit['type'], hit['start'], hit['end'], hit['strand'], hit['identity'], coverage))
+        print('%-30s %-12s %6d-%6d  %s   %5.1f  %5.1f%%' % (name[:30], hit['type'], hit['start'], hit['end'], hit['strand'], hit['identity'], coverage))
 
-    with open(out, 'w') as fh:
-        for name, hit in ordered:
-            coverage = hit['aln_len'] / hit['query_len'] * 100
-            fh.write('%s\t%s\t%d\t%d\t%s\t%.1f\t%.1f\n' % (name, hit['type'], hit['start'], hit['end'], hit['strand'], hit['identity'], coverage))
+    lines = []
+    for name, hit in ordered:
+        coverage = hit['aln_len'] / hit['query_len'] * 100
+        lines.append('%s\t%s\t%d\t%d\t%s\t%.1f\t%.1f\t%s\n' %
+                     (name, hit['type'], hit['start'], hit['end'], hit['strand'], hit['identity'], coverage, hit['target']))
+    atomic_write_text(out, ''.join(lines))
     print('\n结果写入: %s (%d/%d 基因命中)' % (out, len(selected), len(genes)))
 
     # 提示: 与标准顺序对照
     print('\n→ 对照 references/standard_gene_order.md 检查基因顺序与方向')
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print('ERROR: 基因定位未完成: %s' % (getattr(exc, 'stderr', None) or str(exc)), file=sys.stderr)
+        sys.exit(1)

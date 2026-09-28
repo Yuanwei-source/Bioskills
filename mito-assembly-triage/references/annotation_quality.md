@@ -30,7 +30,9 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 并要求逐项确认。它不放松起始密码子、重叠、tRNA/rRNA 长度与链分布检查。
 
 **昆虫背景预警**：`9+/4−` 链分布和本文长度区间不是全动物标准。当前
-`--taxon` 不会自动切换这些阈值，也没有完整的按类群配置接口。
+`--taxon` 不会自动切换这些阈值。`config/taxon_profiles.json` 只保存带来源的分类与遗传密码表档案；
+用 `python3 scripts/taxon_profiles.py show "学名"` 查看时，临时或近缘类群建议明确标记为 provisional，
+且不会自动传给分析命令。当前没有按类群切换工程阈值的接口。
 对非昆虫或已知例外，保留原始警告，并在解释层记录不适用的理由与来源；不能改输入迎合阈值。
 遗传密码表按 [NCBI Genetic Codes](https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi)
 核对类群（例如脊椎动物表 2、许多无脊椎动物表 5，另有其他类群用表）。
@@ -185,11 +187,15 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 | 鳞翅目（多个物种） | `cox1` 常见非典型起始密码子 `CGA`（*Hyphantria cunea*、*Cnaphalocrocis medinalis*、*Maruca vitrata*、*Leucoptera malifoliella*） | 起始密码子检查必须有类群+基因背景；用 `--tolerate-start cox1:CGA` |
 | 鳞翅目 | `trnS1(AGN)` DHU 臂不能形成稳定茎环 | 不得据此判假基因 |
 | 蜘蛛（*Tetragnatha*） | `trnS1`/`trnS2` 缺 DHU 臂，多数 tRNA 缺 TΨC 臂 | 结构不完整是常见真实现象 |
-| 绦虫（*Hymenolepis diminuta*）、软体动物（*Mytilus edulis*） | 缺失 `atp8`（12 CDS） | 13 CDS 不是所有动物的硬要求 |
+| 绦虫（*Hymenolepis diminuta*） | 已报告缺失 `atp8`（12 CDS），使用前核对当前类群证据 | 13 CDS 不是所有动物的硬要求 |
+| 贻贝（*Mytilus edulis*） | 历史上被认为缺少 `atp8`，后有蛋白表达及 ATP synthase 复合体实验证据 | 应作为高度分化/漏注释反例，不能据旧注释豁免基因检索 |
 | 海绵（*Aphrocallistes vastus*）等 | 线粒体 tRNA 数量减少 | 22 tRNA 不是所有动物的硬要求 |
 | 六足总纲之外 | 链分布、长度区间、排列均可能不同 | (c) 层阈值不得跨类群外推 |
 
 ## 10. 交叉引用与来源
+
+- *M. edulis* ATP8 实验：[Lubosny et al. 2018](https://pmc.ncbi.nlm.nih.gov/articles/PMC5995098/)。
+  该证据针对研究中的 F/M 型线粒体，不自动证明其他物种的候选 ORF。
 
 - 密码表：[NCBI Genetic Codes](https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi)，
   按具体类群选择，核对日期 2026-09-26。

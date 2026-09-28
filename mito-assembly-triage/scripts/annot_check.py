@@ -87,7 +87,6 @@ LOCATION_PART_RE = re.compile(r'([<>]?)(\d+)\s*(?:\.\.|:)\s*([<>]?)(\d+)')
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _deps import require_stage  # noqa: E402
-require_stage('annot_check', __file__)
 
 def feature_gene(feature):
     values = feature.qualifiers.get('gene') or feature.qualifiers.get('product') or ['?']
@@ -155,6 +154,10 @@ def normalise_codon(value):
 def parse_anticodon(feature):
     raw = feature.qualifiers.get('anticodon')
     if not raw:
+        for note in feature.qualifiers.get('note', []):
+            match = re.fullmatch(r'MITOS2 anticodon sequence: ([ACGT]{3}); position not exported', note)
+            if match:
+                return match.group(1).lower()
         return None
     match = re.search(r'seq\s*:\s*([acgtu]+)', str(raw[0]), re.I)
     if not match:
@@ -701,6 +704,10 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         length = feature_length(feature)
         sequence = feature.extract(gb.seq)
 
+        if any(note.startswith('codon_start uncertain:') for note in feature.qualifiers.get('note', [])):
+            findings.review('CODON_START_UNCERTAIN: %s 缺少可靠读框来源，未执行翻译验收' % display)
+            continue
+
         partial_detail = feature_partial_detail(feature)
         five_p, three_p = partial_detail['five'], partial_detail['three']
         if partial_detail['conflict']:
@@ -738,12 +745,36 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         if terminal_is_complete(last3, remainder, valid_stops) and protein.endswith('*'):
             stop_codons = stop_codons[:-1]
         codon_positions = cds_codon_positions(feature, codon_start)
+        partial_stop_positions = []
+        partial_stop_sequence = ''
+        partial_stop_completions = 0
+        if remainder in (1, 2):
+            coding_positions = coding_position_list(feature)[codon_start - 1:]
+            partial_stop_positions = coding_positions[-remainder:]
+            partial_stop_sequence = str(coding[-remainder:]).upper()
+        partial_stop_note = any(
+            re.search(r"stop codon.*completed.*addition.*3['’]?\s*A.*mRNA", note, re.I)
+            for note in feature.qualifiers.get('note', [])
+        )
         minus_strand = (feature.location.strand or 0) < 0
         transl_registry = (registry or {}).get('transl_except') or {}
         explained = set()
         for entry in exceptions:
             amino_acid = entry['amino_acid']
             position_text = entry['text']
+            if (entry['valid_token'] and amino_acid.strip().lower() == 'term'
+                    and not entry['mixed']
+                    and entry['complemented'] == minus_strand
+                    and remainder in (1, 2)
+                    and partial_stop_sequence in ('T', 'TA')
+                    and sorted(entry['positions']) == sorted(partial_stop_positions)
+                    and partial_stop_note):
+                partial_stop_completions += 1
+                findings.info(
+                    'PARTIAL_STOP_COMPLETION_VALIDATED: %s 的 /transl_except %s 精确标记 CDS 末端 %s；'
+                    '记录声明由转录后加尾补全 TAA (未独立验证 RNA 加尾)' %
+                    (display, position_text, partial_stop_sequence))
+                continue
             if not entry['valid_token']:
                 index, reason = None, ' (aa:%s 不是合法的例外氨基酸)' % amino_acid
             elif not entry['explains_stop']:
@@ -804,7 +835,7 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
             findings.review('TRANSL_EXCEPT_UNPARSED: %s 的 /transl_except 有 %d 条无法完整解析 '
                             '(要求 (pos:a..b|pos:complement(a..b)|pos:join(...), aa:三字母代码)); '
                             '未能采纳的例外不构成豁免' % (display, unparsed))
-        if exceptions and not stop_codons:
+        if exceptions and not stop_codons and not partial_stop_completions:
             findings.review('TRANSL_EXCEPT_UNEXPLAINED: %s 声明了 /transl_except, '
                             '但该 CDS 没有内部终止密码子, 声明无对应异常' % display)
         unexplained_stops = [index for index in stop_codons if index not in explained]
@@ -1194,7 +1225,7 @@ def parse_arguments(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(__doc__)
         sys.exit(0)
-    options = {'fn': argv[0], 'table': 5, 'ref': None, 'require_circular': False,
+    options = {'fn': argv[0], 'table': None, 'ref': None, 'require_circular': False,
                'tolerate_overlap': [], 'tolerate_start': [], 'overlap_severity': 'warn',
                'allow_atypical': None, 'exception_registry': None, 'taxon': None}
     index = 1
@@ -1254,6 +1285,10 @@ def load_gb(fn):
 
 def main():
     options = parse_arguments(sys.argv[1:])
+    if options['table'] is None:
+        print('ERROR: 必须显式 --table 指定已按类群确认的遗传密码表；不默认使用表 5')
+        sys.exit(1)
+    require_stage('annot_check', __file__)
     from Bio.Data import CodonTable
     try:
         tbl = CodonTable.unambiguous_dna_by_id[options['table']]

@@ -25,8 +25,8 @@
         "module": "jsonschema",
         "distribution": "jsonschema"
       },
-      "purpose": "案例校验（唯一实现路径；缺失时 case-validate 等以退出码 3 失败）",
-      "install": "python3 -m pip install jsonschema"
+      "purpose": "版本3任务记录的唯一 schema 校验路径；缺失返回3，不创建案例",
+      "install": "python3 -m pip install \"jsonschema>=4.18\""
     },
     {
       "id": "biopython",
@@ -187,9 +187,27 @@
       },
       "purpose": "NCBI 提交预检（不在本 skill 自检范围内）",
       "install": "见 NCBI 官方页面（人工执行）"
+    },
+    {
+      "id": "getorganelle",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "get_organelle_from_reads.py"
+      },
+      "purpose": "Illumina paired-end/single-end reads 的线粒体候选组装（animal_mt）；具体可用性仍取决于样本、读段和组装图",
+      "install": "按上游安装说明安装 GetOrganelle，并初始化 animal_mt 数据库：https://github.com/Kinggerm/GetOrganelle"
     }
   ],
   "stages": {
+    "assembly_intake": {
+      "tier": "essential",
+      "requires": [
+        "python3"
+      ],
+      "tools": "scripts/assembly_intake.py",
+      "capability": "FASTA 只读入口盘点（记录、长度、模糊碱基、SHA-256）"
+    },
     "seq_stats": {
       "tier": "essential",
       "requires": [
@@ -291,6 +309,32 @@
       ],
       "tools": "scripts/mitos2_to_genbank.py",
       "capability": "MITOS2 输出转 GenBank（annot_check 的输入）"
+    },
+    "case_records": {
+      "tier": "essential",
+      "requires": [
+        "python3",
+        "jsonschema"
+      ],
+      "tools": "scripts/case.py",
+      "capability": "任务内输入、事件、逐条结论、校验与报告（不启用跨任务学习）"
+    },
+    "apply_candidate": {
+      "tier": "essential",
+      "requires": [
+        "python3",
+        "biopython"
+      ],
+      "tools": "scripts/apply_candidate.py",
+      "capability": "按显式 edits 清单生成碱基替换或 CDS 边界候选，并保存差异清单；不做科学验收"
+    },
+    "assembly_from_illumina_reads": {
+      "tier": "extended",
+      "requires": [
+        "getorganelle"
+      ],
+      "tools": "外部命令 get_organelle_from_reads.py -F animal_mt",
+      "capability": "Illumina animal mitochondrial assembly candidate generation; graph and junctions require independent review"
     }
   }
 }

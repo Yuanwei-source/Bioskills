@@ -4,13 +4,12 @@
 WHY THIS EXISTS
   MITOS2's ``runmitos.py`` (driven by ``scripts/run_mitos2.sh``) writes
   result.gff / result.fas / result.faa / result.mitos / result.bed but **no
-  GenBank**, while ``scripts/annot_check.py`` accepts only GenBank, and the skill
-  ships no converter.  MitoFinder can emit GenBank but requires a reference
+  GenBank**, while ``scripts/annot_check.py`` accepts only GenBank, so this converter bridges their file formats.  MitoFinder can emit GenBank but requires a reference
   GenBank as input.  Without this bridge the documented annotation -> QC loop
   cannot be closed at all (real-data validation finding F-03).
 
 WHAT IT IS, AND WHAT IT IS NOT
-  * It is a **format bridge**: every coordinate, strand, phase and gene name comes
+  * It is a **format bridge**: every coordinate, strand and gene name comes
     from MITOS2's own output files.  It adds no gene, no boundary and no base.
   * It is an **annotation-QC input**, with provenance recorded on every record.
     Its output is **not** an NCBI-submission-quality annotation, and passing
@@ -25,23 +24,25 @@ WHAT IT IS, AND WHAT IT IS NOT
     fragmentation that the QC step exists to surface.
   * ``/codon_start`` has an explicit source.  It is recovered by translating frames
     1/2/3 of MITOS2's own extracted CDS and matching MITOS2's own protein; when no
-    protein is available (or the best frame is not unique) the value is reported as
+    protein fully matches (or the full-match frame is not unique) and no CDS phase is supplied the value is reported as
     **uncertain** instead of being silently assumed to be 1.
   * Partial CDS markers are **not** invented: MITOS2 does not export ``<``/``>``
     partiality, so every location is written as a complete span and that limitation
     is stated in the output.
 
-Cross-validation performed before writing (all must agree, else fail closed):
+Cross-validation performed before writing when the feature is present in FAS (otherwise noted):
   GFF coordinates/strand  ==  result.fas header  ==  result.fas sequence
   and  result.fas sequence == the genome slice it claims to be.
 
 Usage:
   mitos2_to_genbank.py <result.gff> <result.fas> <result.faa> <out.gb>
                        [--genome <input.fasta>] [--topology linear|circular]
-                       [--locus <name>]
+                       --table <confirmed genetic code> [--locus <name>]
 """
 import re
 import sys
+import argparse
+import io
 from pathlib import Path
 
 
@@ -49,11 +50,7 @@ from pathlib import Path
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _deps import require_stage  # noqa: E402
-require_stage('mitos2_bridge', __file__)
-from Bio import SeqIO
-from Bio.Seq import Seq
-from Bio.SeqFeature import FeatureLocation, SeqFeature
-from Bio.SeqRecord import SeqRecord
+from _evidence_io import read_single_fasta, protect_output, atomic_write_text, InputArgumentParser
 
 CDS_PATTERN = re.compile(r'^(nad\d+l?|cox[123]|cob|cytb|atp[68])(_\d+)?$')
 TRNA_PATTERN = re.compile(r'^(trn[A-Za-z]\d?)\((?:anticodon:)?([acgtu]{3})\)$')
@@ -120,17 +117,19 @@ def parse_mitos_fasta(path):
     name, seq, meta = None, [], None
     def flush():
         if name is not None:
+            if name in entries:
+                fail('MITOS2 FASTA 中重复的 feature 名称: %s' % name)
             entries[name] = (meta[0], meta[1], meta[2], ''.join(seq))
     for line in lines:
         if line.startswith('>'):
             flush()
             fields = [p.strip() for p in line[1:].split(';')]
-            if len(fields) >= 4:
-                coord, strand, name = fields[1], fields[2], fields[3]
-            elif len(fields) == 3:
-                coord, strand, name = fields
-            else:
+            # MITOS2 headers may include a semicolon-delimited sequence ID
+            # (e.g. ``scaffold;len=...;topology=...;start-end;+;gene``).
+            # The coordinate/strand/name triplet is the stable suffix.
+            if len(fields) < 3:
                 fail('MITOS2 FASTA-like header 无法解析: %r' % line[:120])
+            coord, strand, name = fields[-3:]
             try:
                 start, end = (int(x) for x in coord.split('-'))
             except ValueError:
@@ -139,45 +138,64 @@ def parse_mitos_fasta(path):
                 fail('MITOS2 header 链向非法: %r' % line[:120])
             meta, seq = (start, end, strand), []
         else:
+            if line.strip() and name is None:
+                fail('MITOS2 FASTA 序列出现在 header 之前')
             seq.append(line.strip())
     flush()
     return entries
 
 
-def best_protein_frame(nt, protein):
-    """(offset, matched) best reproducing MITOS2's own protein; offset None if unsure."""
+def best_protein_frame(nt, protein, table):
+    """Only a unique full protein match establishes the frame; never a best guess.
+
+    One terminal stop may be omitted. Initiator M is permitted only for a start
+    codon in the explicit code table. Unknown residues/internal stops fail closed.
+    """
+    from Bio.Seq import Seq
+    from Bio.Data import CodonTable
     if not protein:
         return None, 0
-    scores = []
+    protein = protein.upper()
+    if protein.endswith('*'):
+        protein = protein[:-1]
+    if not protein or not re.fullmatch('[ACDEFGHIKLMNPQRSTVWY]+', protein):
+        return None, 0
+    matches = []
+    starts = CodonTable.unambiguous_dna_by_id[table].start_codons
     for offset in range(3):
         trimmed = nt[offset:len(nt) - ((len(nt) - offset) % 3)]   # avoid partial-codon warnings
-        translated = str(Seq(trimmed).translate(table=5)) if trimmed else ''
-        scores.append(sum(1 for a, b in zip(translated, protein) if a == b and a != '*'))
-    best = max(scores)
-    if best <= 0 or scores.count(best) > 1:
-        return None, best
-    return scores.index(best), best
+        translated = str(Seq(trimmed).translate(table=table)) if trimmed else ''
+        if translated.endswith('*'):
+            translated = translated[:-1]
+        initiated = 'M' + translated[1:] if translated and trimmed[:3].upper() in starts else translated
+        if protein in (translated, initiated):
+            matches.append(offset)
+    return (matches[0], len(protein)) if len(matches) == 1 else (None, 0)
 
 
 def main():
-    args = [a for a in sys.argv[1:]]
-    if len(args) < 4 or args[0] in ('-h', '--help'):
-        print(__doc__)
-        sys.exit(0)
-    gff_path, fas_path, faa_path, out_path = (Path(args[0]), Path(args[1]),
-                                              Path(args[2]), Path(args[3]))
-    genome_path, topology, locus = None, 'linear', None
-    rest = args[4:]
-    while rest:
-        flag = rest.pop(0)
-        if flag == '--genome' and rest:
-            genome_path = Path(rest.pop(0))
-        elif flag == '--topology' and rest:
-            topology = rest.pop(0).lower()
-        elif flag == '--locus' and rest:
-            locus = rest.pop(0)
-        else:
-            fail('未知或缺少取值的参数: %s' % flag)
+    parser = InputArgumentParser(description=__doc__)
+    for key in ('gff', 'fas', 'faa', 'output'):
+        parser.add_argument(key, type=Path)
+    parser.add_argument('--genome', type=Path)
+    parser.add_argument('--topology', choices=('linear', 'circular'), default='linear')
+    parser.add_argument('--locus')
+    parser.add_argument('--organism', help='调用者确认的样本学名；不提供时明确写 not determined')
+    parser.add_argument('--taxid', type=int, help='调用者确认的 NCBI TaxID；不会自动推断')
+    parser.add_argument('--table', type=int, required=True, help='与 MITOS2 注释使用的密码表一致')
+    args = parser.parse_args()
+    require_stage('mitos2_bridge', __file__)
+    from Bio import SeqIO
+    from Bio.Seq import Seq
+    from Bio.Data import CodonTable
+    from Bio.SeqFeature import FeatureLocation, SeqFeature
+    from Bio.SeqRecord import SeqRecord
+    if args.table not in CodonTable.unambiguous_dna_by_id:
+        fail('未知遗传密码表: %s' % args.table)
+    gff_path, fas_path, faa_path, out_path = args.gff, args.fas, args.faa, args.output
+    genome_path, topology, locus = args.genome, args.topology, args.locus
+    if args.taxid is not None and args.taxid <= 0:
+        fail('--taxid 必须是正整数')
 
     if topology not in ('linear', 'circular'):
         fail('--topology 只能是 linear 或 circular，收到 %r' % topology)
@@ -198,21 +216,27 @@ def main():
                 break
     if genome_path is None or not genome_path.is_file():
         fail('未找到基因组序列: 请用 --genome <input.fasta> 指定（MITOS2 会删除中间文件 sequence.fas）')
-    genome = ''.join(line.strip() for line in genome_path.read_text(encoding='utf-8').splitlines()
-                     if not line.startswith('>'))
-    genome = re.sub(r'[^A-Za-z]', '', genome).upper()
-    if not genome:
-        fail('基因组序列为空: %s' % genome_path)
+    genome_id, genome = read_single_fasta(genome_path)
+    protect_output(out_path, [genome_path, gff_path, fas_path, faa_path])
 
     rows, region = parse_gff(gff_path)
     fas = parse_mitos_fasta(fas_path)
     faa = parse_mitos_fasta(faa_path)
+    if any(row['seqid'] != genome_id for row in rows + ([region] if region else [])):
+        fail('GFF seqid 与输入 FASTA 标识不一致')
     if region is not None and region['end'] > len(genome):
         fail('GFF region 声明 %d bp，但序列只有 %d bp' % (region['end'], len(genome)))
 
     features, unknown_types, warnings, notes = [], [], [], []
+    seen = set()
+    # Some GFF writers emit a parent gene and its CDS. Preserve one CDS, giving
+    # the explicit CDS row (including phase) priority over the parent gene row.
+    cds_rows = {(r['name'], r['start'], r['end'], r['strand']) for r in rows if r['type'] == 'CDS'}
     for row in rows:
         name = row['name']
+        key = (name, row['start'], row['end'], row['strand'])
+        if row['type'] == 'gene' and key in cds_rows:
+            continue
         if row['type'] not in KNOWN_NON_GENE_TYPES:
             unknown_types.append('%s(%s)' % (row['type'], name or '?'))
             continue
@@ -231,6 +255,9 @@ def main():
             kind = 'rRNA'
         else:
             continue
+        if (kind, key) in seen:
+            fail('重复 GFF feature: %s %s' % (kind, name))
+        seen.add((kind, key))
 
         start, end, strand = row['start'], row['end'], row['strand']
         if start < 1 or end < start or end > len(genome):
@@ -258,23 +285,36 @@ def main():
         qualifiers = {'gene': [name]}
         if kind == 'CDS':
             base = CDS_PATTERN.match(name.lower()).group(1)
-            offset, matched = best_protein_frame(sliced, faa.get(name, (0, 0, '+', ''))[3])
+            protein = faa.get(name)
+            if protein and protein[:3] != (start, end, strand):
+                fail('%s 的 result.faa 坐标/链与 GFF 不一致' % name)
+            offset, matched = best_protein_frame(sliced, protein[3] if protein else '', args.table)
+            phase = row['phase'] if row['type'] == 'CDS' else '.'
+            if phase not in ('.', '0', '1', '2'):
+                fail('%s 的 CDS phase 非法: %s' % (name, phase))
+            if phase != '.':
+                if protein and (offset is None or offset != int(phase)):
+                    fail('%s 的 CDS phase 与蛋白重现读框冲突' % name)
+                # Explicit phase is source data, not inferred from protein identity.
+                offset = int(phase)
+                qualifiers['note'] = ['codon_start source: GFF CDS phase']
             if offset is None:
-                codon_start = 1
-                warnings.append('%s %s 的 codon_start 不确定（result.faa 缺失或读框不唯一，'
-                                '暂按 1 写出并在 note 中标注）' % (kind, name))
+                warnings.append('%s %s 的 codon_start 不确定（无唯一完整蛋白匹配且无 CDS phase）；未写出 codon_start'
+                                % (kind, name))
                 qualifiers['note'] = ['codon_start uncertain: %s' % PROVENANCE]
             else:
-                codon_start = offset + 1
+                qualifiers['codon_start'] = [str(offset + 1)]
+                qualifiers.setdefault('note', ['codon_start source: unique full MITOS2 protein match'])
             qualifiers['product'] = [PRODUCTS.get(base, name)]
-            qualifiers['transl_table'] = ['5']
-            qualifiers['codon_start'] = [str(codon_start)]
+            qualifiers['transl_table'] = [str(args.table)]
         elif kind == 'tRNA':
             match = TRNA_PATTERN.match(name)
             if match:
                 anticodon = match.group(2).upper().replace('U', 'T')
                 qualifiers['product'] = ['tRNA-%s' % name[3:4].upper()]
-                qualifiers['anticodon'] = ['(pos:%s,aa:%s)' % (anticodon, name[3:4].upper())]
+                # MITOS name exports sequence, not the anticodon's genomic position.
+                # Do not manufacture INSDC pos; QC can use this exact provenance note.
+                qualifiers['note'] = ['MITOS2 anticodon sequence: %s; position not exported' % anticodon]
             else:
                 qualifiers['product'] = ['tRNA']
         else:
@@ -293,17 +333,22 @@ def main():
                        description='MITOS2 annotation, converted for annotation QC',
                        annotations={'molecule_type': 'DNA', 'topology': topology,
                                     'data_file_division': 'INV'})
+    source_qualifiers = {'organism': [args.organism or 'not determined by this conversion'],
+                         'mol_type': ['genomic DNA'],
+                         'note': [PROVENANCE] + notes + warnings}
+    if args.organism:
+        source_qualifiers['note'].append('organism supplied by caller: %s' % args.organism)
+    if args.taxid is not None:
+        source_qualifiers['db_xref'] = ['taxon:%d' % args.taxid]
+        source_qualifiers['note'].append('TaxID supplied by caller: %d' % args.taxid)
     record.features.append(SeqFeature(
         FeatureLocation(0, len(genome), strand=1), type='source',
-        qualifiers={'organism': ['not determined by this conversion'],
-                    'mol_type': ['genomic DNA'],
-                    'note': [PROVENANCE] + notes + warnings}))
+        qualifiers=source_qualifiers))
     record.features.extend(sorted(features, key=lambda f: int(f.location.start)))
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out_path.with_suffix(out_path.suffix + '.tmp')
-    SeqIO.write(record, tmp, 'genbank')
-    tmp.replace(out_path)
+    buffer = io.StringIO()
+    SeqIO.write(record, buffer, 'genbank')
+    atomic_write_text(out_path, buffer.getvalue())
 
     print('来源: %s + %s + %s; 序列: %s (%d bp)'
           % (gff_path.name, fas_path.name, faa_path.name, genome_path.name, len(genome)))
@@ -320,4 +365,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except (OSError, ValueError) as exc:
+        fail(str(exc))

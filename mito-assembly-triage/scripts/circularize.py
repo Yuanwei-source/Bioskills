@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-外科手术拼接: 将 2 个 scaffold 拼接为正确的环状线粒体基因组, 并用参考验证
+两 scaffold 候选拼接：参考辅助排序，样本 reads 检查内部接缝；不证明物理闭环
 用法: python3 circularize.py <scaffold1.fasta> <scaffold2.fasta> <ref.gb> <outdir> --bam <candidate.bam> --reads-validated [--min-junction-support 3] [--min-mapq 20]
 原理: 分析两个 scaffold 的基因组成和方向, 尝试 4 种组合(正序/反向互补),
       选择参考辅助排序的候选，自动计算新增接缝并验证；输出仍是候选结构。
@@ -8,7 +8,8 @@
       不作为自动失败条件, 也不允许据此接受为最终环化。
 依赖: BioPython, blastn, minimap2
 """
-import sys, os, subprocess, tempfile, itertools, re
+import sys, os, subprocess, re
+import argparse
 
 
 
@@ -16,7 +17,16 @@ import sys, os, subprocess, tempfile, itertools, re
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _deps import require_stage  # noqa: E402
-require_stage('circularize', __file__)
+from _sam import cigar_operations, aligned_blocks, template_key
+from _evidence_io import read_single_fasta, protect_output, InputArgumentParser
+
+
+def join_anchor_region(left_length, overlap, candidate_length, flank):
+    """Span the entire shared overlap and flank bases exclusive to each scaffold."""
+    lo, hi = left_length - overlap - flank + 1, left_length + flank
+    if flank < 1 or lo < 1 or hi > candidate_length:
+        raise ValueError('候选没有足够的两侧锚点，不能用单区间验证该拼接')
+    return 'mitogenome_candidate:%d-%d' % (lo, hi)
 
 def select_unique_candidate(candidates):
     if not candidates:
@@ -79,8 +89,7 @@ def circular_annotation_matches(query, reference):
 def sam_reference_span(fields):
     start = int(fields[3])
     end = start
-    for length_text, operation in re.findall(r'(\d+)([MIDNSHP=X])', fields[5]):
-        length = int(length_text)
+    for length, operation in cigar_operations(fields[5]):
         if operation in 'M=XDN':
             end += length
     return start, end
@@ -105,27 +114,41 @@ def junction_evidence(bam, region, min_mapq=20):
     chrom, lo, hi = parse_region(region)
     result = subprocess.run(['samtools', 'view', bam, '%s:%d-%d' % (chrom, lo, hi)],
                             capture_output=True, text=True, check=True)
-    names = set()
+    templates = {}
     strand_counts = {'+': 0, '-': 0}
+    read_strand_counts = {'+': 0, '-': 0}
     mapqs = []
     duplicates = 0
     for line in result.stdout.splitlines():
         if not line.strip():
             continue
         fields = line.split('\t')
+        if len(fields) < 11:
+            raise ValueError('SAM record has fewer than 11 fields')
         flag = int(fields[1])
         if flag & 0x400:
             duplicates += 1
             continue
-        if flag & (0x4 | 0x100 | 0x800) or int(fields[4]) < min_mapq:
+        mapq = int(fields[4])
+        if flag & (0x4 | 0x100 | 0x200 | 0x800) or mapq == 255 or mapq < min_mapq:
             continue
-        start, end = sam_reference_span(fields)
-        if start <= lo and end >= hi:
-            names.add(fields[0])
-            mapqs.append(int(fields[4]))
-            strand_counts['-' if flag & 0x10 else '+'] += 1
+        if fields[2] != chrom:
+            raise ValueError('samtools returned a different reference')
+        # hi is inclusive; block end is exclusive. A deletion, skip or insertion
+        # inside the anchor interval cannot support this exact candidate adjacency.
+        if any(start <= lo and end > hi for start, end in aligned_blocks(fields)):
+            key = template_key(fields)
+            read_strand_counts['-' if flag & 0x10 else '+'] += 1
+            rank = (not bool(flag & 0x40), -mapq, flag)
+            if key not in templates or rank < templates[key][0]:
+                templates[key] = (rank, flag, mapq)
+    for _, flag, mapq in templates.values():
+        mapqs.append(mapq)
+        strand_counts['-' if flag & 0x10 else '+'] += 1
     mapqs.sort()
-    return {'region': region, 'support': len(names), 'names': sorted(names),
+    return {'region': region, 'support': len(templates), 'names': sorted({key[1] for key in templates}),
+            'templates': [dict(read_group=rg, qname=q) for rg, q in sorted(templates)],
+            'read_strand_counts': read_strand_counts, 'duplicate_marking': 'not_verified',
             'strand_counts': strand_counts, 'duplicates_excluded': duplicates,
             'mapq_min': mapqs[0] if mapqs else None,
             'mapq_median': mapqs[len(mapqs) // 2] if mapqs else None}
@@ -136,28 +159,36 @@ def junction_spanning_reads(bam, region, min_mapq=20):
 
 
 def main():
-    # Biopython 由前置门禁保证（require_stage('circularize')），不再有 try/except 降级
+    parser = InputArgumentParser(description=__doc__)
+    for name in ('scaffold1', 'scaffold2', 'reference', 'outdir'):
+        parser.add_argument(name)
+    parser.add_argument('--bam')
+    parser.add_argument('--reads-validated', action='store_true')
+    parser.add_argument('--accept-candidate', action='store_true')
+    parser.add_argument('--junction-region')
+    parser.add_argument('--min-junction-support', type=int, default=3)
+    parser.add_argument('--min-mapq', type=int, default=20)
+    parser.add_argument('--junction-flank', type=int, default=10)
+    args = parser.parse_args()
+    if args.min_junction_support < 1 or args.junction_flank < 1 or not 0 <= args.min_mapq <= 254:
+        parser.error('support/flank 必须为正数，MAPQ 为 0–254')
+    require_stage('circularize', __file__)
     from Bio import SeqIO
     from Bio.Seq import Seq
-    if len(sys.argv) < 5:
-        print(__doc__); sys.exit(1)
-    s1, s2, ref_gb, outdir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-    reads_validated = '--reads-validated' in sys.argv
-    bam = sys.argv[sys.argv.index('--bam') + 1] if '--bam' in sys.argv else None
-    junction_region = sys.argv[sys.argv.index('--junction-region') + 1] if '--junction-region' in sys.argv else None
-    min_support = int(sys.argv[sys.argv.index('--min-junction-support') + 1]) if '--min-junction-support' in sys.argv else 3
-    min_mapq = int(sys.argv[sys.argv.index('--min-mapq') + 1]) if '--min-mapq' in sys.argv else 20
-    junction_flank = int(sys.argv[sys.argv.index('--junction-flank') + 1]) if '--junction-flank' in sys.argv else 10
+    s1, s2, ref_gb, outdir = args.scaffold1, args.scaffold2, args.reference, args.outdir
+    reads_validated, bam = args.reads_validated, args.bam
+    junction_region, min_support = args.junction_region, args.min_junction_support
+    min_mapq, junction_flank = args.min_mapq, args.junction_flank
     os.makedirs(outdir, exist_ok=True)
     out_fa = os.path.join(outdir, 'genome_candidate.fasta')
-    accept_candidate = '--accept-candidate' in sys.argv
-
-    def load_seq(fn):
-        rec = next(SeqIO.parse(fn, 'fasta'))
-        return rec.id, str(rec.seq)
-
-    id1, seq1 = load_seq(s1)
-    id2, seq2 = load_seq(s2)
+    accept_candidate = args.accept_candidate
+    inputs = [s1, s2, ref_gb] + ([bam] if bam else [])
+    generated = ['genome_candidate.fasta', 'ref.fna', 'validation/candidate.fasta', 'validation/gene_order.txt',
+                 'cand_s1_s2.fasta', 'cand_s1_rcs2.fasta', 'cand_rcs1_s2.fasta', 'cand_rcs1_rcs2.fasta']
+    for filename in generated:
+        protect_output(os.path.join(outdir, filename), inputs)
+    id1, seq1 = read_single_fasta(s1)
+    id2, seq2 = read_single_fasta(s2)
     print('scaffold1: %s (%d bp)' % (id1, len(seq1)))
     print('scaffold2: %s (%d bp)' % (id2, len(seq2)))
 
@@ -250,7 +281,7 @@ def main():
         with open(out_fa, 'w') as fh:
             fh.write('>mitogenome_candidate\n%s\n' % seq)
         print('输出候选结构: %s (%d bp)' % (out_fa, len(seq)))
-    auto_region = 'mitogenome_candidate:%d-%d' % (max(1, junction - junction_flank), min(len(seq), junction + junction_flank))
+    auto_region = join_anchor_region(len(seq1), _overlap, len(seq), junction_flank)
     if junction_region and parse_region(junction_region) != parse_region(auto_region):
         print('指定 --junction-region 与实际新增接缝不一致；期望 %s' % auto_region, file=sys.stderr)
         sys.exit(2)
@@ -262,11 +293,11 @@ def main():
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print('接缝证据验证失败:', exc, file=sys.stderr)
         sys.exit(1)
-    print('接缝证据 %s: 支持分子=%d  链向=%s  MAPQ(min/median)=%s/%s  重复标记剔除=%d'
+    print('接缝证据 %s: 支持模板=%d  模板链向=%s  MAPQ(min/median)=%s/%s  重复标记剔除=%d'
           % (auto_region, evidence['support'], evidence['strand_counts'],
              evidence['mapq_min'], evidence['mapq_median'], evidence['duplicates_excluded']))
     if evidence['support'] < min_support:
-        print('接缝 %s 仅有 %d 条独立 read 达到 MAPQ>=%d，需要至少 %d 条'
+        print('接缝 %s 仅有 %d 个模板达到 MAPQ>=%d，需要至少 %d 个'
               % (auto_region, evidence['support'], min_mapq, min_support), file=sys.stderr)
         print('  证据不足以宣称闭环; 请先对候选 BAM 跑 markdup, 并检查重复/低 MAPQ 读段'
               '与竞争结构', file=sys.stderr)
@@ -281,7 +312,11 @@ def main():
         sys.exit(2)
     print('状态: CANDIDATE_ACCEPTED（仍需独立注释与完整 provenance）')
 
-    print('\n下一步: 用 reads 回贴验证覆盖度 (depth_analysis.py), 然后注释 (SKILL.md ⑦)')
+    print('\n下一步: 核验所有连接、重复歧义和尾首闭合，并独立检查注释；本工具未验证完整闭环。')
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print('ERROR: 候选检查未完成: %s' % (getattr(exc, 'stderr', None) or str(exc)), file=sys.stderr)
+        sys.exit(1)
