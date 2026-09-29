@@ -70,6 +70,13 @@ class BackgroundTaskTests(unittest.TestCase):
             tasks = json.loads(result.stdout)
             self.assertEqual(tasks[0]['status'], 'orphaned_running')
             self.assertIn('请勿重启', tasks[0]['error'])
+            cleanup_child()
+            result = subprocess.run([
+                sys.executable, str(MANAGER), 'status', '--task-dir', str(task_dir),
+            ], capture_output=True, text=True, check=True)
+            state = json.loads(result.stdout)
+            self.assertEqual(state['status'], 'supervisor_lost')
+            self.assertIn('最终退出码未知', state['error'])
 
     def test_log_tail_handles_carriage_return_progress_and_bounds_large_lines(self):
         with tempfile.TemporaryDirectory() as temp:

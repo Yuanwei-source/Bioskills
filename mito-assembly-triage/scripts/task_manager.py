@@ -65,7 +65,10 @@ def supervise(task_dir):
             proc = subprocess.Popen(state['command'], cwd=state['cwd'], env=os.environ.copy(),
                                     stdin=subprocess.DEVNULL, stdout=log,
                                     stderr=subprocess.STDOUT, close_fds=True)
-            state.update({'child_pid': proc.pid, 'process_group_id': os.getpgid(proc.pid)})
+            # The supervisor starts in its own session, inherited by the child.
+            # Record that group before launch; querying the child's group here
+            # races commands that exit immediately after Popen returns.
+            state.update({'child_pid': proc.pid})
             write_state(task_dir, state)
             exit_code = proc.wait()
         state.update({'status': 'succeeded' if exit_code == 0 else 'failed',
@@ -100,7 +103,9 @@ def refresh_orphaned_state(task_dir, state):
             supervisor_pid = int((task_dir / 'supervisor.pid').read_text(encoding='ascii').strip())
         except (OSError, ValueError):
             supervisor_pid = None
-    if state.get('status') in ('queued', 'running') and supervisor_pid and not pid_alive(supervisor_pid):
+    status = state.get('status')
+    supervisor_gone = supervisor_pid and not pid_alive(supervisor_pid)
+    if status in ('queued', 'running') and supervisor_gone:
         pgid = state.get('process_group_id')
         if process_group_alive(pgid):
             state.update({'status': 'orphaned_running', 'observed_at': now(),
@@ -108,6 +113,10 @@ def refresh_orphaned_state(task_dir, state):
         else:
             state.update({'status': 'supervisor_lost', 'observed_at': now(),
                           'error': '后台管理进程已退出且未观察到任务进程组；最终退出码未知'})
+        write_state(task_dir, state)
+    elif status == 'orphaned_running' and not process_group_alive(state.get('process_group_id')):
+        state.update({'status': 'supervisor_lost', 'observed_at': now(),
+                      'error': '后台管理进程已退出，任务进程组现已结束；最终退出码未知'})
         write_state(task_dir, state)
     return state
 
