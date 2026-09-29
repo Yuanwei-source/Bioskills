@@ -108,6 +108,7 @@
       "probe": {
         "type": "python-module",
         "module": "mitos",
+        "search_conda": true,
         "env": "MITOS2_PY",
         "distribution": "mitos"
       },
@@ -137,6 +138,18 @@
       "install": "conda install -c bioconda infernal（并加入 MITOS2_EXTRA_PATH）"
     },
     {
+      "id": "mitos2_reshape2",
+      "tier": "extended",
+      "probe": {
+        "type": "r-package",
+        "package": "reshape2",
+        "env": "MITOS2_RSCRIPT",
+        "search_conda": true
+      },
+      "purpose": "MITOS2 绘制 blast 统计图的 R 依赖；脚本即使不需要查看图也会调用它",
+      "install": "使用已有 R 环境中带 reshape2 的 Rscript，并设置 MITOS2_RSCRIPT；本 skill 不自动安装或修改环境"
+    },
+    {
       "id": "tRNAscan-SE",
       "tier": "extended",
       "probe": {
@@ -153,7 +166,7 @@
         "type": "command",
         "name": "mitofinder"
       },
-      "purpose": "第二条独立注释路径（需要近缘参考 GenBank）",
+      "purpose": "需要近缘参考 GenBank 的独立 reads 组装/注释路线，也可对现有组装注释",
       "install": "conda install -c bioconda mitofinder"
     },
     {
@@ -197,6 +210,38 @@
       },
       "purpose": "Illumina paired-end/single-end reads 的线粒体候选组装（animal_mt）；具体可用性仍取决于样本、读段和组装图",
       "install": "按上游安装说明安装 GetOrganelle，并初始化 animal_mt 数据库：https://github.com/Kinggerm/GetOrganelle"
+    },
+    {
+      "id": "mitoz",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "mitoz"
+      },
+      "purpose": "动物线粒体 reads 组装、候选筛选和注释；需核查类群与密码表设置",
+      "install": "conda install -c bioconda mitoz"
+    },
+    {
+      "id": "mitoflex",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "MitoFlex.py",
+        "env": "MITOFLEX_ROOT"
+      },
+      "purpose": "动物线粒体 Illumina reads 组装与注释候选；需要其独立 conda 环境",
+      "install": "按上游环境文件安装：https://github.com/Prunoideae/MitoFlex"
+    },
+    {
+      "id": "novoplasty",
+      "tier": "extended",
+      "probe": {
+        "type": "file",
+        "name": "NOVOPlasty4.3.5.pl",
+        "env": "NOVOPLASTY"
+      },
+      "purpose": "seed-and-extend 线粒体候选组装；必须记录种子来源",
+      "install": "按上游说明部署 Perl 脚本：https://github.com/ndierckx/NOVOPlasty"
     }
   ],
   "stages": {
@@ -233,7 +278,8 @@
         "biopython",
         "mitos2",
         "mitos2_refdir",
-        "cmsearch"
+        "cmsearch",
+        "mitos2_reshape2"
       ],
       "tools": "scripts/run_mitos2.sh + scripts/mitos2_to_genbank.py",
       "capability": "独立重新注释（第二意见）"
@@ -335,6 +381,36 @@
       ],
       "tools": "外部命令 get_organelle_from_reads.py -F animal_mt",
       "capability": "Illumina animal mitochondrial assembly candidate generation; graph and junctions require independent review"
+    },
+    "assembly_compare_illumina": {
+      "tier": "extended",
+      "requires": [
+        "python3",
+        "getorganelle",
+        "mitoz"
+      ],
+      "tools": "scripts/run_illumina_candidates.py",
+      "capability": "至少具备 GetOrganelle 与 MitoZ 两条独立动物线粒体 Illumina 候选路线；MitoFlex/NOVOPlasty/MitoFinder 可按环境及输入条件加入；登记候选、状态、版本、命令与日志"
+    },
+    "annotate_compare": {
+      "tier": "extended",
+      "requires": [
+        "python3",
+        "mitos2",
+        "mitos2_refdir",
+        "cmsearch",
+        "mitoz"
+      ],
+      "tools": "scripts/run_candidate_annotations.py",
+      "capability": "对每个组装候选运行 MITOS2 与 MitoZ 注释候选；结果需逐基因证据裁决，不按工具投票"
+    },
+    "background_tasks": {
+      "tier": "essential",
+      "requires": [
+        "python3"
+      ],
+      "tools": "scripts/task_manager.py",
+      "capability": "将长时间命令脱离交互会话运行，并在样本 intermediate/tasks 中记录命令、日志、状态与退出码"
     }
   }
 }
