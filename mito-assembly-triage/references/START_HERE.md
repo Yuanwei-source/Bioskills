@@ -23,19 +23,82 @@ FASTA 和 GenBank 同时存在时，先逐碱基核对 GenBank 序列与 FASTA�
 采集字段与用户声明的样本是否一致。能确认的注释字段错误可用 `apply_candidate.py qualifier`
 按旧值精确修改；输出候选后复跑注释检查，并记录仍需人工判断的基因身份与边界。
 
-## 2. 只有原始 reads：候选组装，再诊断和注释
+## 2. 只有动物／昆虫 Illumina 双端 reads：多软件候选组装，再诊断和注释
 
-先收集样本名/学名、测序平台、单双端与文库信息、读长、数据文件及其 lane/批次关系；核验 FASTQ 配对、完整性和质量。多个 lane 属于同一文库时按 read 方向合并，不能把 R1 与 R2 互相拼接。原始 reads 不改写。
+首版 reads-only 自动组装范围限定为动物／昆虫 Illumina paired-end 短读长。先收集样本名/学名、读长、插入片段信息、数据文件及 lane/批次关系；核验 FASTQ 配对、完整性和质量。多个 lane 属于同一文库时按 read 方向合并，不能把 R1 与 R2 互相拼接。原始 reads 不改写。
 
-先运行 `python3 tools/env_check.py --stage assembly_from_illumina_reads` 确认依赖。GetOrganelle 上游当前说明其 reads 路线面向 Illumina 单端/双端 FASTQ，动物线粒体用 `animal_mt`；需安装并初始化对应数据库。示例命令如下，参数仍须按当前版本 `--help`、read 长度/质量和文库特征评估：
+不同生物信息软件可分别安装在多个 conda 环境。设置 `CONDA_ROOT` 后，依赖检查和调度脚本会在 `CONDA_ROOT/envs/*/bin` 定位可执行文件并以绝对路径调用，不需要把软件装进同一个环境或激活一个“大环境”。MITOS2 的 Python 与数据库路径依旧分别使用 `MITOS2_PY` 和 `MITOS2_REFDIR` 配置。
+
+若 MitoFlex/NOVOPlasty 是源码脚本而不在 `envs/*/bin`，分别设置 `MITOFLEX_ROOT` +（可选）`MITOFLEX_PYTHON` 和 `NOVOPLASTY`。调度器会检查 MitoFlex Python 的 `numpy`、`pandas`、`ete3`、Biopython、`psutil`；若只缺 `ete3`，会验证能否从其它 conda 环境补充其 site-packages。NOVOPlasty 脚本由 Perl 启动，不要求可执行位。机器路径放在本地环境变量或未跟踪的机器配置中，不提交到 skill。
+
+MitoFlex 的 Rust FASTQ 过滤器只读取一个 gzip member；若原始 `*.fastq.gz` 是用 `cat` 合并的多个 gzip members，调度器会在该工具的中间目录重写为单-member gzip，并在 manifest 记录源/规范化文件的哈希。原始 reads 保持不变。该转换避免 MitoFlex 静默只读第一个 lane。
+
+先运行 `CONDA_ROOT=<conda根目录> python3 tools/env_check.py --stage assembly_compare_illumina --json` 检查基础多工具路线。候选组装器默认尝试 GetOrganelle、MitoFlex、NOVOPlasty 和 MitoZ；可运行的组装器默认最多同时运行 3 个，每个工具分别使用 `--threads` 指定的线程数。MitoZ 需显式提供遗传密码表。若工具或 NOVOPlasty 所需的种子/文库参数不可用，清单会注明未执行；有近缘参考时可显式加入 MitoFinder。GetOrganelle 动物线粒体模式为 `animal_mt`，还需初始化对应数据库。
+
+长时间流程应通过任务管理器后台运行，任务目录放在样本目录的 `intermediate/tasks/`。组装器会在调度器创建的任务目录旁写入 `intermediate/assemblies/`，不会覆盖旧结果：
 
 ```bash
-get_organelle_from_reads.py -1 <R1.fastq.gz> -2 <R2.fastq.gz> \
-  -R 10 -k 21,45,65,85,105 -F animal_mt \
-  -o <sample>_mitogenome/intermediate/GetOrganelle
+python3 scripts/task_manager.py start \
+  --task-root <样本名>_mitogenome/intermediate/tasks \
+  --name illumina_assembly --cwd "$PWD" -- \
+  env CONDA_ROOT=<conda根目录> <python解释器> scripts/run_illumina_candidates.py \
+  --r1 <R1.fastq.gz> --r2 <R2.fastq.gz> \
+  --sample <样本名> --taxon '<确认的学名>' \
+  --outdir <样本名>_mitogenome \
+  --tools getorganelle,mitoflex,novoplasty,mitoz --table <遗传密码表编号>
 ```
 
-保留并检查版本、数据库、运行参数、组装图和所有候选连接。GetOrganelle 的 reads 接口不直接支持 ONT/PacBio 原始 reads；长读长或混合数据须选用适配平台的组装工具，项目目前没有统一的跨平台 reads-only 自动入口。缺少匹配工具、数据质量不足或图结构有多解时，停止在证据支持的候选层级并列明需要补充什么。
+NOVOPlasty 只有在额外提供 `--novo-seed`、`--insert-size` 和经类群判断的 `--genome-range` 后才运行；它不会暗中拿 GetOrganelle 结果当独立种子。MitoZ 路线需要显式 `--table`，MitoFinder 需要 `--reference-genbank`。MitoFlex 默认加 `--disable-taxa` 跳过内部近缘分类过滤，避免未知/缺失类群被误删；若用户有与其内部数据库匹配的分类配置，可显式传 `--mitoflex-use-taxonomy-filter`。调度器返回任务目录后，用它查询状态和日志；状态文件记录最终退出码：
+
+```bash
+python3 scripts/task_manager.py list --task-root <样本名>_mitogenome/intermediate/tasks
+python3 scripts/task_manager.py status --task-dir <返回的任务目录>
+python3 scripts/task_manager.py log --task-dir <返回的任务目录> --lines 100
+```
+
+生成 `assembly_candidates.json` 后、判读候选前，完成原始 reads 的基础质量报告：
+
+```bash
+python3 scripts/task_manager.py start \\
+  --task-root <样本名>_mitogenome/intermediate/tasks \\
+  --name raw_fastq_qc --cwd "$PWD" -- \\
+  python3 scripts/fastq_qc.py \\
+  --assembly-manifest <样本名>_mitogenome/intermediate/assemblies/assembly_candidates.json \\
+  --outdir <样本名>_mitogenome/intermediate/quality/raw_fastp --threads 4
+```
+
+质量 JSON 会校验 fastp 处理的 read count 是否等于完整 FASTQ 配对检查值；若不相等（例如工具只读了一个 gzip member），本次质量结果标为失败，不能拿部分数据代表全量 reads。
+
+组装任务终止后，先做同一竞争参考下的候选 reads 回贴；该任务也应后台运行：
+
+```bash
+python3 scripts/task_manager.py start \\
+  --task-root <样本名>_mitogenome/intermediate/tasks \\
+  --name candidate_competitive_mapping --cwd "$PWD" -- \\
+  python3 scripts/compare_assembly_candidates.py \\
+  --assembly-manifest <样本名>_mitogenome/intermediate/assemblies/assembly_candidates.json \\
+  --r1 <R1.fastq.gz> --r2 <R2.fastq.gz> \\
+  --outdir <样本名>_mitogenome/intermediate/validation/candidate_mapping \\
+  --threads 4 --min-mapq 20 --min-baseq 20
+```
+
+结构化结果在 `candidate_evidence.json`，同时保留竞争参考、target 映射表、排序 BAM、索引、覆盖表、输入哈希、版本、参数与命令日志。它只比较线性候选上的主比对证据，不计算圆形首尾接缝、不排除 NUMT、不自动选出最终组装；接缝和拓扑必须另行验证。
+
+某个组装器失败时，先看 `intermediate/assemblies/<工具名>/tool.log`。修正环境或参数后，对同一 FASTQ 使用 `--resume --tools <失败工具>` 重试；resume 会验证输入路径与 SHA256、保留旧日志和失败记录，并拒绝覆盖已经成功的工具结果。
+
+每个可信组装候选进入独立注释比较：
+
+```bash
+CONDA_ROOT=<conda根目录> python3 scripts/run_candidate_annotations.py \
+  --candidate-fasta <候选1.fasta> --candidate-fasta <候选2.fasta> \
+  --outdir <样本名>_mitogenome/intermediate/annotation_candidates \
+  --taxon '<用户确认的学名>' --table <确认或暂定的NCBI密码表> \
+  --table-status <confirmed|provisional> --clade Arthropoda
+```
+
+MITOS2 和 MitoZ 的每个输出都是候选；最终注释需统一坐标、方向、密码表后逐基因比较，不能按工具多数票决定。随后按 [FASTQ/BAM 路线](evidence-standard.md) 将原始 reads 回贴到竞争候选，比较碱基、覆盖和每个连接；检查组装图、重复和闭环声明。报告应保留工具失败和未执行原因。GetOrganelle 上游 reads 路线面向 Illumina 单端/双端 FASTQ；长读长和混合数据不属于首版支持范围。
+
+注释比较可直接使用 `--assembly-manifest <assembly_candidates.json>`，脚本会校验候选 FASTA 的 SHA256。多记录候选默认安全跳过；加 `--split-multi-records` 可让 MITOS2 和 MitoZ 分别注释每条 contig，manifest 保留它来自哪一个组装及原始 record ID。逐条 contig 注释只用于发现局部基因线索，不等于把碎片恢复为完整组装，也不应直接作为最终交付。
 
 每个可解释的组装候选都进入“只有组装 FASTA”路线：初检、按物种与密码表生成注释候选、联合检查、证据支持的修复、复验及结果交付。reads 组装路线的图、日志、候选对比和比对文件收在最终 `<样本名>_mitogenome/intermediate/` 中；根目录仍只提供 FASTA、GFF3、GenBank 和报告。
 

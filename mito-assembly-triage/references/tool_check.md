@@ -14,7 +14,11 @@
 | `MITOS2_REFDIR` | 含参考数据库的目录 | 仅 MITOS2 注释 |
 | `MITOS2_REFSEQVER` | 数据库版本名（默认 `refseq89m`） | 仅 MITOS2 注释 |
 | `MITOS2_EXTRA_PATH` | MITOS2 依赖命令的额外 PATH（`cmsearch`/`RNAplot` 等） | 仅 MITOS2 注释与绘图 |
+| `MITOS2_RSCRIPT` | 可加载 `reshape2` 的 Rscript；未设置时自动搜索 PATH/conda 环境 | 仅 MITOS2 注释 |
 | `PLOT_PY` | 含 BioPython + matplotlib 的 Python | 仅环形图 |
+| `GETORGANELLE` / `MITOFLEX` / `MITOZ` / `MITOFINDER` | 对应可执行文件的显式路径；不设置时按 `PATH` 和 `CONDA_ROOT/envs/*/bin` 自动发现 | 多工具组装或候选注释 |
+| `MITOFLEX_ROOT` / `MITOFLEX_PYTHON` | MitoFlex 源码目录及首选 Python；自动检查核心导入，必要时只从其它 conda 环境补充并验证 `ete3` | MitoFlex 组装与注释 |
+| `NOVOPLASTY` | NOVOPlasty `.pl` 脚本文件路径；由 Perl 解释器启动，不要求脚本有可执行位 | NOVOPlasty 候选组装 |
 
 ## 2. 依赖分层与两种检查模式
 
@@ -57,8 +61,13 @@
 | `mitos2` | 线粒体注释（独立第二意见） | 见 https://mitos2.bioinf.uni-leipzig.de/ |
 | `mitos2_refdir` | MITOS2 参考数据库（数十 GB，通常镜像到本地/NAS） | 设置 `MITOS2_REFDIR` 与 `MITOS2_REFSEQVER` |
 | `cmsearch` | MITOS2 的 rRNA 搜索（Infernal） | `conda install -c bioconda infernal`（加入 `MITOS2_EXTRA_PATH`） |
+| `mitos2_reshape2` | MITOS2 的 R 绘图统计依赖；门禁会验证 Rscript 真正能加载包 | 使用已有含 reshape2 的 R 环境；可设置 `MITOS2_RSCRIPT`，不自动安装或改环境 |
 | `tRNAscan-SE` | tRNA 结构预测（tRNA 缺失分级的独立证据） | `conda install -c bioconda trnascan-se` |
 | `mitofinder` | 第二条独立注释路径（需近缘参考 GenBank） | `conda install -c bioconda mitofinder` |
+| `getorganelle` | Illumina animal_mt 候选组装；需初始化动物线粒体数据库 | 按[上游说明](https://github.com/Kinggerm/GetOrganelle)安装并初始化数据库 |
+| `mitoz` | 动物线粒体组装与注释候选 | `conda install -c bioconda mitoz` |
+| `mitoflex` | 动物线粒体组装/注释路线；需使用上游兼容环境 | 按[上游环境文件](https://github.com/Prunoideae/MitoFlex)安装 |
+| `novoplasty` | seed-and-extend 候选组装；种子、插入长度和长度范围需显式登记 | 按[上游说明](https://github.com/ndierckx/NOVOPlasty)部署 |
 | `plot_python` | 环形图绘制（`run_circular_map.sh`） | 在 `PLOT_PY` 环境里 `pip install biopython matplotlib` |
 
 **optional**（按需）
@@ -85,7 +94,8 @@
   会打印告警；不得用于日常诊断——它关掉的正是"缺依赖即失败"这条保护。
 
 阶段与依赖的对应（`stages`）就在同一份清单里：`seq_stats` / `annot_check` / `gene_locating` /
-`read_evidence` / `circularize` / `annot_independent` / `circular_plot` /
+`read_evidence` / `circularize` / `annot_independent` / `assembly_compare_illumina` /
+`annotate_compare` / `background_tasks` / `circular_plot` /
 `reference_acquisition` / `cox1_identity`。**只有该阶段需要的依赖缺失时，才阻断该阶段**——
 缺 bwa 不阻断仅 FASTA/GB 检查；缺 samtools 才阻断依赖它的 BAM 检查。
 
@@ -106,6 +116,7 @@ bash scripts/check_env.sh
 4. `$MITOS2_PY` 能否 `import mitos`；
 5. `$MITOS2_REFDIR/$MITOS2_REFSEQVER` 是否存在；
 6. `MITOS2_EXTRA_PATH` 是否为空。
+7. MITOS2 实际调用的 Rscript 能否加载 `reshape2`。
 
 退出码：`0` 通过；`2` 核心依赖缺失（不应进入依赖这些工具的流程）。
 
@@ -119,7 +130,7 @@ bash scripts/check_env.sh
 | `depth_analysis.py` 报 BAM 相关错误 | 确认 BAM 已 `samtools sort` + `samtools index`，且参考名与 BAM 头一致 |
 | `circularize.py` 报"最高分候选不唯一" | 属**预期保护**：不能凭首个候选猜方向；补充 scaffold / 独立证据或标 `UNRESOLVED` |
 | 环形图报"需要 BioPython + matplotlib" | 改 `PLOT_PY` 指向同时含这两个库的 Python |
-| GetOrganelle 长时间无输出 | 超过 5 分钟一律后台化：`run_bg.sh` + `check_bg.sh`，不要在前端阻塞 |
+| 组装、注释或比对任务耗时较长 | 使用 `scripts/task_manager.py start` 脱离交互会话运行；通过返回的任务目录调用 `status` 和 `log`。即使暂时没有新日志，也先检查进程和状态，不要重复提交同一任务 |
 
 ## 5. 迁移与复现
 

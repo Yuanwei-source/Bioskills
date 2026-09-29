@@ -27,6 +27,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = SKILL_DIR / 'config' / 'dependencies.json'
@@ -92,29 +93,51 @@ def probe_command(name, search_dir=None, env_value=None, want_version=True):
         found = candidate if os.access(candidate, os.X_OK) else None
     if found is None and not search_dir:
         found = shutil.which(name)
+    # Many bioinformatics tools are deliberately installed in separate conda
+    # environments.  Discover their executables without activating (or
+    # modifying) those environments; invoke the resolved absolute path later.
+    conda_root = os.environ.get('CONDA_ROOT')
+    if found is None and not search_dir and conda_root:
+        for env_bin in sorted(pathlib.Path(conda_root).glob('envs/*/bin')):
+            candidate = env_bin / name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                found = str(candidate)
+                break
     if found is None:
         return None, None
     version = None
     if want_version:
         try:
-            proc = subprocess.run([found, '--version'], capture_output=True, text=True, timeout=20)
+            with tempfile.TemporaryDirectory(prefix='.dependency-probe-', dir=str(SKILL_DIR)) as probe_dir:
+                proc = subprocess.run([found, '--version'], capture_output=True, text=True,
+                                      timeout=20, cwd=probe_dir)
             version = _first_version((proc.stdout or '') + (proc.stderr or ''))
         except (OSError, subprocess.SubprocessError):
             pass
     return found, version
 
 
-def probe_python_module(module, interpreter=None, search_dir=None, distribution=None):
+def probe_python_module(module, interpreter=None, search_dir=None, distribution=None,
+                        search_conda=False):
     """(解释器, 版本) 或 (None, None)。
 
     可用性只取决于**导入是否成功**；版本号按发行版名查，查不到就不报版本
     （导入名与发行版名并不总是相同，例如模块 `Bio` 的发行版名是 `biopython`）。
     """
-    interpreter = interpreter or sys.executable
-    if search_dir:  # 允许测试/多环境场景指定解释器目录
-        candidate = os.path.join(search_dir, os.path.basename(interpreter))
-        if os.access(candidate, os.X_OK):
-            interpreter = candidate
+    interpreters = []
+    if interpreter:
+        interpreters = [interpreter]
+    elif search_dir:  # 允许测试/多环境场景指定解释器目录
+        interpreters = [os.path.join(search_dir, 'python3'), os.path.join(search_dir, 'python')]
+    else:
+        interpreters = [sys.executable]
+        conda_root = os.environ.get('CONDA_ROOT') if search_conda else None
+        if conda_root:
+            for env_bin in sorted(pathlib.Path(conda_root).glob('envs/*/bin')):
+                interpreters.extend([str(env_bin / 'python'), str(env_bin / 'python3')])
+    interpreters = list(dict.fromkeys(p for p in interpreters if os.path.isfile(p) and os.access(p, os.X_OK)))
+    if not interpreters:
+        return None, None
     code = ("import importlib\n"
             "importlib.import_module(%r)\n" % module +
             "try:\n"
@@ -122,15 +145,50 @@ def probe_python_module(module, interpreter=None, search_dir=None, distribution=
             "    print(_m.version(%r))\n" % (distribution or module) +
             "except Exception:\n"
             "    print('installed')\n")
-    try:
-        proc = subprocess.run([interpreter, '-c', code], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None, None
-    if proc.returncode != 0:
-        return None, None
-    out = (proc.stdout or '').strip()
-    version = _first_version(out)
-    return interpreter, version
+    for candidate in interpreters:
+        try:
+            with tempfile.TemporaryDirectory(prefix='.dependency-probe-', dir=str(SKILL_DIR)) as probe_dir:
+                proc = subprocess.run([candidate, '-B', '-c', code], capture_output=True,
+                                      text=True, timeout=30, cwd=probe_dir)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0:
+            out = (proc.stdout or '').strip()
+            version = _first_version(out)
+            return candidate, version
+    return None, None
+
+
+def probe_r_package(package, interpreter=None, search_dir=None, search_conda=False):
+    """Find an Rscript that can load a named package without changing environments."""
+    candidates = []
+    if interpreter:
+        candidates = [interpreter]
+    elif search_dir:
+        candidates = [os.path.join(search_dir, 'Rscript')]
+    else:
+        path = shutil.which('Rscript')
+        if path:
+            candidates.append(path)
+        conda_root = os.environ.get('CONDA_ROOT') if search_conda else None
+        if conda_root:
+            candidates.extend(str(env_bin / 'Rscript')
+                              for env_bin in sorted(pathlib.Path(conda_root).glob('envs/*/bin')))
+    candidates = list(dict.fromkeys(path for path in candidates
+                                    if os.path.isfile(path) and os.access(path, os.X_OK)))
+    code = ("if (requireNamespace(%r, quietly=TRUE)) { "
+            "cat(as.character(packageVersion(%r))) "
+            "} else { quit(status=1) }" % (package, package))
+    for candidate in candidates:
+        try:
+            with tempfile.TemporaryDirectory(prefix='.dependency-probe-', dir=str(SKILL_DIR)) as probe_dir:
+                proc = subprocess.run([candidate, '-e', code], capture_output=True,
+                                      text=True, timeout=30, cwd=probe_dir)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0:
+            return candidate, (proc.stdout or '').strip() or 'installed'
+    return None, None
 
 
 def probe_network(host, timeout=4):
@@ -162,13 +220,28 @@ def probe(entry, search_dir=None, allow_network=False, want_version=True):
     if kind == 'command':
         path, version = probe_command(entry['probe']['name'], search_dir, env_path, want_version)
         return bool(path), path, version
+    if kind == 'file':
+        if env_path and os.path.isfile(env_path):
+            return True, str(pathlib.Path(env_path).resolve()), None
+        conda_root = os.environ.get('CONDA_ROOT')
+        if conda_root and not search_dir:
+            for env_bin in sorted(pathlib.Path(conda_root).glob('envs/*/bin')):
+                candidate = env_bin / entry['probe']['name']
+                if candidate.is_file():
+                    return True, str(candidate.resolve()), None
+        return False, env_path or None, None
     if kind == 'python-module':
         found, version = probe_python_module(entry['probe']['module'], env_path, search_dir,
-                                            entry['probe'].get('distribution'))
+                                            entry['probe'].get('distribution'),
+                                            search_conda=entry['probe'].get('search_conda', False))
         return bool(found), found, version
     if kind == 'python-import':
         found, version = probe_python_module(entry['probe']['module'], None, search_dir,
                                             entry['probe'].get('distribution'))
+        return bool(found), found, version
+    if kind == 'r-package':
+        found, version = probe_r_package(entry['probe']['package'], env_path, search_dir,
+                                         entry['probe'].get('search_conda', False))
         return bool(found), found, version
     if kind == 'env-dir':
         base = os.environ.get(entry['probe']['env']) or ''
@@ -219,7 +292,8 @@ def write_lock(path, manifest, report, mode):
         'skill_dir': str(SKILL_DIR),
         'env': {key: os.environ.get(key) for key in
                 ('CONDA_ROOT', 'MITOS2_PY', 'MITOS2_REFDIR', 'MITOS2_REFSEQVER',
-                 'MITOS2_EXTRA_PATH', 'MINIMAP2', 'PLOT_PY')},
+                 'MITOS2_EXTRA_PATH', 'MINIMAP2', 'PLOT_PY', 'MITOFLEX_ROOT', 'MITOFLEX_PYTHON',
+                 'NOVOPLASTY', 'NOVOPLASTY_SEED')},
         'available': {item['id']: {'version': item['version'], 'detail': item['detail']}
                       for item in report if item['available']},
         'missing': {item['id']: {'tier': item['tier'], 'purpose': item['purpose'],
