@@ -42,18 +42,34 @@ def pid_alive(pid):
         return True
 
 
+def process_group_alive(pgid):
+    if not pgid:
+        return False
+    try:
+        os.killpg(int(pgid), 0)
+        return True
+    except (ProcessLookupError, ValueError):
+        return False
+    except PermissionError:
+        return True
+
+
 def supervise(task_dir):
     state = read_state(task_dir)
-    state.update({'status': 'running', 'started_at': now(), 'supervisor_pid': os.getpid()})
+    state.update({'status': 'running', 'started_at': now(), 'supervisor_pid': os.getpid(),
+                  'process_group_id': os.getpgrp()})
     write_state(task_dir, state)
     log_path = task_dir / 'task.log'
     try:
         with log_path.open('ab', buffering=0) as log:
-            proc = subprocess.run(state['command'], cwd=state['cwd'], env=os.environ.copy(),
-                                  stdin=subprocess.DEVNULL, stdout=log,
-                                  stderr=subprocess.STDOUT, check=False)
-        state.update({'status': 'succeeded' if proc.returncode == 0 else 'failed',
-                      'exit_code': proc.returncode, 'finished_at': now()})
+            proc = subprocess.Popen(state['command'], cwd=state['cwd'], env=os.environ.copy(),
+                                    stdin=subprocess.DEVNULL, stdout=log,
+                                    stderr=subprocess.STDOUT, close_fds=True)
+            state.update({'child_pid': proc.pid, 'process_group_id': os.getpgid(proc.pid)})
+            write_state(task_dir, state)
+            exit_code = proc.wait()
+        state.update({'status': 'succeeded' if exit_code == 0 else 'failed',
+                      'exit_code': exit_code, 'finished_at': now()})
     except OSError as exc:
         with log_path.open('a', encoding='utf-8') as log:
             log.write('启动命令失败: %s\n' % exc)
@@ -85,8 +101,13 @@ def refresh_orphaned_state(task_dir, state):
         except (OSError, ValueError):
             supervisor_pid = None
     if state.get('status') in ('queued', 'running') and supervisor_pid and not pid_alive(supervisor_pid):
-        state.update({'status': 'interrupted', 'finished_at': now(),
-                      'error': '后台管理进程已退出，未能记录子命令退出码'})
+        pgid = state.get('process_group_id')
+        if process_group_alive(pgid):
+            state.update({'status': 'orphaned_running', 'observed_at': now(),
+                          'error': '后台管理进程已退出，但任务进程组仍活动；请勿重启，先检查进程与日志'})
+        else:
+            state.update({'status': 'supervisor_lost', 'observed_at': now(),
+                          'error': '后台管理进程已退出且未观察到任务进程组；最终退出码未知'})
         write_state(task_dir, state)
     return state
 
@@ -149,7 +170,8 @@ def main(argv=None):
                     continue
                 tasks.append({key: state.get(key) for key in
                               ('name', 'status', 'exit_code', 'created_at', 'started_at',
-                               'finished_at', 'task_dir', 'log', 'supervisor_pid', 'error')
+                               'finished_at', 'task_dir', 'log', 'supervisor_pid', 'child_pid',
+                               'process_group_id', 'error')
                               if key in state})
         print(json.dumps(tasks, ensure_ascii=False, indent=2))
         return 0

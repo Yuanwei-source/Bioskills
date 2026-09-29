@@ -63,7 +63,7 @@ COX1 多 HSP 出现 query/target 重叠、非共线或混链时不自动汇总�
 | 依赖盘点/门禁：`python3 tools/env_check.py --setup|--daily|--stage NAME [--json --strict --network --path DIR --lock PATH]` | skill 目录 + `config/dependencies.json`（无需网络，`--network` 才探测联网依赖） | 三级依赖（essential/extended/optional）是否就绪、某个 stage 能否执行、环境相对上次是否变化 | **不验证数据正确性**；lock 是缓存不是信任凭证（日常仍真实探测） | `0` 就绪 / `2` essential 缺失 / `3` 该 stage 缺依赖；写 `$MITO_KNOWLEDGE_DIR/environment.lock.json` |
 | `bash scripts/check_env.sh` | 全环境盘点，可选 | 0 核心依赖就绪 / 2 核心依赖缺失；只阻断实际依赖缺失工具的步骤 |
 | `python3 scripts/task_manager.py start --task-root <样本目录>/intermediate/tasks --name <名> -- <命令...>` | 脱离会话启动长任务 | 任务目录内保存命令、日志、PID 与最终退出码；进程以参数数组启动 |
-| `python3 scripts/task_manager.py list --task-root <样本目录>/intermediate/tasks` | 列出任务及当前状态 | 对已退出的后台管理进程标记 `interrupted`，不能把它当作科学任务成功 |
+| `python3 scripts/task_manager.py list --task-root <样本目录>/intermediate/tasks` | 列出任务及当前状态 | 若管理进程丢失但任务进程组仍活动，标记 `orphaned_running`；否则标记 `supervisor_lost`，退出码未知；两者都不能当作科学任务成功 |
 | `python3 scripts/task_manager.py status --task-dir <任务目录>` / `log --task-dir <任务目录>` | 查询状态与日志 | 运行中不等于完成；成功退出也不等于科学验收 |
 | `bash scripts/run_mitos2.sh -i <FASTA> -o <目录> -c <已确认密码表>` | 注释；环境指定 Python 与数据库 | 自动建输出目录，不生成 GB；需要时用格式桥转换 |
 | `bash scripts/run_circular_map.sh <GB> <PNG> --title <标题>` | 正负链基因图 | 需要 GB 声明 circular、Biopython 与 matplotlib；声明/绘图不证明环化 |

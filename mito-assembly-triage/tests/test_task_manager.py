@@ -34,7 +34,7 @@ class BackgroundTaskTests(unittest.TestCase):
             self.assertEqual(tasks[0]['status'], 'succeeded')
             self.assertEqual(tasks[0]['exit_code'], 0)
 
-    def test_list_marks_dead_supervisor_interrupted(self):
+    def test_list_marks_dead_supervisor_with_unknown_exit_status(self):
         with tempfile.TemporaryDirectory() as temp:
             task_root = Path(temp)/'tasks'; task_root.mkdir()
             task_dir = task_root/'orphan'; task_dir.mkdir()
@@ -46,8 +46,30 @@ class BackgroundTaskTests(unittest.TestCase):
                 sys.executable, str(MANAGER), 'list', '--task-root', str(task_root),
             ], capture_output=True, text=True, check=True)
             tasks = json.loads(result.stdout)
-            self.assertEqual(tasks[0]['status'], 'interrupted')
+            self.assertEqual(tasks[0]['status'], 'supervisor_lost')
             self.assertIn('退出码', tasks[0]['error'])
+
+    def test_list_does_not_call_live_orphaned_process_interrupted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            task_root = Path(temp)/'tasks'; task_root.mkdir()
+            task_dir = task_root/'orphan'; task_dir.mkdir()
+            child = subprocess.Popen(['sleep', '10'], start_new_session=True)
+            def cleanup_child():
+                if child.poll() is None:
+                    child.terminate()
+                child.wait(timeout=5)
+            self.addCleanup(cleanup_child)
+            (task_dir/'task.json').write_text(json.dumps({
+                'format': 'mito-background-task-1', 'name': 'orphan', 'status': 'running',
+                'supervisor_pid': 99999999, 'process_group_id': child.pid,
+                'child_pid': child.pid, 'task_dir': str(task_dir),
+            }))
+            result = subprocess.run([
+                sys.executable, str(MANAGER), 'list', '--task-root', str(task_root),
+            ], capture_output=True, text=True, check=True)
+            tasks = json.loads(result.stdout)
+            self.assertEqual(tasks[0]['status'], 'orphaned_running')
+            self.assertIn('请勿重启', tasks[0]['error'])
 
     def test_log_tail_handles_carriage_return_progress_and_bounds_large_lines(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -96,7 +118,8 @@ class BackgroundTaskTests(unittest.TestCase):
                     sys.executable, str(MANAGER), 'status', '--task-dir', str(task_dir),
                 ], capture_output=True, text=True, check=True)
                 state = json.loads(status.stdout)
-                if state['status'] in ('succeeded', 'failed', 'failed_to_start', 'interrupted'):
+                if state['status'] in ('succeeded', 'failed', 'failed_to_start',
+                                       'orphaned_running', 'supervisor_lost'):
                     break
                 time.sleep(.05)
             self.assertEqual(state['status'], 'succeeded', state)

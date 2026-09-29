@@ -48,7 +48,7 @@ python3 scripts/task_manager.py start \
   --tools getorganelle,mitoflex,novoplasty,mitoz --table <遗传密码表编号>
 ```
 
-NOVOPlasty 只有在额外提供 `--novo-seed`、`--insert-size` 和经类群判断的 `--genome-range` 后才运行；它不会暗中拿 GetOrganelle 结果当独立种子。MitoZ 路线需要显式 `--table`，MitoFinder 需要 `--reference-genbank`。MitoFlex 默认加 `--disable-taxa` 跳过内部近缘分类过滤，避免未知/缺失类群被误删；若用户有与其内部数据库匹配的分类配置，可显式传 `--mitoflex-use-taxonomy-filter`。调度器返回任务目录后，用它查询状态和日志；状态文件记录最终退出码：
+NOVOPlasty 只有在额外提供 `--novo-seed`、`--insert-size` 和经类群判断的 `--genome-range` 后才运行；它不会暗中拿 GetOrganelle 结果当独立种子。MitoZ 路线需要显式 `--table`，MitoFinder 需要 `--reference-genbank`。MitoFlex 默认加 `--disable-taxa` 跳过内部近缘分类过滤，避免未知/缺失类群被误删；并用上游支持的 `--disable-annotation`，将后续注释交给独立比较流程；若用户有与其内部数据库匹配的分类配置，可显式传 `--mitoflex-use-taxonomy-filter`。调度器返回任务目录后，用它查询状态和日志；若显示 `orphaned_running` 或 `supervisor_lost`，先确认实际进程状态，不要直接重复提交；状态文件记录最终退出码：
 
 ```bash
 python3 scripts/task_manager.py list --task-root <样本名>_mitogenome/intermediate/tasks

@@ -249,7 +249,8 @@ def main(argv=None):
         for candidate in candidates:
             candidate_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
             candidate_key = (re.sub(r'[^A-Za-z0-9_.-]+', '_', candidate.stem).strip('._') or 'candidate')
-            candidate_key += '-' + candidate_hash[:10]
+            path_hash = hashlib.sha256(str(candidate).encode('utf-8')).hexdigest()[:8]
+            candidate_key += '-' + candidate_hash[:10] + '-' + path_hash
             for tool in requested:
                 workdir = outdir / candidate_key / tool
                 workdir.mkdir(parents=True)

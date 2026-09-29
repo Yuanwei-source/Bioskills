@@ -383,7 +383,7 @@ def build_tools(args, outdir, read_length):
             argv = ['all', '--workname', args.sample, '--basedir', str(workdir.resolve()),
                     '--clade', args.mitoflex_clade, '--species-name', args.taxon,
                     '--fastq1', str(flex_r1.resolve()), '--fastq2', str(flex_r2.resolve()),
-                    '--threads', str(args.threads), '--disable-visualization']
+                    '--threads', str(args.threads), '--disable-annotation']
             if not args.mitoflex_use_taxonomy_filter:
                 argv.append('--disable-taxa')
             if args.table:

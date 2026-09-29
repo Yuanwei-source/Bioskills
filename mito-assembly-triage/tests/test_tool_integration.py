@@ -88,6 +88,10 @@ class ToolIntegrationTests(unittest.TestCase):
         self.assertEqual(manifest['assembly_decision'], 'not_selected')
         self.assertEqual(r1.read_text(), record)
         self.assertEqual(r2.read_text(), record.replace('/1', '/2'))
+        flex_command = manifest['tools'][1]['command']
+        self.assertIn('--disable-annotation', flex_command)
+        self.assertNotIn('--disable-visualization', flex_command)
+        self.assertIn('--threads', flex_command)
         self.assertFalse((outdir/'sample_assembly.fasta').exists())
 
     def test_illumina_candidate_orchestrator_protects_existing_output_dir(self):
@@ -430,6 +434,29 @@ class ToolIntegrationTests(unittest.TestCase):
         self.assertTrue(any(path.endswith('.gbf') for path in manifest['runs'][0]['annotation_outputs']))
         self.assertIn('--genetic_code', manifest['runs'][0]['command'])
         self.assertEqual(candidate.read_text(), '>mt\nACGTACGT\n')
+
+    def test_candidate_annotation_keeps_same_named_identical_inputs_separate(self):
+        left = self.root/'assembler_a'/'candidate.fa'
+        right = self.root/'assembler_b'/'candidate.fa'
+        left.parent.mkdir(); right.parent.mkdir()
+        left.write_text('>mt\nACGTACGT\n')
+        right.write_text(left.read_text())
+        mito = self.root/'mitoz'
+        mito.write_text('#!/bin/sh\nprintf "##gff-version 3\\n" > annotation.gff3\necho "invoked $*"\n')
+        mito.chmod(0o755)
+        outdir = self.root/'annotations'
+        result = subprocess.run([
+            sys.executable, str(ROOT/'scripts/run_candidate_annotations.py'),
+            '--candidate-fasta', str(left), '--candidate-fasta', str(right),
+            '--outdir', str(outdir), '--taxon', 'Insect species', '--table', '5',
+            '--tools', 'mitoz', '--mitoz', str(mito),
+        ], capture_output=True, text=True,
+           env=dict(os.environ, CONDA_ROOT=str(self.root/'empty-conda-root')))
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        manifest = json.loads((outdir/'annotation_candidates.json').read_text())
+        self.assertEqual(len(manifest['runs']), 2)
+        self.assertEqual({run['status'] for run in manifest['runs']}, {'succeeded'})
+        self.assertEqual(len({run['workdir'] for run in manifest['runs']}), 2)
 
     def test_candidate_annotation_aliases_long_mitoz_seqids_and_records_mapping(self):
         candidate = self.root/'candidate.fa'
