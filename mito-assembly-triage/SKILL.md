@@ -4,6 +4,7 @@ description: >-
   面向已有或疑似异常的动物线粒体基因组组装/注释结果，提供基于证据的诊断、
   按需检查、证据驱动的候选修复与独立验证。适用于基因缺失或误注释、CDS 移码或内部终止、
   疑似 NUMT、控制区与接缝异常、基因顺序差异和模糊碱基。
+  支持从 reads 或组装标记进行预期类群来源初筛，调查疑似非目标样本；不独立认证物种或宿主。
   支持三种入口：只有组装 FASTA 时检查后生成并复核注释候选；已有组装和注释时联合优化；只有动物／昆虫 Illumina 双端短读长时，运行适用的多组装候选路径并用 reads 裁决，再比较多条注释候选。其他测序平台暂不属于 reads-only 自动组装范围。组装是否可解取决于测序深度和图结构，不能保证得到唯一或闭环结果。
 ---
 
@@ -33,9 +34,10 @@ description: >-
 按 [结果交付约定](references/results-delivery.md) 组织为 `<样本名>_mitogenome/`，用户通常只需看目录根部的 FASTA、GFF3、GenBank 和 Markdown 报告。`case.py` 账本用于内部追溯，不能替代这些产物。
 先盘点文件、类群与可用数据，检查已有产物，
 核对注释序列与组装序列，以及 source、taxon、采集字段是否描述当前样本。
+先按 [来源初筛](references/identity-screen.md) 核验用户声明的类群：只知道昆虫也能开始，不以属种学名作为初筛前提。三种入口均通过样本标记与在线 NCBI 结果核验，默认不部署大型分类数据库；公共序列上传需任务授权，多个样本的在线查询串行调度。本地标记准备可并行。初筛冲突时核对标记、核来源和批次，不能只据软件警报断言非昆虫或公司返错数据；无标记/网络故障保留证据不足。候选归属相容不独立认证宿主、属种或整份文库，不自动改物种名、过滤原始 reads 或修改密码表。
 若用户只提供组装 FASTA，先按 [START_HERE.md](references/START_HERE.md) 的 FASTA-only 路线
 记录哈希并检查多记录、模糊碱基和格式；能从 FASTA 直接确认的问题先处理或说明证据缺口，
-不能据此改碱基。用户确认类群并提供遗传密码表及其证据状态（confirmed/provisional）后，
+不能据此改碱基。根据用户类群、适用配置与来源初筛确定遗传密码表及其证据状态（confirmed/provisional），无需要求非专家自行提供密码表；类群仍不确定时保留暂定状态。
 在 MITOS2 环境可用时生成注释候选，
 再联合检查候选注释与原 FASTA；工具不可用则停在依赖说明，不伪称完成注释。
 自动注释软件产物始终是待审候选，“专家级”目标由后续独立检查、类群证据、reads（若涉及样本碱基/连接）
@@ -63,6 +65,7 @@ Illumina FASTQ 先核验双端 ID、数量、质量串长度和 gzip 完整性�
 |---|---|
 | 整理用户可用的 FASTA、GFF3、GenBank 与最终报告 | [results-delivery.md](references/results-delivery.md) |
 | 按固定栏目生成用户可读的评估报告 | [report-template.md](references/report-template.md) |
+| 开始时核验预期昆虫/其他类群，或调查来源疑点 | [identity-screen.md](references/identity-screen.md)；`identity_prepare.py` 本地发现、`identity_search.py` 授权后在线判读 |
 | 查看有来源的类群档案与遗传密码表建议 | `python3 scripts/taxon_profiles.py show "学名"`（只读建议；不自动选择密码表或阈值） |
 | 按已有数据选择 FASTA-only、组装+注释或 reads-only 入口 | [START_HERE.md](references/START_HERE.md) |
 | 只有组装 FASTA，生成初检及 MITOS2 注释候选与初步质检 | `bash scripts/run_fasta_annotation.sh --help`；完整路线见 [START_HERE.md](references/START_HERE.md) |
