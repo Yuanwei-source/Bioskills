@@ -1,0 +1,59 @@
+{
+  "format": "mito-identity-reference-sources-1",
+  "source": "https://github.com/cmayer/MitoGeneExtractor",
+  "revision": "def0c635625656069b50ad32178b448e5b3d1069",
+  "purpose": "COX1 discovery baits; no taxonomic verdict is inferred from the matched bait",
+  "limitations": "Not exhaustive coverage of life; tables 2/5 and animal references can miss other lineages. Failure to recover is inconclusive.",
+  "references": [
+    {
+      "id": "insecta_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/insecta_COI_genera_consensus.fasta",
+      "sha256": "eca421d93bfb2c3d1543896e7df52d9342d33bbfe1bb734eddd4a159d07ca463"
+    },
+    {
+      "id": "chelicerata_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/chelicerata_COI_consensus.fasta",
+      "sha256": "0925cf4d6d710b3b6f5bbb152b11e4f3c9ffbd4ba37981552ba86bb16f92f815"
+    },
+    {
+      "id": "crustacea_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/crustacea_COI_consensus.fasta",
+      "sha256": "e45081b0bb56801e8ee98856bce20b006d18f165b2123ea53a5590322fe0bfba"
+    },
+    {
+      "id": "myriapoda_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/myriapoda_COI_consensus.fasta",
+      "sha256": "74b1b0d68f0f9391e5aa94dc589902d3c03c77ad54c127084e0db896de1b1b5c"
+    },
+    {
+      "id": "annelida_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/annelida_COI_consensus.fasta",
+      "sha256": "e499cf6e401dcaef0c3ff2cf07bf570b25b4245cd3484017189494fdb73bf048"
+    },
+    {
+      "id": "mollusca_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/mollusca_COI_consensus.fasta",
+      "sha256": "a12f91f624744ef06a440cb9280ffbb1fa42ce2a9ea59a39030c635b436bbbe7"
+    },
+    {
+      "id": "nematoda_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/nematoda_COI_consensus.fasta",
+      "sha256": "80c4db80c6b20cb10961a10980db05823d985c8adc1198a4f97cb06bc3083b6c"
+    },
+    {
+      "id": "cnidaria_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/cnidaria_COI_consensus.fasta",
+      "sha256": "fbff108dbd3aa6d77eb4b041049ef77d089cce3efd339fef4e7feeac8ebea8ef"
+    },
+    {
+      "id": "fish_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/fish_COI_genera_consensus.fasta",
+      "sha256": "93da4ff108b8d00fe5b69c3f08677622579b4655213d9bf2b9d6f1fab67cb18b"
+    },
+    {
+      "id": "mammalia_cox1",
+      "url": "https://raw.githubusercontent.com/cmayer/MitoGeneExtractor/def0c635625656069b50ad32178b448e5b3d1069/Amino-Acid-references-for-taxonomic-groups/COI-references-for-different-taxonomic-groups/mammalia_COI_genera_consensus.fasta",
+      "sha256": "648a68f132e2effcab6632740dc7c767f3b4ce6227d4070de856b4a8a171f53c"
+    }
+  ]
+}

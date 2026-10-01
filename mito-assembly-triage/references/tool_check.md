@@ -88,6 +88,7 @@
 - **只阻断该步骤**：缺 samtools 不拦住只读 FASTA 的体检；缺 MITOS2 只在跑注释时失败（不再跑到一半才炸）。
 - `cox1_id.py` 与 `reference_registry.py` **不按 stage 门禁**：网络依赖只在具体动作里需要（`acquire`/远程查询），
   且失败已用退出码 3 表达；给整脚本加门会连离线可用的 `list`/`verify` 一起挡掉。
+- `identity_prepare.py` 按输入模式自行核验工具及稳定 MGE 版本，支持显式绝对路径和跨 conda 环境发现；`identity_search.py` 在上传及恢复动作内检查授权、输入绑定和网络故障。提前盘点可用 `identity_prepare` / `identity_prepare_reads` / `identity_prepare_ssu` / `identity_search` 阶段；这些脚本的 `--help` 不触发工具运行或网络访问。
 - **不为例外开口子**：`--help` 也走门禁（脚本模块级就可能 import Biopython，给 help 放行只会制造
   "看着能跑、其实缺依赖"的错觉）。
 - `MITO_ENV_GATE=off`：**仅用于测试/自检**（例如用 stub 解释器验证包装脚本自身的 arg/mkdir 行为），

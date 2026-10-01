@@ -8,6 +8,8 @@ hash、产物路径和实际退出状态。参数以各工具 `--help` 为准，
 
 | 任务 / 工具 | 必要输入与用途 | 关键限制 | 输出与退出码 |
 |---|---|---|---|
+| 来源初筛标记准备：`identity_prepare.py` | 双端 FASTQ、FASTA 或 FASTA＋匹配 GenBank；小型蛋白发现参考、MitoGeneExtractor/Exonerate；reads 加 fastp | 不上传；不以发现参考决定类群；混合列拒绝拼成优势共识；可选18S为实验性 | 新目录 `markers.json` 和 query FASTA；0 有查询 / 1 证据不足 / 2 拒绝 / 3 准备故障；[使用说明](identity-screen.md) |
+| 来源初筛在线判读：`identity_search.py` | 上一步 manifest、明确上传授权；NCBI BLAST与taxonomy，RID可恢复 | 近优命中 LCA，只判预期类群相容性；不确定物种或公司错误；失败不可解释为非昆虫 | `identity_result.json`、RID及原始响应；0 有结论 / 1 不足 / 2 拒绝 / 3 服务故障或仍等待 |
 | 明确编辑清单候选：`apply_candidate.py` | FASTA 碱基替换、唯一 CDS 边界调整、GenBank 注释字段精确编辑；需 edits JSON 和证据引用 | 只写新候选和变更 manifest，不推断编辑、不做科学验收；边界需显式密码表 | 0 生成候选 / 1 输入、旧值或输出保护失败 / 3 缺依赖 |
 | 原始 FASTQ 质量：`fastq_qc.py` | 已完成配对/文件哈希登记的 assembly manifest；fastp | 质量报告前后 counts 必须与全量 FASTQ 检查一致；stdout reads 被丢弃，原始 FASTQ 只读 | `fastq_quality.json` + fastp JSON/HTML/log；COUNT 漂移或工具故障非 0 |
 | Illumina reads-only 组装：GetOrganelle `get_organelle_from_reads.py` | 配对或单端 Illumina FASTQ；`-F animal_mt` 数据库 | 只作为候选组装；检查 graph/path、重复、分支和所有连接，工具输出 circular 不能单独证明拓扑；不适用于直接输入 ONT/PacBio 原始 reads | 0/非 0 依上游版本；须保留完整日志、graph 和所有候选序列 |

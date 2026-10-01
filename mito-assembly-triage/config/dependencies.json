@@ -242,6 +242,50 @@
       },
       "purpose": "seed-and-extend 线粒体候选组装；必须记录种子来源",
       "install": "按上游说明部署 Perl 脚本：https://github.com/ndierckx/NOVOPlasty"
+    },
+    {
+      "id": "mitogeneextractor",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "MitoGeneExtractor-v1.9.6",
+        "env": "MITOGENEEXTRACTOR"
+      },
+      "purpose": "从 reads/FASTA 恢复 COX1 发现候选；须验证稳定版本 >=1.9.6",
+      "install": "conda install -c bioconda mitogeneextractor"
+    },
+    {
+      "id": "exonerate",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "exonerate",
+        "env": "EXONERATE"
+      },
+      "purpose": "MitoGeneExtractor 蛋白到核酸比对",
+      "install": "conda install -c bioconda exonerate"
+    },
+    {
+      "id": "fastp",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "fastp",
+        "env": "FASTP"
+      },
+      "purpose": "初筛抽样 reads 质量处理；原始输入只读",
+      "install": "conda install -c bioconda fastp"
+    },
+    {
+      "id": "spades",
+      "tier": "extended",
+      "probe": {
+        "type": "command",
+        "name": "spades.py",
+        "env": "SPADES"
+      },
+      "purpose": "可选 18S 招募 reads 的局部组装",
+      "install": "conda install -c bioconda spades"
     }
   ],
   "stages": {
@@ -411,6 +455,52 @@
       ],
       "tools": "scripts/task_manager.py",
       "capability": "将长时间命令脱离交互会话运行，并在样本 intermediate/tasks 中记录命令、日志、状态与退出码"
+    },
+    "identity_prepare": {
+      "tier": "optional",
+      "requires": [
+        "python3",
+        "biopython",
+        "mitogeneextractor",
+        "exonerate"
+      ],
+      "tools": "scripts/identity_prepare.py",
+      "capability": "FASTA 或匹配 GenBank 的独立标记提取；不上传样本"
+    },
+    "identity_prepare_reads": {
+      "tier": "optional",
+      "requires": [
+        "python3",
+        "biopython",
+        "mitogeneextractor",
+        "exonerate",
+        "fastp"
+      ],
+      "tools": "scripts/identity_prepare.py",
+      "capability": "双端 FASTQ 分 lane 抽样、质量处理、模板支持的标记候选"
+    },
+    "identity_prepare_ssu": {
+      "tier": "optional",
+      "requires": [
+        "python3",
+        "biopython",
+        "mitogeneextractor",
+        "exonerate",
+        "fastp",
+        "cmsearch",
+        "spades"
+      ],
+      "tools": "scripts/identity_prepare.py --recover-18s",
+      "capability": "可选实验性 Rfam 18S 定向提取；失败不代表非昆虫"
+    },
+    "identity_search": {
+      "tier": "optional",
+      "requires": [
+        "python3",
+        "network"
+      ],
+      "tools": "scripts/identity_search.py",
+      "capability": "授权后批量 NCBI 查询、taxonomy LCA、可恢复初筛；无本地大型分类库"
     }
   }
 }
