@@ -78,7 +78,7 @@ Illumina FASTQ 先核验双端 ID、数量、质量串长度和 gzip 完整性�
 | 基因顺序、旋转、方向与坐标 | [standard_gene_order.md](references/standard_gene_order.md) |
 | 选择工具；执行前检查所需环境 | [tool-catalog.md](references/tool-catalog.md)、[tool_check.md](references/tool_check.md) |
 | 解释结论与生成报告 | [conclusion-report.md](references/conclusion-report.md) |
-| 保存、检索、提炼或共享经验（**子系统已停用**，见该文件的说明） | [learning-policy.md](references/learning-policy.md) |
+| 授权保存、审核、检索或修订本地经验；了解共享边界 | [learning-policy.md](references/learning-policy.md)；`scripts/memory.py --help` |
 | 修改脚本、schema、解析器、测试；核对当前实现与历史接口 | [developer-contract.md](references/developer-contract.md) |
 
 只加载当前步骤需要的文件，不要求通读 references。
@@ -116,7 +116,8 @@ Illumina FASTQ 先核验双端 ID、数量、质量串长度和 gzip 完整性�
 `init → event → conclusion → validate --verify-files → report` 保存任务证据并生成可追溯草稿；用户交付报告按 [report-template.md](references/report-template.md) 整理。
 需要增加输入时用 `input`；结论修订用 `conclusion --update`，保留历史。
 完整格式与示例见 [task-records.md](references/task-records.md)。记录校验不等于科学验收。
-历史 `experience.py` / `case-*` 接口仍不可执行，跨任务经验库仍停用。
+完成任务后可按授权用 `scripts/memory.py` 提出本地经验候选；默认只召回已审核经验，
+经验只作诊断线索，不替代当前样本证据。历史 `experience.py` / `case-*` 和公共同步接口仍不可执行。
 `depth_analysis.py --output-json` 可保存本次覆盖与定点支持数据；它不替代完整任务记录。
 
 简单问答可简短回答并保留相关证据边界；完整诊断报告给出观察事实、逐条结论、

@@ -4,7 +4,7 @@
 > 使用 `schemas/task-case.schema.json` 版本 3；契约与命令见 [task-records.md](task-records.md)。
 > `tests/test_case_workflow.py` 覆盖完整流程、证据关联、文件漂移、并发及原子更新失败。
 > 下文 §1–§3.1 的 experience.py、case-*、旧 schema 和旧测试属于历史契约，不是当前接口。
-> 旧案例不隐式迁移；跨任务经验库与 GitHub CI 未恢复。记录校验通过不等于科学验收。
+> 旧案例不隐式迁移；本地经验 MVP 由 `scripts/memory.py` 实现，公共导出/同步与 GitHub CI 未恢复。记录校验通过不等于科学验收。
 
 > **本文件是工程约束，不是生物学判据。** 生物证据规则见 `evidence-standard.md` / `annotation_quality.md`；
 > 这里的内容回答"代码必须怎样表现、由哪组测试锁住"。
@@ -103,11 +103,12 @@
 | `mitos2_to_genbank.py` | `0` / 非 0 | 写出 `<out.gb>` / 缺文件、坐标越界、`result.fas` 与坐标不一致、未知 feature 类型 | 非 0 时**不得**留下半成品 |
 | `depth_analysis.py` | `0` / `1` / `2` | 无覆盖预警 / 输入或 BAM 错误 / 低覆盖或零覆盖位点 | `2` 不是"组装错误" |
 | `experience.py case-validate/case-anomaly/case-reference` | `0` / `1` / `3` | 通过 / 记录非法或参数错误 / **缺必需依赖 `jsonschema`**（打印 `pip install jsonschema`，不降级） | `3` 不是“案例有问题”，而是校验器不可用 |
+| `memory.py` | `0` / `1` / `3` | 完成 / 输入、校验、授权或状态错误 / 缺 `jsonschema` 或 SQLite FTS5 | 审核或检索成功不证明经验科学正确 |
 | `circularize.py` | `0` / `2` / `1` | 接受候选 / REVIEW（含待回贴）/ 失败或接缝证据不足 | 任何一个码都不能独自证明物理闭环 |
 
 后台任务"子进程正常退出"只表示命令执行成功；科学验收由证据标准另行判定。
 
-### 3.1 经验与案例命令（确切参数；**子系统已移出主路径，默认不参与运行**）
+### 3.1 历史经验与案例命令（**均不可执行；当前本地经验命令见 learning-policy.md**）
 
 `SKILL.md` 只给流程与指向（通用参数以 `--help` 为准）；但**涉及证据链记账**的命令在这里给出确切参数，
 避免照文档构造出缺必需参数的命令（`--input` 是记录 `inputs[]` + SHA-256 的唯一 CLI 途径，
@@ -197,6 +198,7 @@ python -m unittest discover -s tests -v
 | `tests/test_mitos_bridge.py` | 显式密码表、可靠读框、phase 冲突、反密码子来源、单记录与输入保护 |
 | `tests/test_tool_integration.py` | 真实 samtools 的零覆盖/质量缺失/MAPQ255/参考不匹配/末窗口；真实 BLAST 正负链及双拷贝 |
 | `tests/test_cli_contracts.py` | 缺依赖时帮助可用、显式密码表、非法阈值与退出码 |
+| `tests/test_memory_workflow.py` | 本地经验授权、来源路径与哈希、同 ID 案例隔离、审核/写入锁竞态、未解决限制、状态机、范围检索、冲突保留、修订与索引重建、权限、隐私和缺依赖失败 |
 
 集成测试只使用临时生成的样例。samtools / BLAST+ 缺失时明确 skip；只有确认未 skip
 才可声称真实工具路径已验证。MITOS2 注释本体和真实样本总体准确率不在本批验收范围。
@@ -238,9 +240,9 @@ python -m unittest discover -s tests -v
    若改成强制项，已有/外部归档案例（可能缺该字段）会一次性变成 `INVALID`，
    因此当前策略是**可选 + 缺失时按 `abnormal_case` 保守处理 + 新案例一律写入**；
    要真正强制，必须同时提供迁移方案（回填 `case_type`）与两套校验路径的同步修改。
-5. **lesson 的领域/范围不是 schema 强制项**：写入端（`propose-lesson`）是 fail-closed 的，
-   验收端（`validate_public_lesson`）对缺失值做保守补齐后才接受；两边规则不同步就会再造出偏差，
-   因此改任意一边必须同时跑 `tests/test_review_round_lesson_domain_and_report.py`。
+5. **本地 lesson MVP 只支持单案例修订**：领域、范围、来源、审核历史与内容哈希均由
+   `schemas/lesson.schema.json` 和 `_lesson_store.py` 强制；多案例独立性计数、公共导入和去标识化导出尚未恢复。
+   不得把历史 `propose-lesson` 文档当作当前接口，修改当前行为须运行 `tests/test_memory_workflow.py`。
 
 6. **报告按状态机械分类**：`case_report()` 将 RESOLVED/NO_CHANGE 放入“有证据支持”，
    UNRESOLVED 放入“无证据支持”。这不符合证据语义；当前只能把输出当草稿，按

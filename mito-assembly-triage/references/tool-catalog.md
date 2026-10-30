@@ -63,6 +63,7 @@ COX1 多 HSP 出现 query/target 重叠、非共线或混链时不自动汇总�
 
 | 工具 | 用途 | 输出与限制 |
 |---|---|---|
+| `scripts/memory.py --library DIR propose/review/search/show/supersede/rebuild` | 授权保存本地经验、审核、范围过滤检索及修订追溯 | JSON 是事实源，FTS5 是可重建索引；写入须 `--authorize-local`；不复制样本、不自动修改 Skill；公共导出/同步未实现，见 learning-policy.md |
 | 历史 `case-*` / lesson / sync 命令 | 当前分发缺少 `experience.py`，均不可执行 | 任务内记录改用 case.py；旧命令不映射为新命令，详见 task-records.md |
 | `scripts/reference_registry.py` | acquire/register/record-database/list/verify | 固定版本、hash 与用途；不判参考是否可靠，见 [reference-policy.md](reference-policy.md) |
 | 依赖盘点/门禁：`python3 tools/env_check.py --setup|--daily|--stage NAME [--json --strict --network --path DIR --lock PATH]` | skill 目录 + `config/dependencies.json`（无需网络，`--network` 才探测联网依赖） | 三级依赖（essential/extended/optional）是否就绪、某个 stage 能否执行、环境相对上次是否变化 | **不验证数据正确性**；lock 是缓存不是信任凭证（日常仍真实探测） | `0` 就绪 / `2` essential 缺失 / `3` 该 stage 缺依赖；写 `$MITO_KNOWLEDGE_DIR/environment.lock.json` |

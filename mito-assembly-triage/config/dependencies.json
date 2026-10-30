@@ -25,7 +25,7 @@
         "module": "jsonschema",
         "distribution": "jsonschema"
       },
-      "purpose": "版本3任务记录的唯一 schema 校验路径；缺失返回3，不创建案例",
+      "purpose": "版本3任务记录和本地经验记录的唯一 schema 校验路径；缺失返回3，不创建案例或经验库",
       "install": "python3 -m pip install \"jsonschema>=4.18\""
     },
     {
@@ -408,6 +408,15 @@
       ],
       "tools": "scripts/case.py",
       "capability": "任务内输入、事件、逐条结论、校验与报告（不启用跨任务学习）"
+    },
+    "lesson_memory": {
+      "tier": "essential",
+      "requires": [
+        "python3",
+        "jsonschema"
+      ],
+      "tools": "scripts/memory.py",
+      "capability": "显式授权的本地经验提案、审核、检索与版本管理；FTS5 仅作派生索引"
     },
     "apply_candidate": {
       "tier": "essential",
