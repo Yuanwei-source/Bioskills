@@ -97,6 +97,20 @@ class CliContracts(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertNotIn('Traceback', result.stderr)
 
+    def test_intake_duplicate_ids_return_block_but_preserve_json_report(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            fasta = Path(tmp)/'duplicate.fa'
+            fasta.write_text('>mt\nACGT\n>mt other\nTGCA\n')
+            output = Path(tmp)/'intake.json'
+            result = subprocess.run([sys.executable, str(ROOT/'scripts/assembly_intake.py'),
+                                     str(fasta), '--json', str(output)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, result.stdout+result.stderr)
+            report = json.loads(output.read_text())
+            duplicate = next(finding for finding in report['findings']
+                             if finding['code'] == 'DUPLICATE_IDS')
+            self.assertEqual(duplicate['level'], 'BLOCK')
+
 
 if __name__ == '__main__':
     unittest.main()

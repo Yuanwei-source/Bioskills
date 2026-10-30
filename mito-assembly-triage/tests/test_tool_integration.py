@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 import zlib
+from unittest.mock import patch
 
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -54,6 +55,7 @@ class ToolIntegrationTests(unittest.TestCase):
         report = json.loads((self.root/'depth.json').read_text())
         self.assertEqual(report['global_mean'], 0)
         self.assertEqual(report['zero_coverage_bases'], 100)
+        self.assertEqual(report['reads_support'], 'NOT_ASSESSED')
 
     def test_illumina_candidate_orchestrator_keeps_tool_outputs_and_does_not_choose(self):
         r1, r2 = self.root/'sample_R1.fastq', self.root/'sample_R2.fastq'
@@ -285,6 +287,52 @@ class ToolIntegrationTests(unittest.TestCase):
         self.assertEqual(second.returncode, 2, second.stdout+second.stderr)
         manifest = json.loads((root/'assembly_candidates.json').read_text())
         self.assertEqual([run['status'] for run in manifest['tools']], ['failed', 'succeeded'])
+        self.assertEqual(manifest['candidate_count'], 1)
+
+    def test_failed_assembler_fasta_is_diagnostic_not_a_formal_candidate(self):
+        r1, r2 = self.root/'r1.fastq', self.root/'r2.fastq'
+        r1.write_text('@r/1\nACGT\n+\nIIII\n')
+        r2.write_text('@r/2\nACGT\n+\nIIII\n')
+        exe = self.root/'getorganelle'
+        exe.write_text(
+            '#!/bin/sh\n'
+            'if [ "$1" = "--version" ]; then echo "GetOrganelle 1.0"; exit 0; fi\n'
+            'out=; while [ "$#" -gt 0 ]; do if [ "$1" = "-o" ]; then out="$2"; shift 2; else shift; fi; done\n'
+            'mkdir -p "$out"\nprintf ">failed\\nACGTACGT\\n" > "$out/failed.path_sequence.fasta"\n'
+            'echo "assembler failed after partial output"; exit 9\n')
+        exe.chmod(0o755)
+        outdir = self.root/'failed_output_sample'
+        result = subprocess.run([
+            sys.executable, str(ROOT/'scripts/run_illumina_candidates.py'),
+            '--r1', str(r1), '--r2', str(r2), '--outdir', str(outdir),
+            '--sample', 'sample', '--taxon', 'Test_species', '--tools', 'getorganelle',
+            '--getorganelle', str(exe)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stdout+result.stderr)
+        manifest = json.loads((outdir/'intermediate/assemblies/assembly_candidates.json').read_text())
+        self.assertEqual(manifest['candidate_count'], 0)
+        self.assertEqual(manifest['candidates'], [])
+        self.assertEqual(manifest['tools'][0]['status'], 'failed')
+        self.assertTrue(manifest['tools'][0]['diagnostic_fastas_not_candidates'])
+
+    def test_valid_pairs_may_have_different_read_lengths(self):
+        r1, r2 = self.root/'unequal_R1.fastq', self.root/'unequal_R2.fastq'
+        r1.write_text('@r/1\nACGT\n+\nIIII\n')
+        r2.write_text('@r/2\nA\n+\nI\n')
+        exe = self.root/'getorganelle'
+        exe.write_text(
+            '#!/bin/sh\n'
+            'if [ "$1" = "--version" ]; then echo "GetOrganelle 1.0"; exit 0; fi\n'
+            'out=; while [ "$#" -gt 0 ]; do if [ "$1" = "-o" ]; then out="$2"; shift 2; else shift; fi; done\n'
+            'mkdir -p "$out"\nprintf ">mt\\nACGTACGT\\n" > "$out/mt.path_sequence.fasta"\n')
+        exe.chmod(0o755)
+        outdir = self.root/'unequal_length_sample'
+        result = subprocess.run([
+            sys.executable, str(ROOT/'scripts/run_illumina_candidates.py'),
+            '--r1', str(r1), '--r2', str(r2), '--outdir', str(outdir),
+            '--sample', 'sample', '--taxon', 'Test_species', '--tools', 'getorganelle',
+            '--getorganelle', str(exe)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stdout+result.stderr)
+        manifest = json.loads((outdir/'intermediate/assemblies/assembly_candidates.json').read_text())
         self.assertEqual(manifest['candidate_count'], 1)
 
     def test_illumina_candidate_orchestrator_rejects_mispaird_or_truncated_fastq(self):
@@ -533,6 +581,7 @@ class ToolIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
         report = json.loads((self.root/'depth.json').read_text())
         self.assertEqual(report['global_mean'], 10)
+        self.assertEqual(report['reads_support'], 'NOT_ASSESSED')
 
     def test_real_missing_quality_is_not_high_quality(self):
         result = self.run_depth(self.bam(missing_quality=True))
@@ -580,6 +629,28 @@ class ToolIntegrationTests(unittest.TestCase):
         result = self.run_depth(bam)
         self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
         self.assertFalse((self.root/'depth.json').exists())
+
+    def test_blast_max_target_seqs_covers_every_target_record(self):
+        from scripts import blast_genes
+
+        record = SeqRecord(Seq('ATGAAATAA'), id='ref', annotations={'molecule_type': 'DNA'})
+        record.features = [SeqFeature(FeatureLocation(0, 9, strand=1),
+                                      type='CDS', qualifiers={'gene': ['cox1']})]
+        ref = self.root/'target-limit-ref.gb'
+        SeqIO.write(record, ref, 'genbank')
+        target = self.root/'three-targets.fa'
+        target.write_text('>one\nACGT\n>two\nTGCA\n>three\nATGAAATAA\n')
+        output = self.root/'target-limit.tsv'
+        completed = subprocess.CompletedProcess([], 0, '', '')
+        with patch.object(blast_genes, 'require_stage'), \
+                patch.object(blast_genes.subprocess, 'run', return_value=completed) as run, \
+                patch.object(sys, 'argv', ['blast_genes.py', str(ref), str(target), '--out', str(output)]):
+            with self.assertRaises(SystemExit):
+                blast_genes.main()
+        blast_calls = [call.args[0] for call in run.call_args_list if call.args[0][0] == 'blastn']
+        self.assertEqual(len(blast_calls), 1)
+        limit = blast_calls[0][blast_calls[0].index('-max_target_seqs') + 1]
+        self.assertEqual(limit, '3')
 
     def test_blast_two_copies_are_ambiguous_and_one_copy_works(self):
         if not all(shutil.which(tool) for tool in ('blastn', 'makeblastdb')):

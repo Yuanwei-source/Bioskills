@@ -100,8 +100,6 @@ def validate_fastq_pair(r1, r2):
             raise ValueError('R1/R2 第 %d 条 read ID 不配对: %s vs %s' % (count, record1[0], record2[0]))
         if first_length is None:
             first_length = record1[1]
-        if record1[1] != record2[1]:
-            raise ValueError('R1/R2 第 %d 条 read 长度不同: %d vs %d' % (count, record1[1], record2[1]))
     if not count:
         raise ValueError('FASTQ 文件为空')
     return {'read_count': count, 'read_length_first_record': first_length}
@@ -460,6 +458,10 @@ def build_tools(args, outdir, read_length):
         if result.get('status') == 'succeeded' and not outputs:
             result['status'] = 'failed'
             result['postcondition_error'] = '工具退出码为 0，但未发现可用的候选 FASTA；请检查 tool.log'
+        if result.get('status') != 'succeeded':
+            if outputs:
+                result['diagnostic_fastas_not_candidates'] = outputs
+            outputs = []
         result['candidates'] = outputs
         candidates_by_tool[tool] = outputs
         results[result_index] = result
@@ -568,6 +570,8 @@ def main(argv=None):
         intermediates.mkdir(parents=True, exist_ok=True)
         requested = [item.strip().lower() for item in args.tools.split(',') if item.strip()]
         previous_tools = prior.get('tools', []) if prior else []
+        if any(item.get('status') != 'succeeded' and item.get('candidates') for item in previous_tools):
+            raise ValueError('旧 manifest 含失败组装产生的候选；请从原始 reads 在新输出目录重建')
         previous_success = {
             item.get('tool') for item in previous_tools
             if item.get('status') == 'succeeded' and item.get('candidates')

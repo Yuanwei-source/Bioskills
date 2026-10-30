@@ -141,6 +141,8 @@ def main(argv=None):
             print("[%s] %s: %s" % (finding["level"], finding["code"], finding["message"]))
         if args.json_path:
             print("JSON: %s" % args.json_path.resolve())
+        if any(finding["level"] == "BLOCK" for finding in report["findings"]):
+            return 2
         return 0
     except (OSError, UnicodeError, ValueError) as exc:
         print("ERROR: %s" % exc, file=sys.stderr)

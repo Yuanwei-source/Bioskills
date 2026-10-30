@@ -150,14 +150,22 @@ def annotation_candidate(source, edits, table):
         qualifier_values = feature.qualifiers.get('codon_start', ['1'])
         if len(qualifier_values) != 1 or not qualifier_values[0].isdigit() or int(qualifier_values[0]) != old_codon_start:
             raise ValueError('old_codon_start 与 GenBank 当前 codon_start 不符')
-        before_translation = str(feature.translate(record.seq, table=table, cds=False))
+        before_translation = str(feature.extract(record.seq)[old_codon_start - 1:].translate(table=table))
         feature.location = FeatureLocation(start-1, end, strand=strand)
         feature.qualifiers['codon_start'] = [str(new_codon_start)]
-        after_translation = str(feature.translate(record.seq, table=table, cds=False))
+        after_translation = str(feature.extract(record.seq)[new_codon_start - 1:].translate(table=table))
+        if 'translation' in feature.qualifiers:
+            feature.qualifiers['translation'] = [after_translation[:-1] if after_translation.endswith('*')
+                                                 else after_translation]
+        invalidated = []
+        if 'transl_except' in feature.qualifiers:
+            del feature.qualifiers['transl_except']
+            invalidated.append('transl_except')
         seen.add(key)
         applied.append(dict(selector=selector, old=old, new=new, old_codon_start=old_codon_start,
                             new_codon_start=new_codon_start, table=table,
                             translation_before=before_translation, translation_after=after_translation,
+                            invalidated_qualifiers=invalidated,
                             evidence=change['evidence'], rationale=change['rationale']))
     output = io.StringIO()
     SeqIO.write(record, output, 'genbank')

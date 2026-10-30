@@ -224,12 +224,12 @@ def main():
         zero_bases = sum(depths.get(pos, 0) == 0 for pos in range(1, length+1))
         report = dict(format='mito-depth-1', reference=chrom, length=length, global_mean=global_mean,
                       zero_coverage_bases=zero_bases, windows=windows, local_observations=[],
-                      base_support=[], reads_support='READS_CONSISTENT' if global_mean > 0 else 'NOT_ASSESSED',
+                      base_support=[], reads_support='NOT_ASSESSED',
                       parameters=dict(window=args.window, min_depth=args.min_depth,
                                       min_mapq=args.min_mapq, min_baseq=args.min_baseq),
                       limitations=['BAM 名称/长度已校验，序列身份需由比对 provenance 核验',
                                    '单候选比对不排除 NUMT；重复标记状态未自动验证',
-                                   '覆盖筛查不是碱基共识；缺失质量与 MAPQ=255 已排除'])
+                                   '覆盖筛查不是碱基共识，不单独判定 READS_CONSISTENT；缺失质量与 MAPQ=255 已排除'])
         print('全局均值: %.2f×；零覆盖碱基: %d/%d' % (global_mean, zero_bases, length))
         print('位置\tmean\tmin\tmax\t状态')
         for item in windows:

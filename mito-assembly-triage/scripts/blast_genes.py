@@ -97,10 +97,10 @@ def reference_gene_labels(features):
     """Keep repeated feature names distinct without assigning biological copy IDs."""
     names = [feature.qualifiers.get('gene', feature.qualifiers.get('product', ['?']))[0]
              for feature in features]
-    counts = Counter(names)
+    counts = Counter(name.lower() for name in names)
     labels = []
     for name, feature in zip(names, features):
-        if counts[name] == 1:
+        if counts[name.lower()] == 1:
             labels.append(name)
             continue
         start = int(feature.location.start) + 1
@@ -141,6 +141,9 @@ def main():
         raise ValueError('参考中没有可定位的 CDS/tRNA/rRNA')
 
     # 2. 建目标库
+    target_record_count = sum(1 for _record in SeqIO.parse(target, 'fasta'))
+    if not target_record_count:
+        raise ValueError('目标 FASTA 中没有序列记录')
     tmpdir = tempfile.mkdtemp(prefix='blastgenes_')
     try:
         db = os.path.join(tmpdir, 'target')
@@ -155,7 +158,8 @@ def main():
             r = subprocess.run(['blastn', '-query', q, '-db', db, '-task', 'blastn-short',
                                 '-outfmt', '6 qseqid sseqid pident length qstart qend sstart send evalue',
                                 '-evalue', evalue, '-word_size', '7', '-gapopen', '5', '-gapextend', '2',
-                                '-max_target_seqs', '2'], capture_output=True, text=True, check=True)
+                                '-max_target_seqs', str(max(2, target_record_count))],
+                               capture_output=True, text=True, check=True)
             candidates = hits.setdefault(name, [])
             raw = {}
             for line in r.stdout.split('\n'):
