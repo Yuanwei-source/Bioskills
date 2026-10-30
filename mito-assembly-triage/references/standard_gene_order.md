@@ -51,8 +51,9 @@
      其他构建方式按 `evidence-standard.md` §1 检查闭合连接与竞争路径，不把末端重复当通用必要条件。
    - **不得**用 `topology=circular` 头、MITOS2 的 circular 模式、或 `annot_check.py --require-circular` 的通过
      充当环化证据：前者只是声明，后者只做 `CIRCULAR_DECLARATION_CHECK`（只校声明，不是物理闭环）；
-   - 若两端重复长度 ≥ 读长，或末端覆盖不足（如 <5×）而无法期望跨接缝 reads，则该数据**原理上**不具备判别力
-     → 保持 `UNRESOLVED`（阴性证据强度见 `evidence-standard.md` §3.2）。
+   - 重复分辨力不能只用“重复长度是否 ≥ read 长度”判断：须结合有效读长、双端片段跨度及 insert-size 分布、
+     唯一锚点、局部覆盖和多映射处理。若现有 reads/文库无法跨越或唯一锚定重复连接，或末端覆盖不足而无法期望
+     跨接缝 reads，则保持 `UNRESOLVED`（阴性证据强度见 `evidence-standard.md` §3.2）。
 
 ## 4. 典型昆虫排列参照（锚点，仅六足为主）
 

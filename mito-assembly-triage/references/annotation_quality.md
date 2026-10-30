@@ -65,9 +65,11 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
      两端同时 partial 时两者都记；
    - `location` 标注为**完整**却设 `/codon_start=2` → `CODON_START_CONFLICT`（注释自相矛盾），需先确认 5' 端是否真的缺失；
    - 这是与“非典型起始密码子”**不同**的问题，不要混为一谈。
-6. **不完整终止（`T`/`TA`）**：只有在末端确实是 `T` 或 `TA` 前缀时才算；与转录后多聚腺苷酸化相容，
-   但没有转录证据时不得宣称已实验验证，且**`note` 属自述、须交叉核验**。
-   末端是普通 sense codon（例如 `GAT`）时是 ERROR，**`note` 不能豁免**。
+6. **不完整终止**：按本次 `--table` 的终止子集合推导能由 poly(A) 补全的 1/2 nt 前缀，不全局硬编码 `T`/`TA`。
+   例如脊椎动物线粒体表 2 还包括 `AG`（补全为 `AGA`），而纤毛虫等表 6 的 `TAA` 编码 Gln，`TA` 不得按此机制接受。
+   不完整终止与转录后多聚腺苷酸化相容，但没有转录证据时不得宣称已实验验证，且 **`note` 属自述、须交叉核验**。
+   末端是普通 sense codon（例如 `GAT`）或不能按当前密码表补全时是 ERROR，**`note` 不能豁免**。
+   无法唯一翻译的模糊密码子以 `X` 占位并逐密码子报 `AMBIGUOUS_CODON` REVIEW（含坐标），不中断其他 CDS 检查，也不视为翻译通过。
 7. `cox1` 的 5' 起始边界特别易错（历史上多次被截短或延长），单独谨慎判断。
 8. 边界或序列修改必须能回答：**这个碱基是样本 reads 支持的，还是从参考"借"来的**。
 9. **"无内部终止"不证明序列来自线粒体**：numt 可以不携带 in-frame 终止密码子（移码、整块缺失同样常见），
@@ -150,8 +152,9 @@ NCBI 的官方表述是：细胞器提交需提供基因/CDS 等注释，且"CDS
 | 遗传密码表 | `/transl_table` 与 `--table` 不一致 | REVIEW（`TABLE_CONFLICT`） |
 | 内部终止 | 翻译含内部 `*` 且未被 `transl_except` 对应 | ERROR（对应时记 `TRANSL_EXCEPT_MATCHED`） |
 | `/transl_except` | 声明位置未对应任何内部终止 | REVIEW（`TRANSL_EXCEPT_UNEXPLAINED`） |
-| 不完整终止 | 末端为 `T`/`TA` 前缀 | REVIEW（`note` 记为自述，需交叉核验） |
-| 非 `T`/`TA` 末端 | 末端是普通 sense codon | ERROR（`note` 不能豁免） |
+| 不完整终止 | 末端可由 poly(A) 补全为当前密码表的终止子 | REVIEW（`note` 记为自述，需交叉核验） |
+| 不可补全末端 | 末端是普通 sense codon，或前缀在当前密码表不能补全为终止子 | ERROR（`note` 不能豁免） |
+| 模糊密码子 | 某完整密码子无法按当前密码表唯一翻译 | REVIEW（`AMBIGUOUS_CODON`，以 X 占位并报告坐标） |
 | tRNA 长度 | `<50`（有/无 `note`）/ 60–75 之外 | ERROR / WARN / WARN |
 | 反密码子 | 缺 `anticodon` qualifier | REVIEW |
 | rRNA 长度 | 超出类群区间 | REVIEW（WARN） |

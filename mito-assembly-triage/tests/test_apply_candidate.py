@@ -137,6 +137,29 @@ class CandidateApplication(unittest.TestCase):
         self.assertEqual(manifest['changes'][0]['translation_before'], 'MK*')
         self.assertEqual(manifest['changes'][0]['translation_after'], 'MK')
 
+    def test_cds_boundary_updates_translation_with_cli_table_and_invalidates_exceptions(self):
+        record = SeqRecord(Seq('ATGAGATAA'), id='mt', name='mt', description='synthetic')
+        record.annotations['molecule_type'] = 'DNA'
+        record.features = [SeqFeature(FeatureLocation(0, 9, strand=1), type='CDS', qualifiers={
+            'locus_tag': ['cox1'], 'codon_start': ['1'], 'transl_table': ['2'],
+            'translation': ['M'], 'transl_except': ['(pos:4..6,aa:TERM)']})]
+        source = self.root / 'translation.gb'
+        SeqIO.write(record, source, 'genbank')
+        edits = self.json_file('translation-edits.json', {'changes': [{
+            'selector': {'qualifier': 'locus_tag', 'value': 'cox1'},
+            'old': {'start': 1, 'end': 9, 'strand': 1},
+            'new': {'start': 1, 'end': 6, 'strand': 1},
+            'old_codon_start': 1, 'new_codon_start': 1,
+            'evidence': 'E1/ref', 'rationale': 'synthetic boundary example'}]})
+        output, manifest_path = self.root/'translation-candidate.gb', self.root/'translation-manifest.json'
+        self.run_cli('cds-boundary', source, edits, output, '--manifest', manifest_path, '--table', 5)
+        cds = next(feature for feature in SeqIO.read(output, 'genbank').features if feature.type == 'CDS')
+        self.assertEqual(cds.qualifiers['translation'], ['MS'])
+        self.assertNotIn('transl_except', cds.qualifiers)
+        change = json.loads(manifest_path.read_text())['changes'][0]
+        self.assertEqual(change['translation_after'], 'MS')
+        self.assertEqual(change['invalidated_qualifiers'], ['transl_except'])
+
     def test_qualifier_candidate_corrects_source_and_removes_stale_cds_fields(self):
         record = SeqRecord(Seq('ATGAAATAA'), id='mt', name='mt', description='synthetic')
         record.annotations.update(molecule_type='DNA', organism='.', topology='linear')

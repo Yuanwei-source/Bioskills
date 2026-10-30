@@ -102,11 +102,12 @@ def parse_coverage(text):
 
 
 def summarize_primary_pairs(bam, samtools, target_to_candidate, min_mapq, log_path):
-    """Count fragments, not SAM alignment rows; require concordant primary mates."""
-    command = [samtools, 'view', '-F', '2304', '-q', str(min_mapq), str(bam)]
+    """Count unique non-duplicate primary templates with concordant mates."""
+    command = [samtools, 'view', '-F', '3840', '-q', str(min_mapq), str(bam)]
     started = time.monotonic()
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     fragments = {}
+    duplicate_templates = set()
     for line in proc.stdout:
         fields = line.rstrip('\n').split('\t')
         if len(fields) < 11:
@@ -116,12 +117,19 @@ def summarize_primary_pairs(bam, samtools, target_to_candidate, min_mapq, log_pa
             continue
         candidate_key = target_to_candidate[target]
         slot = fragments.setdefault(qname, {})
-        slot[1 if flag & 0x40 else 2 if flag & 0x80 else 0] = (candidate_key, bool(flag & 0x2))
+        mate = 1 if flag & 0x40 else 2 if flag & 0x80 else 0
+        if mate in slot:
+            duplicate_templates.add((qname, mate))
+            continue
+        slot[mate] = (candidate_key, bool(flag & 0x2))
     stderr = proc.stderr.read()
     status = proc.wait()
     Path(log_path).write_text('$ %s\n%s' % (' '.join(command), stderr), encoding='utf-8')
     if status:
         raise RuntimeError('samtools view 失败，退出码 %d；见 %s' % (status, log_path))
+    if duplicate_templates:
+        example = sorted(duplicate_templates)[0]
+        raise ValueError('BAM 含重复 QNAME/mate 主比对：%s mate=%d；请按 lane/read group 去重或修复输入' % example)
     counts = {key: {'primary_mapped_fragments': 0, 'proper_pair_fragments_same_candidate': 0,
                     'both_mates_mapq_pass_same_candidate': 0} for key in set(target_to_candidate.values())}
     for mates in fragments.values():
@@ -225,7 +233,8 @@ def main(argv=None):
                          'elapsed_seconds': round(time.monotonic() - started, 2),
                          'logs': [str(outdir / 'bwa_mem.log'), str(outdir / 'samtools_sort.log')]})
         commands.append(run_logged([samtools, 'index', str(bam)], outdir / 'samtools_index.log'))
-        cov_cmd = [samtools, 'coverage', '-q', str(args.min_mapq), '-Q', str(args.min_baseq), str(bam)]
+        cov_cmd = [samtools, 'coverage', '-q', str(args.min_mapq), '-Q', str(args.min_baseq),
+                   '--ff', 'UNMAP,SECONDARY,QCFAIL,DUP,SUPPLEMENTARY', str(bam)]
         cov_started = time.monotonic()
         cov_proc = subprocess.run(cov_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
         (outdir / 'samtools_coverage.log').write_text(cov_proc.stderr, encoding='utf-8')
@@ -275,7 +284,7 @@ def main(argv=None):
             'interpretation_limits': [
                 '覆盖与配对比对证据是候选相对支持度，不证明序列正确、完整、无 NUMT 或真实环化。',
                 '当前统计按输入 FASTA 线性比对；未为圆形首尾边界补齐参考，因此不用于评价环化接缝支持。',
-                '仅保留 BWA-MEM 主比对；高相似重复区域的竞争不确定性应结合 MAPQ 与原始图结构复核。',
+                '覆盖与配对统计均排除 secondary、supplementary、QCFAIL 和已标记 duplicate；高相似重复区域的竞争不确定性应结合 MAPQ 与原始图结构复核。',
                 '来自同一软件或同一候选文件的 contig 不构成独立组装证据。',
                 '不得单凭长度加权覆盖、reads 数或软件来源自动选定最终组装。',
             ],

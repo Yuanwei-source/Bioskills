@@ -690,10 +690,35 @@ def _transl_except_evidence(records, table, expected_taxon, codon_index, positio
     return None, ' (%s)' % '; '.join(notes)
 
 
+def poly_a_stop_prefixes(tbl):
+    prefixes = {}
+    for stop in tbl.stop_codons:
+        for length in (1, 2):
+            if stop[length:] == 'A' * (3 - length):
+                prefixes[stop[:length]] = stop
+    return prefixes
+
+
+def translate_complete_codons(sequence, tbl):
+    from Bio.Data import CodonTable
+
+    amino_acids = []
+    ambiguous = []
+    for index in range(len(sequence) // 3):
+        codon = str(sequence[3 * index:3 * index + 3]).upper()
+        try:
+            amino_acids.append(str(sequence[3 * index:3 * index + 3].translate(table=tbl)))
+        except CodonTable.TranslationError:
+            amino_acids.append('X')
+            ambiguous.append((index, codon))
+    return ''.join(amino_acids), ambiguous
+
+
 def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions,
                  registry=None, expected_taxon=None):
     valid_starts = set(tbl.start_codons)
     valid_stops = set(tbl.stop_codons)
+    partial_stop_prefixes = poly_a_stop_prefixes(tbl)
     print('\n[2] CDS 翻译验证 (密码表 %d):' % tbl.id)
     for feature in sorted(cds, key=lambda item: feature_segments(item)[0][0]):
         display = feature_gene(feature)
@@ -734,7 +759,7 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         coding = sequence[codon_start - 1:]
         remainder = len(coding) % 3
         complete = coding[:len(coding) - remainder]
-        protein = str(complete.translate(table=tbl)) if len(complete) else ''
+        protein, ambiguous_codons = translate_complete_codons(complete, tbl)
         start_codon = str(coding[:3]).upper()
         last3 = str(coding[-3:]).upper() if len(coding) >= 3 else ''
 
@@ -745,6 +770,13 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
         if terminal_is_complete(last3, remainder, valid_stops) and protein.endswith('*'):
             stop_codons = stop_codons[:-1]
         codon_positions = cds_codon_positions(feature, codon_start)
+        for index, codon in ambiguous_codons:
+            positions = codon_positions[index]
+            position_text = ','.join(str(position) for position in positions)
+            findings.review(
+                'AMBIGUOUS_CODON: %s 密码子 %d (%s) 为 %s，无法按密码表 %d 唯一翻译；'
+                '本次以 X 占位，不能据此判定翻译通过'
+                % (display, index + 1, position_text, codon, tbl.id))
         partial_stop_positions = []
         partial_stop_sequence = ''
         partial_stop_completions = 0
@@ -766,14 +798,15 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
                     and not entry['mixed']
                     and entry['complemented'] == minus_strand
                     and remainder in (1, 2)
-                    and partial_stop_sequence in ('T', 'TA')
+                    and partial_stop_sequence in partial_stop_prefixes
                     and sorted(entry['positions']) == sorted(partial_stop_positions)
                     and partial_stop_note):
                 partial_stop_completions += 1
                 findings.info(
                     'PARTIAL_STOP_COMPLETION_VALIDATED: %s 的 /transl_except %s 精确标记 CDS 末端 %s；'
-                    '记录声明由转录后加尾补全 TAA (未独立验证 RNA 加尾)' %
-                    (display, position_text, partial_stop_sequence))
+                    '记录声明由转录后加尾补全 %s (未独立验证 RNA 加尾)' %
+                    (display, position_text, partial_stop_sequence,
+                     partial_stop_prefixes[partial_stop_sequence]))
                 continue
             if not entry['valid_token']:
                 index, reason = None, ' (aa:%s 不是合法的例外氨基酸)' % amino_acid
@@ -840,12 +873,11 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
                             '但该 CDS 没有内部终止密码子, 声明无对应异常' % display)
         unexplained_stops = [index for index in stop_codons if index not in explained]
 
+        partial_sequence = str(coding[-remainder:]).upper() if remainder else ''
         if remainder == 0 and last3 in valid_stops:
             terminal = ('complete', last3)
-        elif remainder == 1 and str(coding[-1:]).upper() == 'T':
-            terminal = ('incomplete', str(coding[-1:]).upper())
-        elif remainder == 2 and str(coding[-2:]).upper() == 'TA':
-            terminal = ('incomplete', str(coding[-2:]).upper())
+        elif partial_sequence in partial_stop_prefixes:
+            terminal = ('incomplete', partial_sequence)
         else:
             terminal = ('nonstop', last3 or str(coding).upper())
 
@@ -902,12 +934,13 @@ def cds_findings(findings, gb, cds, tbl, start_exceptions, used_start_exceptions
             findings.info("PARTIAL_CDS_3P: %s 3' 端不完整 (location 标记); 不要求终止密码子" % display)
         elif terminal[0] == 'incomplete':
             findings.review(
-                '%s 终止密码子不完整 (T/TA 前缀: %s); 与转录后多聚腺苷酸化相容, '
-                '但需转录本或近缘全长同源证据; note 属自述, 须交叉核验' % (display, terminal[1]))
+                '%s 终止密码子不完整 (%s 可由 poly(A) 补全为 %s); 与转录后多聚腺苷酸化相容, '
+                '但需转录本或近缘全长同源证据; note 属自述, 须交叉核验'
+                % (display, terminal[1], partial_stop_prefixes[terminal[1]]))
         elif terminal[0] == 'nonstop':
             findings.error(
-                'INVALID_CDS: %s 末端 %s 既非合法终止密码子, 也不是 T/TA 前缀; '
-                'note 不能豁免, 需重核读码框与边界' % (display, terminal[1]))
+                'INVALID_CDS: %s 末端 %s 既非合法终止密码子, 也不能由 poly(A) 补全为密码表 %d 的终止子; '
+                'note 不能豁免, 需重核读码框与边界' % (display, terminal[1], tbl.id))
 
         if unexplained_stops:
             findings.error('%s 有 %d 个内部终止密码子 (未被 /transl_except 解释)'

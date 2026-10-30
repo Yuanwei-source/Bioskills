@@ -1,7 +1,9 @@
 """Synthetic scientific counterexamples; no private sample data required."""
 import contextlib
+import hashlib
 import importlib
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -108,6 +110,54 @@ class JunctionTests(unittest.TestCase):
         result = self.evidence(rows)
         self.assertEqual(result['support'], 1)
         self.assertEqual(sum(result['strand_counts'].values()), 1)
+
+
+class BamProvenanceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.fasta = self.root/'candidate.fasta'
+        self.fasta.write_text('>mitogenome_candidate\nACGTACGT\n')
+        self.bam = self.root/'candidate.bam'
+        self.bam.write_bytes(b'synthetic bam bytes')
+        self.manifest_path = self.root/'mapping.json'
+        self.manifest = {
+            'format': 'mito-junction-bam-1',
+            'candidate_fasta': str(self.fasta),
+            'candidate_fasta_sha256': hashlib.sha256(self.fasta.read_bytes()).hexdigest(),
+            'bam': str(self.bam),
+            'bam_sha256': hashlib.sha256(self.bam.read_bytes()).hexdigest(),
+            'reference_name': 'mitogenome_candidate',
+            'reference_length': 8,
+            'mapping_command': ['bwa', 'mem', 'candidate.fasta', 'reads.fastq'],
+        }
+
+    def validate(self, header='@SQ\tSN:mitogenome_candidate\tLN:8\n'):
+        self.manifest_path.write_text(json.dumps(self.manifest))
+        with patch.object(circular.subprocess, 'run', return_value=
+                          subprocess.CompletedProcess([], 0, header, '')):
+            return circular.validate_bam_provenance(
+                self.manifest_path, self.fasta, self.bam, 'mitogenome_candidate:1-8')
+
+    def test_exact_fasta_bam_hash_command_and_header_are_accepted(self):
+        self.assertEqual(self.validate(), self.manifest)
+
+    def test_stale_fasta_bam_hash_and_header_are_rejected(self):
+        cases = []
+        for key, value in (
+            ('candidate_fasta_sha256', '0'*64), ('bam_sha256', '0'*64),
+            ('reference_length', 9), ('reference_name', 'other'),
+            ('mapping_command', [])):
+            manifest = dict(self.manifest)
+            manifest[key] = value
+            cases.append((key, manifest, '@SQ\tSN:mitogenome_candidate\tLN:8\n'))
+        cases.append(('wrong_sq', dict(self.manifest), '@SQ\tSN:mitogenome_candidate\tLN:9\n'))
+        for name, manifest, header in cases:
+            with self.subTest(case=name):
+                self.manifest = manifest
+                with self.assertRaises(ValueError):
+                    self.validate(header)
 
 
 class BlastTests(unittest.TestCase):

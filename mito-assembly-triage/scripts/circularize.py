@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 两 scaffold 候选拼接：参考辅助排序，样本 reads 检查内部接缝；不证明物理闭环
-用法: python3 circularize.py <scaffold1.fasta> <scaffold2.fasta> <ref.gb> <outdir> --bam <candidate.bam> --reads-validated [--min-junction-support 3] [--min-mapq 20]
+用法: python3 circularize.py <scaffold1.fasta> <scaffold2.fasta> <ref.gb> <outdir> --bam <candidate.bam> --bam-provenance <mapping.json> --reads-validated [--min-junction-support 3] [--min-mapq 20]
 原理: 分析两个 scaffold 的基因组成和方向, 尝试 4 种组合(正序/反向互补),
       选择参考辅助排序的候选，自动计算新增接缝并验证；输出仍是候选结构。
       候选基因顺序/方向与参考不一致时记 REVIEW(退出码 2)并保留候选,
@@ -10,6 +10,8 @@
 """
 import sys, os, subprocess, re
 import argparse
+import hashlib
+import json
 
 
 
@@ -19,6 +21,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _deps import require_stage  # noqa: E402
 from _sam import cigar_operations, aligned_blocks, template_key
 from _evidence_io import read_single_fasta, protect_output, InputArgumentParser
+from blast_genes import reference_gene_labels
 
 
 def join_anchor_region(left_length, overlap, candidate_length, flank):
@@ -104,6 +107,61 @@ def parse_region(region):
     return chrom, lo, hi
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def validate_bam_provenance(manifest_path, candidate_fasta, bam, region):
+    try:
+        with open(manifest_path, encoding='utf-8') as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise ValueError('无法读取 BAM provenance：%s' % exc) from exc
+    required = {'format', 'candidate_fasta', 'candidate_fasta_sha256', 'bam', 'bam_sha256',
+                'reference_name', 'reference_length', 'mapping_command'}
+    if not isinstance(manifest, dict) or not required.issubset(manifest):
+        raise ValueError('BAM provenance 缺少必需字段')
+    if manifest['format'] != 'mito-junction-bam-1':
+        raise ValueError('不支持的 BAM provenance 格式')
+    if any(not isinstance(manifest[key], str) for key in
+           ('candidate_fasta', 'candidate_fasta_sha256', 'bam', 'bam_sha256', 'reference_name')):
+        raise ValueError('BAM provenance 路径、哈希和 reference_name 必须为字符串')
+    if os.path.realpath(manifest['candidate_fasta']) != os.path.realpath(candidate_fasta):
+        raise ValueError('BAM provenance 的候选 FASTA 路径不匹配')
+    if os.path.realpath(manifest['bam']) != os.path.realpath(bam):
+        raise ValueError('BAM provenance 的 BAM 路径不匹配')
+    if file_sha256(candidate_fasta) != manifest['candidate_fasta_sha256']:
+        raise ValueError('候选 FASTA 哈希与 BAM provenance 不符')
+    if file_sha256(bam) != manifest['bam_sha256']:
+        raise ValueError('BAM 哈希与 provenance 不符')
+    command = manifest['mapping_command']
+    if (not isinstance(command, list) or not command
+            or any(not isinstance(part, str) or not part for part in command)):
+        raise ValueError('BAM provenance 必须以非空参数数组记录实际 mapping_command')
+    chrom = parse_region(region)[0]
+    candidate_id, candidate_seq = read_single_fasta(candidate_fasta)
+    if candidate_id != chrom or manifest['reference_name'] != chrom:
+        raise ValueError('接缝染色体、候选 FASTA ID 与 provenance reference_name 不一致')
+    if not isinstance(manifest['reference_length'], int) or manifest['reference_length'] != len(candidate_seq):
+        raise ValueError('候选长度与 BAM provenance 不符')
+    header = subprocess.run(['samtools', 'view', '-H', bam], capture_output=True,
+                            text=True, check=True).stdout
+    sq_lengths = {}
+    for line in header.splitlines():
+        fields = line.split('\t')
+        if fields[0] == '@SQ':
+            tags = dict(field.split(':', 1) for field in fields[1:] if ':' in field)
+            if 'SN' in tags and 'LN' in tags:
+                sq_lengths[tags['SN']] = int(tags['LN'])
+    if sq_lengths.get(chrom) != len(candidate_seq):
+        raise ValueError('BAM @SQ 与当前候选名称/长度不符')
+    return manifest
+
+
 def junction_evidence(bam, region, min_mapq=20):
     """Read-level evidence for one junction: molecules, MAPQ, strand, duplicates.
 
@@ -163,6 +221,7 @@ def main():
     for name in ('scaffold1', 'scaffold2', 'reference', 'outdir'):
         parser.add_argument(name)
     parser.add_argument('--bam')
+    parser.add_argument('--bam-provenance', help='mito-junction-bam-1 JSON，绑定候选 FASTA、BAM 哈希与比对命令')
     parser.add_argument('--reads-validated', action='store_true')
     parser.add_argument('--accept-candidate', action='store_true')
     parser.add_argument('--junction-region')
@@ -182,7 +241,7 @@ def main():
     os.makedirs(outdir, exist_ok=True)
     out_fa = os.path.join(outdir, 'genome_candidate.fasta')
     accept_candidate = args.accept_candidate
-    inputs = [s1, s2, ref_gb] + ([bam] if bam else [])
+    inputs = [s1, s2, ref_gb] + ([bam] if bam else []) + ([args.bam_provenance] if args.bam_provenance else [])
     generated = ['genome_candidate.fasta', 'ref.fna', 'validation/candidate.fasta', 'validation/gene_order.txt',
                  'cand_s1_s2.fasta', 'cand_s1_rcs2.fasta', 'cand_rcs1_s2.fasta', 'cand_rcs1_rcs2.fasta']
     for filename in generated:
@@ -193,14 +252,11 @@ def main():
     print('scaffold2: %s (%d bp)' % (id2, len(seq2)))
 
     gb = SeqIO.read(ref_gb, 'genbank')
-    ref_genes = []
-    ref_annotation = []
-    for f in sorted(gb.features, key=lambda feature: feature.location.start):
-        if f.type in ('CDS', 'tRNA', 'rRNA') and f.location.strand is not None:
-            name = f.qualifiers.get('gene', f.qualifiers.get('product', ['?']))[0].lower()
-            strand = '+' if f.location.strand > 0 else '-'
-            ref_genes.append(name)
-            ref_annotation.append((name, strand))
+    ref_features = [feature for feature in sorted(gb.features, key=lambda item: item.location.start)
+                    if feature.type in ('CDS', 'tRNA', 'rRNA') and feature.location.strand is not None]
+    ref_genes = [name.lower() for name in reference_gene_labels(ref_features)]
+    ref_annotation = [(name, '+' if feature.location.strand > 0 else '-')
+                      for name, feature in zip(ref_genes, ref_features)]
     print('参考基因数:', len(ref_genes))
 
     # 生成 4 种候选组合
@@ -264,7 +320,7 @@ def main():
         for line in fh:
             fields = line.rstrip('\n').split('\t')
             if len(fields) >= 5:
-                query_annotation.append((fields[0], fields[4]))
+                query_annotation.append((fields[0].lower(), fields[4]))
     if not circular_annotation_matches(query_annotation, ref_annotation):
         order_review = True
         print('候选基因顺序或方向与参考不一致: 记 REVIEW (保留候选与诊断记录)', file=sys.stderr)
@@ -285,10 +341,11 @@ def main():
     if junction_region and parse_region(junction_region) != parse_region(auto_region):
         print('指定 --junction-region 与实际新增接缝不一致；期望 %s' % auto_region, file=sys.stderr)
         sys.exit(2)
-    if not reads_validated or not bam:
-        print('缺少 reads 接缝证据；需要候选序列回贴 BAM 和 --reads-validated；状态=UNRESOLVED', file=sys.stderr)
+    if not reads_validated or not bam or not args.bam_provenance:
+        print('缺少 reads 接缝证据；需要候选序列回贴 BAM、--bam-provenance 和 --reads-validated；状态=UNRESOLVED', file=sys.stderr)
         sys.exit(2)
     try:
+        validate_bam_provenance(args.bam_provenance, validation_fa, bam, auto_region)
         evidence = junction_evidence(bam, auto_region, min_mapq=min_mapq)
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print('接缝证据验证失败:', exc, file=sys.stderr)

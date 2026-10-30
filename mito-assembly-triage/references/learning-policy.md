@@ -1,144 +1,132 @@
 # 经验学习与共享政策
 
-> 当前任务的案例与报告可按任务保存；跨任务经验积累需授权。
-> 经验子系统已停用，当前分发不含 `experience.py`。下文 CLI 和状态机仅作历史设计记录，不可执行。
-> 候选 lesson 不能自动修改 `SKILL.md` 或硬规则；任务内记录按 diagnostic-playbook.md 执行。
+> 当前实现是本地 MVP：`scripts/memory.py` 从版本 3 案例提出经验，经审核后供后续样本检索。
+> 跨任务写入必须显式授权；公共导出、上传和同步尚未实现。经验不得自动修改 `SKILL.md`、脚本或科学规则。
 
-## 1. 本地与派生分离
+## 1. 事实源、引用与索引
 
-| 层                   | 位置                                                                                   | 说明                                                       |
-| -------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| 任务案例与报告       | 用户任务目录的版本 3 `case.json`（内含 events）+ `report.md`，审阅版报告引用同一事实链 | 属本次分析产物，可在授权任务内写入                         |
-| 跨任务案例库         | `$MITO_KNOWLEDGE_DIR/cases/<case>/`                                                  | 纳入长期检索/学习前需用户授权                              |
-| 派生经验（lesson）   | `$MITO_KNOWLEDGE_DIR/lessons/candidates/`、`.../verified/`                         | 需审核，默认不共享                                         |
-| 公共同步缓存（隔离） | `$MITO_KNOWLEDGE_DIR/public/`                                                        | **只读入**，不覆盖本地案例，不执行远程内容           |
-| 原始测序数据         | 用户自己的存储                                                                         | **不进**知识库，也不进公共仓库；只记录路径与 SHA-256 |
+| 层 | 位置 | 用途与边界 |
+|---|---|---|
+| 任务案例 | 用户任务目录的 v3 `case.json` 与报告 | 保存单次样本证据；`memory.py` 只读，不复制或修改案例 |
+| 本地经验 | `<经验库>/lessons/<lesson-id>.json` | 每个文件保存同一经验的全部修订；这是事实源 |
+| 派生索引 | `<经验库>/index.sqlite3` | FTS5 检索索引，可删除后用 `rebuild` 重建，不是独立证据 |
+| 原始测序数据 | 用户自己的存储 | 不进入经验库；经验只保留泛化描述及来源案例路径、ID 和哈希 |
 
-这一区分按用途，不按文件是否留在磁盘判断。仅做当前任务时，可设置
-`MITO_KNOWLEDGE_DIR="$PWD/work/knowledge"` 指向任务内目录；不设置时工具可能使用默认长期目录，
-执行前确认实际落点。获准使用某个长期库后，在授权范围内不重复确认。
-查询公开文献、下载公共参考可按任务执行；对外发送样本、私有元数据或分享案例需明确授权。
-本地存储授权不等于共享授权。输出不放入 skill 安装目录。
+经验库必须由 `--library` 或 `MITO_KNOWLEDGE_DIR` 显式指定，不写入 skill 安装目录。
+所有新增、审核、修订和索引重建都要求 `--authorize-local`。`search` 与 `show` 只读。
+本地存储授权不等于共享授权；当前没有公共导出或上传命令。
 
-### 1.1 案例类型（`case_type`，必须记录）
+## 2. 每个样本如何形成经验
 
-如果只保存"异常案例"，经验系统会长期偏向"线粒体一定有问题"——这是**特异性（specificity）偏差**。
-每个案例都要标明类型：
+先完成 `case.py` 的结论和必要验证，再撰写一个经验草稿 JSON。最小字段示例：
 
-| `case_type`              | 含义                                                                          | 提供的学习价值                                         |
-| -------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `abnormal_case`          | 报告并诊断了异常（默认）                                                      | 发现能力（sensitivity）                                |
-| `normal_validation_case` | 经检查**未发现异常**，且已写明检查覆盖了哪些项、未覆盖哪些项            | 为评估误报与特异性提供必要对照；标签本身不证明真实阴性 |
-| `tool_failure_case`      | 失败发生在**工具/环境**层面（格式故障、退出码 3、数据库缺失、权限不足） | 防止把工具故障记成生物学结论                           |
-
-`normal_validation_case` **不是**"没跑出东西"：它要求跑完该结论的**最小充分证据集**
-（`diagnostic-decision-tree.md` §6），并逐项记录"已检查 / 结论 / 未覆盖"。
-只有异常案例的系统无法回答"这个结果到底可不可信"。
-
-落地：`case-init --case-type abnormal_case|normal_validation_case|tool_failure_case`
-（默认 `abnormal_case`；非法值被拒绝且不写案例）。
-
-**向后兼容（必须知道）**：`case_type` 在 `schemas/case.schema.json` 中是**可选**字段，
-历史/手写案例可能缺失；此时**按最保守的方式当 `abnormal_case` 处理**（代码里 `case.get('case_type') or 'abnormal_case'`）。
-因为把这个字段变成 `required` 会让已有案例（包括外部归档记录）一下子变成 `INVALID`，所以选择了
-"可选 + 保守默认 + 新案例一律写入"，而不是强制迁移。声明为 mandatory 的是**本政策的记录要求**，
-不是 schema 的强制项；这一区分见 `developer-contract.md` §7。
-
-## 2. lesson 生命周期
-
-```
-case.json (本地案例)
-      │  propose-lesson            需要证据；UNRESOLVED 案例需 --allow-unresolved 且仅生成候选
-      ▼
-  candidate ──review-lesson──► verified      （= 术语中的 case_verified）
-      │                            │
-      │                            └─ 单案例充分证实即可 verified，但**不自动**升级通用规则
-      ├──► rejected / deprecated
-      └──► withdrawn / superseded              （证据被推翻或新版本取代）
+```json
+{
+  "title": "nad6 断裂后的竞争回贴",
+  "claim": "单一注释断裂不能证明样本碱基错误",
+  "lesson_domain": "annotation",
+  "diagnostic_clues": ["nad6 断裂", "局部覆盖下降"],
+  "suggested_next_test": "检查组装图并对竞争候选回贴",
+  "applicable_when": {
+    "taxa": ["Insecta"],
+    "data_types": ["illumina_paired_end"],
+    "conditions": ["记录实际组装器与版本"]
+  },
+  "not_applicable_when": ["没有当前样本证据时直接修改碱基"],
+  "counterexample_case_ids": [],
+  "conflicts": []
+}
 ```
 
-- 状态枚举（代码 + `schemas/lesson.schema.json`）：`candidate`、`verified`、`rejected`、`deprecated`、`withdrawn`、`superseded`；
-  manifest 层另有 `revoked`（公共同步跳过）。
-- **只有 `verified` 可进入公共同步**；`rejected/deprecated/withdrawn/superseded/revoked` 一律不再被默认调用。
-- **`verified` ≠ 普遍适用**：一个案例得到充分验证，只说明**该案例在该类群、该数据类型、该组装软件下**的判定有足够证据。
-  推广到其他类群、其他数据类型或不同组装软件，需要**重新验证**。因此公共知识必须保留案例级证据等级与
-  明确的适用条件（`applicable_when` / `not_applicable_when`），不要把 `verified` 读成通用诊断规则。
-- **审核人字段是自述**：`review-lesson --reviewer` 由调用者填写，不构成独立验证证据；
-  需要独立验证时引用可核查的外部审核记录，并在 `sources` 中留下回溯链接。
-- **矛盾经验并存**，用 `conflicts` 字段显式记录，**不通过频次投票抹除**任一方向。
-- **案例类型不影响 lesson 生命周期，但限制 lesson 的可迁移性与**领域**：
-  只由 `abnormal_case` 支持的 lesson 默认为 `transferability = none`（§3）；
-  `tool_failure_case` 只能产生**领域为 `tool`** 的 lesson（`lesson_domain=tool`）——
-  工具/环境故障不得升为生物学或样本质量结论。该限制已由代码强制：
-  `propose-lesson --lesson-domain {tool,annotation,biology}`，对 `tool_failure_case` 只接受 `tool`，
-  非法/不兼容的请求直接失败（不写候选）。每条 lesson 同时记录 `source_case_type` 以保留来源。
-- "通用规则（general_rule）"不是一个 lesson 状态，而是**人工**把稳定结论提升进 `SKILL.md` 硬规则或 `scripts/` 的动作。
+不要写工具自动生成的状态、案例路径、哈希、审核历史或推广级别；程序会补全。
+MVP 每条修订只关联一个来源案例，并固定为 `generalization_scope=single_case`、
+`transferability=none`。不同样本分别提出经验，不通过频次自动合并或推广。
 
-## 3. lesson 应记录的内容（字段映射）
+案例类型保留在经验中：
 
-| 要求                                         | 落在何处                                                                                                       |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| 适用类群 / 组装与数据类型                    | `applicable_when`                                                                                            |
-| 明确不适用条件                               | `not_applicable_when`                                                                                        |
-| 初始异常（诊断线索）                         | `diagnostic_clues`                                                                                           |
-| 支持证据                                     | `supporting_case_ids` + `sources`                                                                          |
-| **反例**                               | `counterexample_case_ids`                                                                                    |
-| 建议的下一步检查                             | `suggested_next_test`                                                                                        |
-| 验证级别 / 审核历史                          | `validation_status` + `review_history`                                                                     |
-| 回溯链接                                     | `sources[].path` / `case_id`                                                                               |
-| 冲突的其他经验                               | `conflicts`                                                                                                  |
-| **推广范围**                           | `generalization_scope`：`single_case` / `species` / `genus` / `family` / `order` / `multi_taxon` |
-| **可迁移性**                           | `transferability`：`none` / `low` / `moderate` / `high`                                              |
-| **领域**（防止把工具故障当生物学结论） | `lesson_domain`：`tool` / `annotation` / `biology`（由 `case_type` 限定，见 §2）                    |
-| **来源案例类型**                       | `source_case_type`（保留区分，导出与同步都不丢）                                                             |
-| **样本数量**（当前无独立字段）         | 写入`sources`/描述性字段，或在 `case.md` 中说明                                                            |
+- `abnormal_case`：支持异常诊断线索，但不证明适用于其他类群或数据类型；
+- `normal_validation_case`：作为正常验证对照，标签本身不证明真实阴性；
+- `tool_failure_case`：只能提出 `lesson_domain=tool` 的经验，不得升级为生物学结论。
 
-`generalization_scope` / `transferability` 的目的是**防止"一次案例 → 规则"**（AI 最容易犯的错）。规则：
+案例含 `UNRESOLVED` 结论时，只有显式 `--allow-unresolved` 才能生成候选；
+含未解决结论的来源不能审核为 `verified`。
 
-- **默认 fail closed**：只有一个案例支持时 `generalization_scope = single_case`、`transferability = none`；
-- 只有**多个相互独立的类群/数据集**都支持时才能提高，且必须逐案列出 `supporting_case_ids`；
-- **同一案例不得重复计数**：支持案例的 `case_id` 必须两两不同（重复直接报错）。
-  当前代码将“case_id 不同且记录类群不同”作为推广门槛的工程计数；这不等于科学独立性。
-- 科学独立性需检查样本、数据来源、实验批次与推断机制的依赖；不同类群也可能共用偏差，
-  同种不同独立实验也可能提供有价值的复核。现有 CLI 仍采用上述保守计数，不能谎改类群绕过。
-- 反例存在时（`counterexample_case_ids` 非空）**不得**提高 `transferability`。
+## 3. 当前命令
 
-落地：`propose-lesson --generalization-scope ... --transferability ... `
-`--supporting-case <dir>`（可重复）`--counterexample-case <dir>`（可重复）。
-当前**工程计数**仅计“case_id 不同且类群不同”；未记录类群不计，重复 case_id 报错。
-代码尚未自动验证科学独立性，来源依赖需在事件、sources 与审核记录中说明。
+```bash
+# 提出候选；案例和草稿先校验，失败不创建经验库
+python3 scripts/memory.py --library /path/to/knowledge propose \
+  --case /path/to/task-case --record lesson-draft.json --authorize-local
+# 含 UNRESOLVED 时另加 --allow-unresolved
 
-**公共同步/导入的 lesson 同样受约束**：`validate_public_lesson()` 对缺失的 `generalization_scope`/
-`transferability` 补齐为 `single_case`/`none`（而不是当成无限制），并拒绝非法枚举、
-`single_case` + 非 `none` 的组合、以及“声称可迁移但支持案例数不够”的记录。
+# 审核当前修订；reviewer 是自述字段，不构成独立验证证据
+python3 scripts/memory.py --library /path/to/knowledge review L000001 \
+  --status verified --reviewer '姓名或审核标识' --reason '实际核查内容' --authorize-local
 
-例："某昆虫样本 `nad6` 断裂一次"只能写成 `single_case`/`none`；
-写成"昆虫 `nad6` 常断裂"需要多个独立类群案例支持，否则就是外推。
+# 默认只检索 verified；类群和数据类型为大小写不敏感的精确范围匹配
+python3 scripts/memory.py --library /path/to/knowledge search \
+  --query 'nad6 断裂' --taxon Insecta --data-type illumina_paired_end --domain annotation
+# 查候选用 --status candidate；查当前全部状态用 --status all
 
-## 4. 共享与隐私
+# 读取完整经验、证据引用和审核历史
+python3 scripts/memory.py --library /path/to/knowledge show L000001
 
-- **共享默认关闭**：只生成可预览 JSON，必须显式 `--authorize`（否则拒绝生成文件）；上传是另一独立动作。
-- 去标识化（`sanitize_for_share`）：路径 → `[local-path-redacted]`；邮箱 → `[email-redacted]`；
-  key 名含 `path`/`command`/`token`/`password`/`secret`/`api_key`/`account` 的字段被剔除；
-  检测到凭据模式直接拒绝生成。
-- 默认**排除**：绝对路径、样本编号、原始 FASTQ/BAM/GFA、未公开序列片段、API 密钥、可识别未发表项目的信息。
-  **路径与文件 hash 也可能关联项目，只存本地。**
-- GitHub 贡献走 PR；通用规则与科研争议由**人工**审核，自动 schema/重复/安全检查只是辅助。
+# 同一来源案例的新修订；新修订重新从 candidate 开始，旧修订保留
+python3 scripts/memory.py --library /path/to/knowledge supersede L000001 \
+  --case /path/to/task-case --record revised-lesson.json --authorize-local
+python3 scripts/memory.py --library /path/to/knowledge show L000001 --revision 1
 
-## 5. 公共同步（只读、可回滚）
+# 删除索引或源文件变化后，从 JSON 事实源重建
+python3 scripts/memory.py --library /path/to/knowledge rebuild --authorize-local
+```
 
-- manifest 格式：`mito-public-knowledge-1`；每项需 `path` + `url` + `sha256`，可带 `status`；
-- 逐项校验 **清单格式 → 路径合法（禁 `..`/绝对路径）→ 重复路径 → SHA-256 → lesson schema 与状态**；
-- 单文件上限 2 MiB；先写 staging，全部校验通过后才替换，失败**保留上一版缓存**；
-- 远程内容仅作为**证据数据**读入，**不执行**；不允许远程内容改写 `SKILL.md` 的最高优先级指令。
+`--help` 为当前参数的唯一权威。旧 `experience.py`、`propose-lesson`、`review-lesson`、
+`case-*` 和公共 `sync` 命令仍不可执行，不能按历史文档调用。
 
-## 6. 晋升与复核要求
+## 4. 生命周期与证据边界
 
-1. 新经验升级必须跑**稳定回归案例** + **至少一个合适的反例**；
-2. **禁止**用出现频次、或同一 AI 的多次判断替代独立验证（"我自己又说了三遍"不是证据）；
-3. 数据库/参考更新时，在审核记录或说明中标注“需复核”，保留旧版本溯源与回滚能力；
-   `needs_review` 不是当前 lesson 的合法状态，不要作为 `--status` 传入；
-4. 重复案例先**去重**，再判断是否构成独立支持；
-5. **推广必须显式**：`generalization_scope` / `transferability` 默认 `single_case` / `none`；
-   提升它们需满足 §3 的工程门槛并另核查科学独立性，在 `applicable_when` / `not_applicable_when` 中写明边界；
-   典型错误：把"某昆虫 `nad6` 断裂"写成"昆虫 `nad6` 常断裂"。
+```text
+candidate ──review──► verified ──review──► deprecated / withdrawn
+    │                      │
+    └──review──► rejected  └──supersede──► 新 candidate 修订
+```
+
+- `supersede` 可用于当前任意状态；旧修订标为 `superseded`，内容仍可 `show --revision` 追溯。
+- 不允许的状态转换会失败，不会静默覆盖经验。
+- 来源案例在提案后发生合法修订也会改变哈希；审核为 `verified` 前必须重新核对并生成新修订。
+  科学内容不变也可用 `supersede` 刷新来源哈希；新修订仍从 `candidate` 开始。
+- 相同来源与科学内容的当前经验会去重；内容哈希包含来源路径和案例哈希，只用于身份与去重，不证明科学正确。
+  不同目录中的相同 `case_id` 不会被视为同一案例，也不能串接修订链。
+- `verified` 仅表示记录了审核状态，不表示普遍适用或已经独立验证。
+- `conflicts` 保留相反经验 ID；检索不会按支持次数投票或删除任一方。
+- 反例和未解决项必须保留；不能通过改写标题把它们包装成定稿。
+
+召回的经验只是下一次诊断的候选线索。当前样本仍需执行相应检查，经验不能替代
+reads、组装图、注释翻译或其他必要证据，也不能自动改变遗传密码表或修复阈值。
+
+## 5. 检索与索引约束
+
+检索先应用状态、领域、类群和数据类型过滤，再按 FTS5 关键词排序，默认返回最多 5 张摘要卡片。
+`show` 才读取完整来源与审核记录。MVP 不推断分类层级：`Insecta` 不会自动匹配只标记
+`Diptera` 的经验；需要更宽适用范围时，必须在草稿中明确写出并经审核。
+
+索引记录源文件指纹。JSON 被修改或索引缺失时，搜索拒绝静默使用旧结果，要求 `rebuild`。
+重建会重新校验所有经验文档。索引不是科学证据，也不能防止有文件写权限者篡改源文件。
+
+## 6. 隐私与共享
+
+经验草稿只写泛化后的诊断模式。写入端会拒绝常见绝对路径、邮箱、凭据模式、FASTA 片段及
+整段 DNA 字符串，但这是辅助检查，不替代人工隐私审查。来源案例的绝对路径、案例 ID 和哈希
+只用于本地回溯，也可能关联未公开项目，不得直接公开。
+
+不要把原始 FASTQ、FASTA、BAM、GFA、未公开序列或采集元数据放入经验草稿。
+新建经验目录权限为 `0700`，JSON 与 SQLite 索引权限为 `0600`；已有目录的父级权限仍需用户自行核查。
+公共导出、去标识化、贡献审核和同步仍属后续阶段；在其实现前，不得把整个本地经验库当作已脱敏内容分享。
+
+## 7. 晋升与后续阶段
+
+稳定经验晋升到 `SKILL.md`、固定检查或脚本，必须另经人工审核、合适反例和回归测试；
+同一 AI 的重复判断不是独立证据。工具版本变化只触发重新核查，不自动删除生物学经验。
+
+先用真实样本评估召回是否有用、范围过滤是否过严以及是否干扰当前诊断，再决定是否增加
+多案例合并、语义向量重排或公共共享。自动修改 Skill、按频次晋升和 LLM 自动裁决冲突不属于后续默认路线。
